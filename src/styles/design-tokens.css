@@ -1,0 +1,130 @@
+/* ============================================================
+   PoolTerminal — Design Tokens
+   ============================================================
+   Canonical CSS variables for every visual decision.
+   Import this file once at app boot; reference via var(--pt-*).
+   See DESIGN.md for the rationale behind each value.
+   ============================================================ */
+
+:root {
+
+  /* ---------- Backgrounds ---------- */
+  --pt-bg-canvas:        #0F1419;
+  --pt-bg-panel:         #161B26;
+  --pt-bg-strip:         #0A0E15;
+  --pt-bg-row-hover:     #1A2030;
+
+  /* ---------- Borders ---------- */
+  --pt-border:           #1F2937;
+  --pt-border-width:     0.5px;
+  --pt-border-line:      0.5px solid #1F2937;
+
+  /* ---------- Accents (Cardano blue family) ---------- */
+  --pt-accent-blue:        #4A8FE7;
+  --pt-accent-blue-soft:   #2C4763;
+  --pt-accent-blue-bright: #7BB0F5;
+
+  /* ---------- Status ---------- */
+  --pt-status-good:        #10B981;
+  --pt-status-warn:        #F59E0B;
+  --pt-status-bad:         #EF4444;
+  --pt-status-flash-up:    rgba(16, 185, 129, 0.18);
+  --pt-status-flash-down:  rgba(239, 68, 68, 0.18);
+
+  /* ---------- Text ---------- */
+  --pt-text-primary:       #E5E7EB;
+  --pt-text-secondary:     #9CA3AF;
+  --pt-text-muted:         #6B7280;
+  --pt-text-disabled:      #374151;
+
+  /* ---------- Typography ---------- */
+  --pt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --pt-font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  /* Type scale */
+  --pt-text-label:       11px;
+  --pt-text-data:        11px;
+  --pt-text-data-mid:    13px;
+  --pt-text-data-large:  22px;
+  --pt-text-data-xl:     32px;
+
+  /* Letter spacing on uppercase labels */
+  --pt-tracking-label:   0.7px;
+
+  /* ---------- Spacing ---------- */
+  --pt-pad-tight:        6px;
+  --pt-pad-cell:         7px 11px;
+  --pt-pad-card:         9px 11px;
+  --pt-pad-strip:        8px 14px;
+
+  --pt-gap-tight:        6px;
+  --pt-gap:              8px;
+  --pt-gap-wide:         10px;
+
+  /* ---------- Radii ---------- */
+  --pt-radius-sm:        3px;
+  --pt-radius:           5px;
+
+  /* ---------- Animation ---------- */
+  --pt-flash-duration:   1.6s;
+  --pt-flash-easing:     ease-out;
+
+}
+
+/* ============================================================
+   Global app shell
+   ============================================================ */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--pt-bg-canvas);
+  color: var(--pt-text-primary);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-data);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tabular numerals everywhere by default on mono */
+.pt-mono, code, pre, .pt-data {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Bloomberg-flash animation
+   ============================================================ */
+
+@keyframes pt-flash-up {
+  0%   { background-color: var(--pt-status-flash-up); }
+  100% { background-color: var(--pt-bg-panel); }
+}
+
+@keyframes pt-flash-down {
+  0%   { background-color: var(--pt-status-flash-down); }
+  100% { background-color: var(--pt-bg-panel); }
+}
+
+.pt-flash-up   { animation: pt-flash-up   var(--pt-flash-duration) var(--pt-flash-easing); }
+.pt-flash-down { animation: pt-flash-down var(--pt-flash-duration) var(--pt-flash-easing); }
+
+/* Stale data state — 60% opacity, no animation */
+.pt-stale { opacity: 0.6; }
+
+/* ============================================================
+   Status pulse dot
+   ============================================================ */
+
+.pt-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+.pt-dot-good { background: var(--pt-status-good); }
+.pt-dot-warn { background: var(--pt-status-warn); }
+.pt-dot-bad  { background: var(--pt-status-bad);  }
+.pt-dot-blue { background: var(--pt-accent-blue); }

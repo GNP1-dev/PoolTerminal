@@ -1,0 +1,47 @@
+# Private project handover document — NEVER COMMIT
+HANDOVER.md
+
+# Rust / Tauri build artefacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# Local SQLite cache (dev)
+*.db
+*.db-shm
+*.db-wal
+
+# Local config / secrets
+.env
+.env.local
+*.local
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+src-tauri/target/
+src-tauri/WixTools/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+Thumbs.db
+
+# Tauri auto-generated
+src-tauri/gen/
+
+# Local screenshots not for repo
+screenshots-private/

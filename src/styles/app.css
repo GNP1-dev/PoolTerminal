@@ -1,0 +1,142 @@
+/* ============================================================
+   PoolTerminal — App shell layout
+   ============================================================
+   Uses tokens from design-tokens.css.
+   Holds the tickertape strip, tab bar, and view canvas only.
+   Panel and chart styles live in their own files per phase.
+   ============================================================ */
+
+#pt-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--pt-bg-canvas);
+}
+
+/* ---------- Tickertape ---------- */
+
+.pt-tickertape {
+  display: flex;
+  align-items: center;
+  padding: var(--pt-pad-strip);
+  background: var(--pt-bg-strip);
+  border-bottom: var(--pt-border-line);
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pt-ticker-name {
+  color: var(--pt-accent-blue);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.pt-ticker-sep {
+  color: var(--pt-text-disabled);
+  margin: 0 9px;
+}
+
+.pt-ticker-label {
+  color: var(--pt-text-muted);
+}
+
+.pt-ticker-val {
+  color: var(--pt-text-primary);
+}
+
+.pt-ticker-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pt-ticker-spacer {
+  flex: 1;
+}
+
+.pt-mode-badge {
+  color: var(--pt-status-good);
+  letter-spacing: 0.6px;
+  padding: 2px 7px;
+  border: var(--pt-border-width) solid var(--pt-status-good);
+  border-radius: var(--pt-radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: color 120ms ease-out, border-color 120ms ease-out;
+}
+
+.pt-mode-badge.pt-mode-demo {
+  color: var(--pt-status-warn);
+  border-color: var(--pt-status-warn);
+}
+
+/* ---------- Tabs ---------- */
+
+.pt-tabs {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: var(--pt-bg-canvas);
+  border-bottom: var(--pt-border-line);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  font-weight: 500;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.pt-tab {
+  padding: 10px 12px;
+  color: var(--pt-text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  user-select: none;
+  transition: color 120ms ease-out;
+}
+
+.pt-tab:hover {
+  color: var(--pt-text-secondary);
+}
+
+.pt-tab-active {
+  color: var(--pt-accent-blue);
+  border-bottom-color: var(--pt-accent-blue);
+}
+
+/* ---------- View canvas ---------- */
+
+.pt-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 10px;
+}
+
+.pt-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--pt-text-secondary);
+  text-align: center;
+  font-family: var(--pt-font-sans);
+}
+
+.pt-placeholder h2 {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--pt-text-primary);
+  margin: 0 0 8px;
+}
+
+.pt-placeholder p {
+  font-size: 13px;
+  color: var(--pt-text-muted);
+  margin: 0 0 4px;
+}

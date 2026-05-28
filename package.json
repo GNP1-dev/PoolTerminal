@@ -1,0 +1,15 @@
+{
+  "name": "poolterminal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bloomberg-terminal-style desktop dashboard for Cardano stake pool operators",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

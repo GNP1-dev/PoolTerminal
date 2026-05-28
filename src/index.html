@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PoolTerminal</title>
+    <link rel="stylesheet" href="styles/design-tokens.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+
+    <div id="pt-app">
+
+      <div class="pt-tickertape" id="pt-tickertape">
+        <span class="pt-ticker-name">GNP1</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-label">EPOCH</span>&nbsp;<span class="pt-ticker-val" id="ttape-epoch">—</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-label">SLOT</span>&nbsp;<span class="pt-ticker-val" id="ttape-slot">—</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-label">SYNC</span>&nbsp;<span class="pt-ticker-val" id="ttape-sync">—</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-label">KES</span>&nbsp;<span class="pt-ticker-val" id="ttape-kes">—</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-label">PEERS</span>&nbsp;<span class="pt-ticker-val" id="ttape-peers">—</span>
+        <span class="pt-ticker-sep">│</span>
+        <span class="pt-ticker-pair" id="ttape-forging">
+          <span class="pt-dot pt-dot-good"></span>
+          <span class="pt-ticker-val" style="color: var(--pt-status-good)">FORGING</span>
+        </span>
+        <span class="pt-ticker-spacer"></span>
+        <span class="pt-mode-badge" id="ttape-mode" title="Click to toggle LIVE / DEMO">● LIVE</span>
+      </div>
+
+      <nav class="pt-tabs" id="pt-tabs">
+        <div class="pt-tab pt-tab-active" data-view="now">Now</div>
+        <div class="pt-tab" data-view="history">History</div>
+        <div class="pt-tab" data-view="delegators">Delegators</div>
+        <div class="pt-tab" data-view="node-health">Node health</div>
+        <div class="pt-tab" data-view="rewards">Rewards</div>
+        <div class="pt-tab" data-view="governance">Governance</div>
+        <div class="pt-tab" data-view="map">Map</div>
+      </nav>
+
+      <main class="pt-canvas" id="pt-canvas">
+        <div class="pt-placeholder">
+          <h2>Phase 0 — scaffold ready</h2>
+          <p>Tauri 2 + design tokens + chrome shell wired.</p>
+          <p>Phase 1 (NOW view + data layer) starts next.</p>
+        </div>
+      </main>
+
+    </div>
+
+  </body>
+</html>

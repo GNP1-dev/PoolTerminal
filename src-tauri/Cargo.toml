@@ -1,0 +1,26 @@
+[package]
+name = "poolterminal"
+version = "0.1.0"
+description = "Bloomberg-terminal-style desktop dashboard for Cardano stake pool operators"
+authors = ["GNP1-dev"]
+edition = "2021"
+
+[lib]
+name = "poolterminal_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Future phases will add:
+#   russh         — async SSH for BP connection
+#   russh-keys    — SSH key handling
+#   rusqlite      — local cache (bundled feature, no sysdep)
+#   tokio         — async runtime
+#   anyhow        — error handling
+#   tracing       — structured logging

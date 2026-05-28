@@ -17,10 +17,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# SSH layer
+russh = "0.61"
+tokio = { version = "1", features = ["sync", "time", "io-util", "net", "rt-multi-thread", "macros"] }
+anyhow = "1"
+
 # Future phases will add:
-#   russh         — async SSH for BP connection
-#   russh-keys    — SSH key handling
 #   rusqlite      — local cache (bundled feature, no sysdep)
-#   tokio         — async runtime
-#   anyhow        — error handling
 #   tracing       — structured logging

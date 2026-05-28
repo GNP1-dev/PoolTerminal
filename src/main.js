@@ -1,41 +1,60 @@
 /**
  * PoolTerminal — entry.
  *
- * Phase 0: scaffold only.
- *
- * Future phases will:
- *   - boot the data layer (LIVE via Tauri/SSH, or DEMO synthetic)
- *   - bind tickertape values to live data
- *   - wire tab switching to view modules
- *   - register Bloomberg-flash hooks on changing values
+ * Phase 0: chrome shell + data router wired. The NOW view (Phase 1) will consume
+ * dataSource() on a poll loop and render real panels; for now we prove the
+ * contract end-to-end by logging a demo snapshot.
  */
 
+import { dataSource, setMode, getMode } from './data/index.js';
+
+// eslint-disable-next-line no-unused-vars
 const { invoke } = window.__TAURI__.core;
 
-window.addEventListener("DOMContentLoaded", () => {
-  console.log("PoolTerminal — scaffold ready (Phase 0)");
+window.addEventListener('DOMContentLoaded', async () => {
+  console.log('PoolTerminal — Phase 0 ready');
 
-  // Minimal tab-switch handler so the chrome feels alive even before Phase 1.
-  const tabs = document.querySelectorAll(".pt-tab");
-  const canvas = document.getElementById("pt-canvas");
+  // --- Tab switching (placeholder views until each phase builds them) ---
+  const tabs = document.querySelectorAll('.pt-tab');
+  const canvas = document.getElementById('pt-canvas');
   tabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      tabs.forEach((t) => t.classList.remove("pt-tab-active"));
-      tab.classList.add("pt-tab-active");
-      const view = tab.dataset.view;
+    tab.addEventListener('click', () => {
+      tabs.forEach((t) => t.classList.remove('pt-tab-active'));
+      tab.classList.add('pt-tab-active');
       canvas.innerHTML = `
         <div class="pt-placeholder">
           <h2>${tab.textContent} view</h2>
-          <p>Phase 0 placeholder — this view will be built in a later phase.</p>
-        </div>
-      `;
+          <p>Phase 0 placeholder — built in a later phase.</p>
+        </div>`;
     });
   });
 
-  // Minimal mode-toggle so the LIVE / DEMO badge can flip visually.
-  const modeBadge = document.getElementById("ttape-mode");
-  modeBadge.addEventListener("click", () => {
-    const isDemo = modeBadge.classList.toggle("pt-mode-demo");
-    modeBadge.textContent = isDemo ? "● DEMO" : "● LIVE";
+  // --- Mode toggle (LIVE / DEMO) wired to the data router ---
+  const modeBadge = document.getElementById('ttape-mode');
+  function paintMode() {
+    const isDemo = getMode() === 'demo';
+    modeBadge.classList.toggle('pt-mode-demo', isDemo);
+    modeBadge.textContent = isDemo ? '● DEMO' : '● LIVE';
+  }
+  modeBadge.addEventListener('click', () => {
+    setMode(getMode() === 'demo' ? 'live' : 'demo');
+    paintMode();
+    console.log('[mode]', getMode());
   });
+
+  // Default to DEMO until a connection is configured.
+  setMode('demo');
+  paintMode();
+
+  // --- Phase 0 proof: verify the contract round-trips in the webview ---
+  try {
+    const src = dataSource();
+    console.log('[data] identity:', await src.getPoolIdentity());
+    console.log('[data] NowSnapshot:', await src.getNowSnapshot());
+    console.log('[data] ChainPulse:', await src.getChainPulse());
+    console.log('[data] UpcomingBlocks:', await src.getUpcomingBlocks());
+    console.log('[data] Mempool:', await src.getMempool());
+  } catch (e) {
+    console.error('[data] proof failed:', e);
+  }
 });

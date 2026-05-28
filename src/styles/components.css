@@ -1,0 +1,79 @@
+/* ============================================================
+   PoolTerminal — view components
+   ============================================================
+   Panel/card styles for the views (grows per phase). Uses tokens
+   from design-tokens.css. Loaded after app.css in index.html.
+   ============================================================ */
+
+/* ---- NOW view container ---- */
+.pt-now {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pt-gap);
+}
+
+/* ---- Hero row (4 metric cards) ---- */
+.pt-hero-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--pt-gap);
+}
+
+.pt-hero-card {
+  background: var(--pt-bg-panel);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius);
+  padding: var(--pt-pad-card);
+}
+
+/* Accent-bordered card (the Blocks card) */
+.pt-hero-accent {
+  border-color: var(--pt-accent-blue);
+}
+
+.pt-hero-label {
+  color: var(--pt-text-muted);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.pt-hero-value {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data-large);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--pt-text-primary);
+}
+
+.pt-hero-unit {
+  font-size: var(--pt-text-label);
+  color: var(--pt-text-muted);
+  font-weight: 400;
+}
+
+.pt-hero-sub {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-label);
+  color: var(--pt-text-muted);
+  margin-top: 3px;
+}
+
+/* Epoch progress bar */
+.pt-hero-bar {
+  height: 3px;
+  background: var(--pt-border);
+  border-radius: 1px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+.pt-hero-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--pt-accent-blue);
+  transition: width 0.5s ease-out;
+}

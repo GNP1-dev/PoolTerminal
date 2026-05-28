@@ -1,27 +1,46 @@
 /**
  * PoolTerminal — entry.
  *
- * Phase 1: always-on poll loop drives the tickertape from getNowSnapshot().
- * The active view's own panels will hook into the same data source as each
- * phase builds them.
+ * Phase 1: always-on poll loop drives the tickertape (global chrome) and, when
+ * the NOW tab is active, the NOW view's panels. Other views mount placeholders
+ * until their phase.
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale } from './ui/tickertape.js';
+import { mountNow, updateNow } from './views/now.js';
 
 const POLL_INTERVAL_MS = 1000;
 let pollTimer = null;
 let lastError = null;
+let activeView = 'now';
+let canvasEl = null;
+
+function labelFor(view) {
+  return { 'node-health': 'Node health' }[view] || view.charAt(0).toUpperCase() + view.slice(1);
+}
+
+function mountView(view) {
+  activeView = view;
+  if (view === 'now') {
+    mountNow(canvasEl);
+  } else {
+    canvasEl.innerHTML = `
+      <div class="pt-placeholder">
+        <h2>${labelFor(view)} view</h2>
+        <p>Built in a later phase.</p>
+      </div>`;
+  }
+}
 
 async function pollTick() {
   try {
     const snap = await dataSource().getNowSnapshot();
     renderTickertape(snap);
+    if (activeView === 'now') updateNow(snap);
     markTickertapeStale(false);
     lastError = null;
   } catch (e) {
-    // Live mode before live.js is implemented throws "not implemented" — show
-    // the strip as stale and log only once per error streak (no spam).
     if (e.message !== lastError) {
       console.warn('[poll]', e.message);
       lastError = e.message;
@@ -37,20 +56,17 @@ function startPolling() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  console.log('PoolTerminal — Phase 1: tickertape + poll loop');
+  console.log('PoolTerminal — Phase 1: NOW hero row');
+  canvasEl = document.getElementById('pt-canvas');
 
-  // --- Tab switching (placeholder views until each phase builds them) ---
+  // --- Tabs ---
   const tabs = document.querySelectorAll('.pt-tab');
-  const canvas = document.getElementById('pt-canvas');
   tabs.forEach((tab) => {
     tab.addEventListener('click', () => {
       tabs.forEach((t) => t.classList.remove('pt-tab-active'));
       tab.classList.add('pt-tab-active');
-      canvas.innerHTML = `
-        <div class="pt-placeholder">
-          <h2>${tab.textContent} view</h2>
-          <p>Built in a later phase.</p>
-        </div>`;
+      mountView(tab.dataset.view);
+      if (activeView === 'now') pollTick(); // fill immediately on entering NOW
     });
   });
 
@@ -64,12 +80,13 @@ window.addEventListener('DOMContentLoaded', () => {
   modeBadge.addEventListener('click', () => {
     setMode(getMode() === 'demo' ? 'live' : 'demo');
     paintMode();
-    lastError = null; // let the new mode's first error log once
-    pollTick(); // immediate refresh on mode change
+    lastError = null;
+    pollTick();
   });
 
-  // Default to DEMO until a connection is configured.
+  // Default to DEMO; mount NOW (default active tab); start polling.
   setMode('demo');
   paintMode();
+  mountView('now');
   startPolling();
 });

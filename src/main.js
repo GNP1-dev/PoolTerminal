@@ -1,18 +1,43 @@
 /**
  * PoolTerminal — entry.
  *
- * Phase 0: chrome shell + data router wired. The NOW view (Phase 1) will consume
- * dataSource() on a poll loop and render real panels; for now we prove the
- * contract end-to-end by logging a demo snapshot.
+ * Phase 1: always-on poll loop drives the tickertape from getNowSnapshot().
+ * The active view's own panels will hook into the same data source as each
+ * phase builds them.
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
+import { renderTickertape, markTickertapeStale } from './ui/tickertape.js';
 
-// eslint-disable-next-line no-unused-vars
-const { invoke } = window.__TAURI__.core;
+const POLL_INTERVAL_MS = 1000;
+let pollTimer = null;
+let lastError = null;
 
-window.addEventListener('DOMContentLoaded', async () => {
-  console.log('PoolTerminal — Phase 0 ready');
+async function pollTick() {
+  try {
+    const snap = await dataSource().getNowSnapshot();
+    renderTickertape(snap);
+    markTickertapeStale(false);
+    lastError = null;
+  } catch (e) {
+    // Live mode before live.js is implemented throws "not implemented" — show
+    // the strip as stale and log only once per error streak (no spam).
+    if (e.message !== lastError) {
+      console.warn('[poll]', e.message);
+      lastError = e.message;
+    }
+    markTickertapeStale(true);
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTick(); // immediate first paint
+  pollTimer = setInterval(pollTick, POLL_INTERVAL_MS);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  console.log('PoolTerminal — Phase 1: tickertape + poll loop');
 
   // --- Tab switching (placeholder views until each phase builds them) ---
   const tabs = document.querySelectorAll('.pt-tab');
@@ -24,12 +49,12 @@ window.addEventListener('DOMContentLoaded', async () => {
       canvas.innerHTML = `
         <div class="pt-placeholder">
           <h2>${tab.textContent} view</h2>
-          <p>Phase 0 placeholder — built in a later phase.</p>
+          <p>Built in a later phase.</p>
         </div>`;
     });
   });
 
-  // --- Mode toggle (LIVE / DEMO) wired to the data router ---
+  // --- Mode toggle (LIVE / DEMO) ---
   const modeBadge = document.getElementById('ttape-mode');
   function paintMode() {
     const isDemo = getMode() === 'demo';
@@ -39,22 +64,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   modeBadge.addEventListener('click', () => {
     setMode(getMode() === 'demo' ? 'live' : 'demo');
     paintMode();
-    console.log('[mode]', getMode());
+    lastError = null; // let the new mode's first error log once
+    pollTick(); // immediate refresh on mode change
   });
 
   // Default to DEMO until a connection is configured.
   setMode('demo');
   paintMode();
-
-  // --- Phase 0 proof: verify the contract round-trips in the webview ---
-  try {
-    const src = dataSource();
-    console.log('[data] identity:', await src.getPoolIdentity());
-    console.log('[data] NowSnapshot:', await src.getNowSnapshot());
-    console.log('[data] ChainPulse:', await src.getChainPulse());
-    console.log('[data] UpcomingBlocks:', await src.getUpcomingBlocks());
-    console.log('[data] Mempool:', await src.getMempool());
-  } catch (e) {
-    console.error('[data] proof failed:', e);
-  }
+  startPolling();
 });

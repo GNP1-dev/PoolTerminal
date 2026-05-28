@@ -22,6 +22,8 @@ russh = "0.61"
 tokio = { version = "1", features = ["sync", "time", "io-util", "net", "rt-multi-thread", "macros"] }
 anyhow = "1"
 
+# Local cache
+rusqlite = { version = "0.39", features = ["bundled"] }
+
 # Future phases will add:
-#   rusqlite      — local cache (bundled feature, no sysdep)
 #   tracing       — structured logging

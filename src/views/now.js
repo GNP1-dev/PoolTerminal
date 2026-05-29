@@ -1,10 +1,12 @@
 /**
  * PoolTerminal — NOW view.
- * Mounts the NOW dashboard into the canvas and updates it from each poll.
- * Panels are added per Phase-1 step; currently: hero row.
+ * Mounts the NOW dashboard and updates it each poll.
+ * Panels so far: hero row, chain pulse, block production.
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
+import { renderChainPulse, stopChainPulse } from '../ui/chain-pulse.js';
+import { renderBlockProduction, resetBlockProduction } from '../ui/block-production.js';
 
 const NOW_HTML = `
   <div class="pt-now">
@@ -30,14 +32,93 @@ const NOW_HTML = `
         <div class="pt-hero-sub" id="hero-kes-sub">—</div>
       </div>
     </div>
-    <!-- chain pulse / upcoming blocks / mempool / map: later steps -->
+
+    <div class="pt-panel">
+      <div class="pt-panel-header">
+        <span class="pt-panel-title">Chain pulse</span>
+        <span class="pt-panel-meta">
+          <span id="cp-attip"></span>
+          <span class="pt-sep">│</span>
+          <span class="pt-muted">block</span>&nbsp;<span id="cp-tipblock">—</span>
+        </span>
+      </div>
+      <div class="pt-chainpulse-body">
+        <div class="pt-cp-top">
+          <div>
+            <div class="pt-cp-since-label">Since last block</div>
+            <div class="pt-cp-since" id="cp-since">—</div>
+          </div>
+          <div class="pt-cp-stats">
+            <div><span class="pt-muted">AVG</span>&nbsp;&nbsp;<span id="cp-avg">—</span></div>
+            <div><span class="pt-muted">MAX</span>&nbsp;&nbsp;<span id="cp-max">—</span></div>
+            <div><span class="pt-muted">MIN</span>&nbsp;&nbsp;<span id="cp-min">—</span></div>
+          </div>
+        </div>
+        <div class="pt-cp-hb-label">
+          <span>HEARTBEAT · last 5 min</span>
+          <span class="pt-accent" id="cp-blockcount">—</span>
+        </div>
+        <svg class="pt-cp-heartbeat" id="cp-heartbeat" viewBox="0 0 600 56" preserveAspectRatio="none"></svg>
+        <div class="pt-cp-density-label">DENSITY · blocks ÷ slots</div>
+        <div class="pt-cp-density">
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">5m</div><div class="pt-cp-dval" id="cp-d-m5">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1h</div><div class="pt-cp-dval" id="cp-d-h1">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">24h</div><div class="pt-cp-dval" id="cp-d-h24">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">7d</div><div class="pt-cp-dval" id="cp-d-d7">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">epoch</div><div class="pt-cp-dval" id="cp-d-epoch">—</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pt-panel">
+      <div class="pt-panel-header">
+        <span class="pt-panel-title">Block production</span>
+        <span class="pt-panel-meta"><span class="pt-muted">this epoch</span></span>
+      </div>
+      <div class="pt-bp-grid">
+        <div class="pt-bp-cell">
+          <div class="pt-bp-label">Leader</div>
+          <div class="pt-bp-val" id="bp-leader">—</div>
+        </div>
+        <div class="pt-bp-cell">
+          <div class="pt-bp-label">Ideal</div>
+          <div class="pt-bp-val" id="bp-ideal">—</div>
+        </div>
+        <div class="pt-bp-cell">
+          <div class="pt-bp-label">Luck</div>
+          <div class="pt-bp-val" id="bp-luck">—</div>
+        </div>
+        <div class="pt-bp-cell" id="bp-cell-adopt">
+          <div class="pt-bp-label">Adopt</div>
+          <div class="pt-bp-val" id="bp-adopt">—</div>
+        </div>
+        <div class="pt-bp-cell" id="bp-cell-conf">
+          <div class="pt-bp-label">Conf</div>
+          <div class="pt-bp-val" id="bp-conf">—</div>
+        </div>
+        <div class="pt-bp-cell">
+          <div class="pt-bp-label">Lost</div>
+          <div class="pt-bp-val" id="bp-lost">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- upcoming blocks / mempool / map: later steps -->
   </div>`;
 
 export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
+  resetBlockProduction();
 }
 
-export function updateNow(snap) {
+export async function updateNow(src, snap) {
   renderHero(snap);
+  renderBlockProduction(snap.blockProduction);
+  const pulse = await src.getChainPulse();
+  renderChainPulse(pulse);
+}
+
+export function unmountNow() {
+  stopChainPulse();
 }

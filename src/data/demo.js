@@ -1,15 +1,15 @@
 /**
  * PoolTerminal — DEMO1 synthetic data source.
  *
- * Implements the full DataSource contract (see contract.js) with believable
- * synthetic data for the "DEMO1" pool. Lets us develop and screenshot the whole
- * UI without a live node, and exercise panels (scrollable upcoming blocks, etc.)
- * that a small real pool can't fill.
+ * Implements the full DataSource contract with believable synthetic data for the
+ * "DEMO1" pool. Lets us develop/screenshot the whole UI without a live node.
  *
- * Realism touches:
+ * Realism:
  *  - epoch / slot / progress anchored to the REAL Cardano epoch clock
- *  - Praos-like exponential inter-block gaps for the heartbeat
+ *  - Praos-like exponential inter-block gaps
  *  - block production accrues as the epoch progresses
+ *  - chain pulse is STATEFUL: block arrivals have fixed times that persist across
+ *    calls (drift left, fall off at 5 min), so the heartbeat scrolls correctly
  */
 
 import './contract.js';
@@ -49,6 +49,7 @@ function realEpoch() {
 export class DemoDataSource {
   constructor() {
     this.mode = 'demo';
+    this._chain = null; // stateful block-arrival stream for the heartbeat
   }
 
   async getPoolIdentity() {
@@ -62,8 +63,8 @@ export class DemoDataSource {
   async getNowSnapshot() {
     const e = realEpoch();
     const seed = epochSeed(e.epoch);
-    const leader = 18 + Math.floor(seed * 6);     // 18..23 assigned this epoch
-    const ideal = leader / (0.93 + seed * 0.12);  // implies luck ~88..107%
+    const leader = 18 + Math.floor(seed * 6);
+    const ideal = leader / (0.93 + seed * 0.12);
     const luckPercent = Math.round((leader / ideal) * 100);
     const adopted = Math.min(leader, Math.round(leader * e.progress));
     const pulseScore = 90 + Math.round(4 * Math.sin(nowSec() / 600) + 2);
@@ -93,14 +94,8 @@ export class DemoDataSource {
         score: pulseScore,
         delta: 2,
         components: {
-          blockPerformance: 92,
-          propagation: 88,
-          uptime: 100,
-          kes: 52,
-          peers: 100,
-          delegatorStability: 95,
-          saturationHeadroom: 80,
-          pledge: 100,
+          blockPerformance: 92, propagation: 88, uptime: 100, kes: 52,
+          peers: 100, delegatorStability: 95, saturationHeadroom: 80, pledge: 100,
         },
       },
     };
@@ -131,29 +126,42 @@ export class DemoDataSource {
 
   async getChainPulse() {
     const now = nowSec();
-    const windowStart = now - 300;
-    const times = [];
-    let t = now - Math.floor(expGap(20)); // most recent arrival just behind now
-    while (t > windowStart) {
-      times.push(t);
-      t -= Math.floor(expGap(20)) + 1;
-    }
-    times.reverse();
 
+    // Seed the stream the first time: fill the last 5 min with arrivals.
+    if (!this._chain) {
+      const times = [];
+      let t = now - Math.floor(expGap(20));
+      while (t > now - 300) {
+        times.push(t);
+        t -= Math.floor(expGap(20)) + 1;
+      }
+      times.reverse();
+      const last = times.length ? times[times.length - 1] : now - 20;
+      this._chain = { times, nextAt: last + Math.floor(expGap(20)) + 1 };
+    }
+
+    // Advance: realise any block arrivals scheduled since the last call.
+    while (this._chain.nextAt <= now) {
+      this._chain.times.push(this._chain.nextAt);
+      this._chain.nextAt += Math.floor(expGap(20)) + 1;
+    }
+    // Keep a little beyond the 5-min window for stable stats.
+    this._chain.times = this._chain.times.filter((t) => t > now - 320);
+
+    const times = this._chain.times;
     const sinceLast = times.length ? now - times[times.length - 1] : now;
     const gaps = [];
     for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
     const avg = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
     const max = gaps.length ? Math.max(...gaps) : 0;
     const min = gaps.length ? Math.min(...gaps) : 0;
-
     const jitter = () => Math.round((0.05 + (Math.random() - 0.5) * 0.004) * 1000) / 1000;
 
     return {
       sinceLastBlockSeconds: sinceLast,
       atTip: true,
       tipBlock: 11427892 + Math.floor((now - SHELLEY_START) / 20),
-      recentBlockTimes: times,
+      recentBlockTimes: times.slice(),
       windowStats: { avgSeconds: avg, maxSeconds: max, minSeconds: min },
       density: { m5: jitter(), h1: jitter(), h24: 0.05, d7: 0.05, epoch: 0.05 },
     };

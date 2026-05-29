@@ -26,7 +26,6 @@
   padding: var(--pt-pad-card);
 }
 
-/* Accent-bordered card (the Blocks card) */
 .pt-hero-accent {
   border-color: var(--pt-accent-blue);
 }
@@ -63,7 +62,6 @@
   margin-top: 3px;
 }
 
-/* Epoch progress bar */
 .pt-hero-bar {
   height: 3px;
   background: var(--pt-border);
@@ -76,4 +74,155 @@
   width: 0%;
   background: var(--pt-accent-blue);
   transition: width 0.5s ease-out;
+}
+
+/* ---- Generic panel ---- */
+.pt-panel {
+  background: var(--pt-bg-panel);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius);
+  overflow: hidden;
+}
+.pt-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 12px;
+  background: var(--pt-bg-strip);
+  border-bottom: var(--pt-border-line);
+}
+.pt-panel-title {
+  color: var(--pt-text-secondary);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.pt-panel-meta {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data);
+  color: var(--pt-text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.pt-muted { color: var(--pt-text-muted); }
+.pt-accent { color: var(--pt-accent-blue); }
+.pt-sep { color: var(--pt-text-disabled); }
+
+/* ---- Chain pulse ---- */
+.pt-chainpulse-body { padding: 14px; }
+
+.pt-cp-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+.pt-cp-since-label {
+  color: var(--pt-text-muted);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.pt-cp-since {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data-xl);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--pt-text-primary);
+}
+.pt-cp-stats {
+  text-align: right;
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data);
+  line-height: 1.7;
+  color: var(--pt-text-primary);
+}
+
+.pt-cp-hb-label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  color: var(--pt-text-muted);
+  margin-bottom: 4px;
+}
+.pt-cp-heartbeat {
+  width: 100%;
+  height: 56px;
+  display: block;
+  background: var(--pt-bg-strip);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius-sm);
+}
+
+.pt-cp-density-label {
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  color: var(--pt-text-muted);
+  margin: 14px 0 4px;
+}
+.pt-cp-density {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--pt-gap);
+}
+.pt-cp-dcell {
+  background: var(--pt-bg-strip);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius-sm);
+  padding: 8px 10px;
+  text-align: center;
+}
+.pt-cp-dwin {
+  color: var(--pt-text-muted);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.pt-cp-dval {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data-mid);
+  font-weight: 500;
+}
+
+/* ---- Block production grid ---- */
+.pt-bp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  /* Two rows of three. The borders form a subtle inner grid. */
+}
+.pt-bp-cell {
+  padding: 10px 12px;
+  border-right: var(--pt-border-line);
+  border-bottom: var(--pt-border-line);
+}
+.pt-bp-cell:nth-child(3n) { border-right: none; }
+.pt-bp-cell:nth-last-child(-n+3) { border-bottom: none; }
+
+.pt-bp-label {
+  color: var(--pt-text-muted);
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+}
+.pt-bp-val {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data-mid);
+  font-weight: 500;
+  color: var(--pt-text-primary);
+  margin-top: 3px;
+  line-height: 1;
 }

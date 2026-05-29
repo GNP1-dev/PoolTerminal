@@ -2,13 +2,12 @@
  * PoolTerminal — entry.
  *
  * Phase 1: always-on poll loop drives the tickertape (global chrome) and, when
- * the NOW tab is active, the NOW view's panels. Other views mount placeholders
- * until their phase.
+ * the NOW tab is active, the NOW view's panels (hero row + chain pulse).
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale } from './ui/tickertape.js';
-import { mountNow, updateNow } from './views/now.js';
+import { mountNow, updateNow, unmountNow } from './views/now.js';
 
 const POLL_INTERVAL_MS = 1000;
 let pollTimer = null;
@@ -21,6 +20,7 @@ function labelFor(view) {
 }
 
 function mountView(view) {
+  if (activeView === 'now' && view !== 'now') unmountNow();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
@@ -35,11 +35,12 @@ function mountView(view) {
 
 async function pollTick() {
   try {
-    const snap = await dataSource().getNowSnapshot();
+    const src = dataSource();
+    const snap = await src.getNowSnapshot();
     renderTickertape(snap);
-    if (activeView === 'now') updateNow(snap);
     markTickertapeStale(false);
     lastError = null;
+    if (activeView === 'now') await updateNow(src, snap);
   } catch (e) {
     if (e.message !== lastError) {
       console.warn('[poll]', e.message);
@@ -51,26 +52,24 @@ async function pollTick() {
 
 function startPolling() {
   if (pollTimer) return;
-  pollTick(); // immediate first paint
+  pollTick();
   pollTimer = setInterval(pollTick, POLL_INTERVAL_MS);
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  console.log('PoolTerminal — Phase 1: NOW hero row');
+  console.log('PoolTerminal — Phase 1: NOW (hero + chain pulse)');
   canvasEl = document.getElementById('pt-canvas');
 
-  // --- Tabs ---
   const tabs = document.querySelectorAll('.pt-tab');
   tabs.forEach((tab) => {
     tab.addEventListener('click', () => {
       tabs.forEach((t) => t.classList.remove('pt-tab-active'));
       tab.classList.add('pt-tab-active');
       mountView(tab.dataset.view);
-      if (activeView === 'now') pollTick(); // fill immediately on entering NOW
+      if (activeView === 'now') pollTick();
     });
   });
 
-  // --- Mode toggle (LIVE / DEMO) ---
   const modeBadge = document.getElementById('ttape-mode');
   function paintMode() {
     const isDemo = getMode() === 'demo';
@@ -84,7 +83,6 @@ window.addEventListener('DOMContentLoaded', () => {
     pollTick();
   });
 
-  // Default to DEMO; mount NOW (default active tab); start polling.
   setMode('demo');
   paintMode();
   mountView('now');

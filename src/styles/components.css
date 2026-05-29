@@ -282,3 +282,35 @@
   border-radius: 3px;
 }
 .pt-ub-body::-webkit-scrollbar-thumb:hover { background: var(--pt-text-disabled); }
+
+/* ---- Mempool panel ---- */
+.pt-mp-body {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.pt-mp-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: var(--pt-border-line);
+}
+.pt-mp-row:last-child { border-bottom: none; }
+.pt-mp-hash { color: var(--pt-accent-blue); }
+.pt-mp-size { color: var(--pt-text-muted); }
+.pt-mp-empty {
+  padding: 24px 12px;
+  color: var(--pt-text-muted);
+  text-align: center;
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-data);
+}
+.pt-mp-body::-webkit-scrollbar { width: 6px; }
+.pt-mp-body::-webkit-scrollbar-track { background: transparent; }
+.pt-mp-body::-webkit-scrollbar-thumb {
+  background: var(--pt-border);
+  border-radius: 3px;
+}
+.pt-mp-body::-webkit-scrollbar-thumb:hover { background: var(--pt-text-disabled); }

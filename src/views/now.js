@@ -1,13 +1,15 @@
 /**
  * PoolTerminal — NOW view.
  * Mounts the NOW dashboard and updates it each poll.
- * Panels: hero row, chain pulse, block production, upcoming blocks.
+ * Panels: hero row, chain pulse, block production, mempool, upcoming blocks.
+ * Layout: hero → chain pulse → (block production | mempool) → upcoming blocks.
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
 import { renderChainPulse, stopChainPulse } from '../ui/chain-pulse.js';
 import { renderBlockProduction, resetBlockProduction } from '../ui/block-production.js';
 import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.js';
+import { renderMempool } from '../ui/mempool.js';
 
 const NOW_HTML = `
   <div class="pt-now">
@@ -90,15 +92,23 @@ const NOW_HTML = `
 
       <div class="pt-panel">
         <div class="pt-panel-header">
-          <span class="pt-panel-title">Upcoming blocks</span>
-          <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
+          <span class="pt-panel-title">Mempool</span>
+          <span class="pt-panel-meta"><span id="mp-count" class="pt-muted">—</span></span>
         </div>
-        <div class="pt-ub-body" id="ub-body"></div>
+        <div class="pt-mp-body" id="mp-body"></div>
       </div>
 
     </div>
 
-    <!-- mempool / map: later steps -->
+    <div class="pt-panel">
+      <div class="pt-panel-header">
+        <span class="pt-panel-title">Upcoming blocks</span>
+        <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
+      </div>
+      <div class="pt-ub-body" id="ub-body"></div>
+    </div>
+
+    <!-- map: later step -->
   </div>`;
 
 export function mountNow(canvas) {
@@ -110,12 +120,14 @@ export function mountNow(canvas) {
 export async function updateNow(src, snap) {
   renderHero(snap);
   renderBlockProduction(snap.blockProduction);
-  const [pulse, upcoming] = await Promise.all([
+  const [pulse, upcoming, mp] = await Promise.all([
     src.getChainPulse(),
     src.getUpcomingBlocks(),
+    src.getMempool(),
   ]);
   renderChainPulse(pulse);
   renderUpcomingBlocks(upcoming);
+  renderMempool(mp);
 }
 
 export function unmountNow() {

@@ -226,3 +226,59 @@
   margin-top: 3px;
   line-height: 1;
 }
+
+/* ---- NOW: 2-column row (Block production | Upcoming blocks) ---- */
+.pt-now-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--pt-gap);
+}
+
+/* ---- Upcoming blocks panel ---- */
+.pt-ub-body {
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data);
+}
+
+.pt-ub-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: var(--pt-border-line);
+  gap: 10px;
+}
+.pt-ub-row:last-child { border-bottom: none; }
+.pt-ub-row:hover { background: var(--pt-bg-row-hover); }
+
+.pt-ub-row-next {
+  background: rgba(74, 143, 231, 0.05);   /* faint Cardano-blue wash on the next-up row */
+}
+.pt-ub-row-next .pt-ub-idx,
+.pt-ub-row-next .pt-ub-eta {
+  color: var(--pt-accent-blue);
+}
+
+.pt-ub-idx { color: var(--pt-text-muted); }
+.pt-ub-slot { color: var(--pt-text-primary); }
+.pt-ub-eta { color: var(--pt-text-primary); text-align: right; }
+
+.pt-ub-empty {
+  padding: 16px 12px;
+  color: var(--pt-text-muted);
+  text-align: center;
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-data);
+}
+
+/* Subtle dark scrollbar for the list */
+.pt-ub-body::-webkit-scrollbar { width: 6px; }
+.pt-ub-body::-webkit-scrollbar-track { background: transparent; }
+.pt-ub-body::-webkit-scrollbar-thumb {
+  background: var(--pt-border);
+  border-radius: 3px;
+}
+.pt-ub-body::-webkit-scrollbar-thumb:hover { background: var(--pt-text-disabled); }

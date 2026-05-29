@@ -1,12 +1,13 @@
 /**
  * PoolTerminal — NOW view.
  * Mounts the NOW dashboard and updates it each poll.
- * Panels so far: hero row, chain pulse, block production.
+ * Panels: hero row, chain pulse, block production, upcoming blocks.
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
 import { renderChainPulse, stopChainPulse } from '../ui/chain-pulse.js';
 import { renderBlockProduction, resetBlockProduction } from '../ui/block-production.js';
+import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.js';
 
 const NOW_HTML = `
   <div class="pt-now">
@@ -70,40 +71,34 @@ const NOW_HTML = `
       </div>
     </div>
 
-    <div class="pt-panel">
-      <div class="pt-panel-header">
-        <span class="pt-panel-title">Block production</span>
-        <span class="pt-panel-meta"><span class="pt-muted">this epoch</span></span>
-      </div>
-      <div class="pt-bp-grid">
-        <div class="pt-bp-cell">
-          <div class="pt-bp-label">Leader</div>
-          <div class="pt-bp-val" id="bp-leader">—</div>
+    <div class="pt-now-2col">
+
+      <div class="pt-panel">
+        <div class="pt-panel-header">
+          <span class="pt-panel-title">Block production</span>
+          <span class="pt-panel-meta"><span class="pt-muted">this epoch</span></span>
         </div>
-        <div class="pt-bp-cell">
-          <div class="pt-bp-label">Ideal</div>
-          <div class="pt-bp-val" id="bp-ideal">—</div>
-        </div>
-        <div class="pt-bp-cell">
-          <div class="pt-bp-label">Luck</div>
-          <div class="pt-bp-val" id="bp-luck">—</div>
-        </div>
-        <div class="pt-bp-cell" id="bp-cell-adopt">
-          <div class="pt-bp-label">Adopt</div>
-          <div class="pt-bp-val" id="bp-adopt">—</div>
-        </div>
-        <div class="pt-bp-cell" id="bp-cell-conf">
-          <div class="pt-bp-label">Conf</div>
-          <div class="pt-bp-val" id="bp-conf">—</div>
-        </div>
-        <div class="pt-bp-cell">
-          <div class="pt-bp-label">Lost</div>
-          <div class="pt-bp-val" id="bp-lost">—</div>
+        <div class="pt-bp-grid">
+          <div class="pt-bp-cell"><div class="pt-bp-label">Leader</div><div class="pt-bp-val" id="bp-leader">—</div></div>
+          <div class="pt-bp-cell"><div class="pt-bp-label">Ideal</div><div class="pt-bp-val" id="bp-ideal">—</div></div>
+          <div class="pt-bp-cell"><div class="pt-bp-label">Luck</div><div class="pt-bp-val" id="bp-luck">—</div></div>
+          <div class="pt-bp-cell" id="bp-cell-adopt"><div class="pt-bp-label">Adopt</div><div class="pt-bp-val" id="bp-adopt">—</div></div>
+          <div class="pt-bp-cell" id="bp-cell-conf"><div class="pt-bp-label">Conf</div><div class="pt-bp-val" id="bp-conf">—</div></div>
+          <div class="pt-bp-cell"><div class="pt-bp-label">Lost</div><div class="pt-bp-val" id="bp-lost">—</div></div>
         </div>
       </div>
+
+      <div class="pt-panel">
+        <div class="pt-panel-header">
+          <span class="pt-panel-title">Upcoming blocks</span>
+          <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
+        </div>
+        <div class="pt-ub-body" id="ub-body"></div>
+      </div>
+
     </div>
 
-    <!-- upcoming blocks / mempool / map: later steps -->
+    <!-- mempool / map: later steps -->
   </div>`;
 
 export function mountNow(canvas) {
@@ -115,10 +110,15 @@ export function mountNow(canvas) {
 export async function updateNow(src, snap) {
   renderHero(snap);
   renderBlockProduction(snap.blockProduction);
-  const pulse = await src.getChainPulse();
+  const [pulse, upcoming] = await Promise.all([
+    src.getChainPulse(),
+    src.getUpcomingBlocks(),
+  ]);
   renderChainPulse(pulse);
+  renderUpcomingBlocks(upcoming);
 }
 
 export function unmountNow() {
   stopChainPulse();
+  stopUpcomingBlocks();
 }

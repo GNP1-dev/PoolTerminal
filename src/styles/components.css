@@ -314,3 +314,306 @@
   border-radius: 3px;
 }
 .pt-mp-body::-webkit-scrollbar-thumb:hover { background: var(--pt-text-disabled); }
+
+/* ---- Relay map (mini placeholder) ---- */
+.pt-rm-body {
+  padding: 12px;
+  background: var(--pt-bg-strip);
+}
+.pt-rm-svg {
+  width: 100%;
+  height: 180px;
+  display: block;
+}
+.pt-rm-svg circle {
+  cursor: help;
+}
+
+/* ---- NOW view height management (fit window, no overall scroll) ---- */
+.pt-canvas {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.pt-now {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(120px, 1fr) auto;
+  gap: var(--pt-gap);
+}
+.pt-panel-flex {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.pt-panel-flex .pt-ub-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+/* Tighter heights so the elastic upcoming-blocks row has room */
+.pt-cp-heartbeat { height: 40px; }
+.pt-chainpulse-body { padding: 10px 12px; }
+.pt-cp-top { margin-bottom: 10px; }
+.pt-cp-density-label { margin-top: 10px; }
+.pt-rm-svg { height: 100px; }
+.pt-rm-body { padding: 8px; }
+.pt-mp-body { max-height: 120px; }
+
+/* ---- Chain pulse: heartbeat tabs + 6-cell density ---- */
+.pt-cp-hb-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.pt-cp-tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+.pt-cp-tab {
+  font-family: var(--pt-font-mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border: 0.5px solid var(--pt-border);
+  border-radius: 3px;
+  color: var(--pt-text-muted);
+  cursor: pointer;
+  user-select: none;
+  line-height: 1.4;
+}
+.pt-cp-tab:hover {
+  color: var(--pt-text-secondary);
+  border-color: var(--pt-text-disabled);
+}
+.pt-cp-tab-active {
+  color: var(--pt-accent-blue);
+  border-color: var(--pt-accent-blue);
+  background: rgba(74, 143, 231, 0.08);
+}
+.pt-cp-density { grid-template-columns: repeat(6, 1fr); }
+
+/* ---- NOW bottom row: Upcoming + Relay map side-by-side ---- */
+.pt-now { grid-template-rows: auto auto auto minmax(220px, 1fr); }
+.pt-now-bottom {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--pt-gap);
+  min-height: 0;
+}
+
+/* Relay map fills its half-panel naturally at 2:1 */
+.pt-rm-body {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pt-rm-svg {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+/* Upcoming blocks: progress-bar column + tighter grid */
+.pt-ub-row { grid-template-columns: 36px 1fr 100px 64px; gap: 12px; }
+.pt-ub-bar-track {
+  width: 100%;
+  height: 6px;
+  background: var(--pt-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.pt-ub-bar {
+  height: 100%;
+  background: var(--pt-accent-blue);
+  border-radius: 3px;
+}
+.pt-ub-row-next .pt-ub-bar { background: var(--pt-accent-blue-bright); }
+
+/* ---- Mempool: stable height regardless of tx count ---- */
+.pt-mp-body {
+  height: 120px;
+  max-height: 120px;
+  position: relative;
+}
+.pt-mp-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0;
+  margin: 0;
+}
+
+/* ---- Mempool capacity gauge (0..300% scale, tick markers at 100% and 200%) ---- */
+.pt-mp-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+}
+.pt-mp-gauge-track {
+  position: relative;
+  display: inline-block;
+  width: 80px;
+  height: 8px;
+  background: var(--pt-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.pt-mp-gauge-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease, background 0.3s ease;
+}
+.pt-mp-gauge-track::before,
+.pt-mp-gauge-track::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--pt-bg-panel);
+  z-index: 2;
+}
+.pt-mp-gauge-track::before { left: 33.33%; }
+.pt-mp-gauge-track::after  { left: 66.66%; }
+.pt-mp-gauge-pct {
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data);
+  font-weight: 500;
+  min-width: 38px;
+  text-align: right;
+  transition: color 0.3s ease;
+}
+
+/* ---- Connect modal ---- */
+.pt-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.pt-modal {
+  background: var(--pt-bg-panel);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius);
+  width: 520px;
+  max-width: 95vw;
+  max-height: 95vh;
+  overflow: auto;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.pt-modal-header {
+  padding: 14px 18px;
+  border-bottom: var(--pt-border-line);
+  background: var(--pt-bg-strip);
+}
+.pt-modal-title {
+  font-family: var(--pt-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--pt-text-primary);
+}
+.pt-modal-sub {
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  color: var(--pt-text-muted);
+  margin-top: 3px;
+}
+.pt-modal-body {
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pt-modal-actions {
+  padding: 12px 18px;
+  border-top: var(--pt-border-line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: var(--pt-bg-strip);
+}
+.pt-modal-error {
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  color: var(--pt-status-bad);
+  background: rgba(220, 76, 70, 0.08);
+  border: 1px solid rgba(220, 76, 70, 0.3);
+  border-radius: var(--pt-radius-sm);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+.pt-modal-status {
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  color: var(--pt-accent-blue);
+}
+
+/* Form fields */
+.pt-field-row { display: flex; gap: 10px; }
+.pt-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.pt-field label {
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-label);
+  letter-spacing: var(--pt-tracking-label);
+  text-transform: uppercase;
+  color: var(--pt-text-muted);
+}
+.pt-field input,
+.pt-field select {
+  background: var(--pt-bg-base);
+  border: var(--pt-border-line);
+  border-radius: var(--pt-radius-sm);
+  color: var(--pt-text-primary);
+  font-family: var(--pt-font-mono);
+  font-size: var(--pt-text-data);
+  padding: 7px 9px;
+  outline: none;
+}
+.pt-field input:focus,
+.pt-field select:focus { border-color: var(--pt-accent-blue); }
+.pt-field-hint {
+  font-family: var(--pt-font-sans);
+  font-size: 10px;
+  color: var(--pt-text-muted);
+  font-style: italic;
+}
+
+/* Buttons */
+.pt-btn {
+  font-family: var(--pt-font-sans);
+  font-size: var(--pt-text-data);
+  padding: 7px 14px;
+  border-radius: var(--pt-radius-sm);
+  cursor: pointer;
+  border: var(--pt-border-line);
+  color: var(--pt-text-primary);
+  background: var(--pt-bg-base);
+}
+.pt-btn:hover { border-color: var(--pt-text-disabled); }
+.pt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pt-btn-primary {
+  background: var(--pt-accent-blue);
+  border-color: var(--pt-accent-blue);
+  color: white;
+}
+.pt-btn-primary:hover:not(:disabled) {
+  background: var(--pt-accent-blue-bright);
+  border-color: var(--pt-accent-blue-bright);
+}
+.pt-btn-secondary { /* default base style is fine */ }

@@ -1,15 +1,26 @@
 /**
  * PoolTerminal — NOW view.
- * Mounts the NOW dashboard and updates it each poll.
- * Panels: hero row, chain pulse, block production, mempool, upcoming blocks.
- * Layout: hero → chain pulse → (block production | mempool) → upcoming blocks.
+ * Layout: hero / chain pulse / (BP | Mempool) / (Upcoming | Relay map elastic row).
+ *
+ * Exports split for two-tier polling:
+ *   updateNowFast(snap)     — every fast tick (~1s). Hero + BP + chain pulse
+ *                              header status. No SSH I/O.
+ *   bootstrapNow(src)        — one-time at startup, in background. Pulls
+ *                              cncli history + initial mempool via SSH.
+ *   refreshMempool(src)      — every ~5s. Mempool gauge refresh via SSH.
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
-import { renderChainPulse, stopChainPulse } from '../ui/chain-pulse.js';
+import {
+  renderChainPulse,
+  initChainPulse,
+  setChainPulseStatus,
+  stopChainPulse,
+} from '../ui/chain-pulse.js';
 import { renderBlockProduction, resetBlockProduction } from '../ui/block-production.js';
 import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.js';
 import { renderMempool } from '../ui/mempool.js';
+import { renderRelayMap } from '../ui/relay-map.js';
 
 const NOW_HTML = `
   <div class="pt-now">
@@ -58,23 +69,31 @@ const NOW_HTML = `
           </div>
         </div>
         <div class="pt-cp-hb-label">
-          <span>HEARTBEAT · last 5 min</span>
-          <span class="pt-accent" id="cp-blockcount">—</span>
+          <span>HEARTBEAT</span>
+          <span class="pt-cp-hb-right">
+            <span class="pt-cp-tabs" id="cp-tabs">
+              <span class="pt-cp-tab" data-window="60">1m</span>
+              <span class="pt-cp-tab" data-window="300">5m</span>
+              <span class="pt-cp-tab" data-window="900">15m</span>
+              <span class="pt-cp-tab" data-window="3600">1h</span>
+            </span>
+            <span class="pt-accent" id="cp-blockcount">—</span>
+          </span>
         </div>
         <svg class="pt-cp-heartbeat" id="cp-heartbeat" viewBox="0 0 600 56" preserveAspectRatio="none"></svg>
         <div class="pt-cp-density-label">DENSITY · blocks ÷ slots</div>
         <div class="pt-cp-density">
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1m</div><div class="pt-cp-dval" id="cp-d-m1">—</div></div>
           <div class="pt-cp-dcell"><div class="pt-cp-dwin">5m</div><div class="pt-cp-dval" id="cp-d-m5">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">20m</div><div class="pt-cp-dval" id="cp-d-m20">—</div></div>
           <div class="pt-cp-dcell"><div class="pt-cp-dwin">1h</div><div class="pt-cp-dval" id="cp-d-h1">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">24h</div><div class="pt-cp-dval" id="cp-d-h24">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">7d</div><div class="pt-cp-dval" id="cp-d-d7">—</div></div>
+          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1d</div><div class="pt-cp-dval" id="cp-d-d1">—</div></div>
           <div class="pt-cp-dcell"><div class="pt-cp-dwin">epoch</div><div class="pt-cp-dval" id="cp-d-epoch">—</div></div>
         </div>
       </div>
     </div>
 
     <div class="pt-now-2col">
-
       <div class="pt-panel">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Block production</span>
@@ -93,40 +112,65 @@ const NOW_HTML = `
       <div class="pt-panel">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Mempool</span>
-          <span class="pt-panel-meta"><span id="mp-count" class="pt-muted">—</span></span>
+          <span class="pt-panel-meta"><span id="mp-count">—</span></span>
         </div>
         <div class="pt-mp-body" id="mp-body"></div>
       </div>
-
     </div>
 
-    <div class="pt-panel">
-      <div class="pt-panel-header">
-        <span class="pt-panel-title">Upcoming blocks</span>
-        <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
+    <div class="pt-now-bottom">
+      <div class="pt-panel pt-panel-flex">
+        <div class="pt-panel-header">
+          <span class="pt-panel-title">Upcoming blocks</span>
+          <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
+        </div>
+        <div class="pt-ub-body" id="ub-body"></div>
       </div>
-      <div class="pt-ub-body" id="ub-body"></div>
+
+      <div class="pt-panel pt-panel-flex">
+        <div class="pt-panel-header">
+          <span class="pt-panel-title">Relay map</span>
+          <span class="pt-panel-meta"><span id="rm-meta" class="pt-muted">—</span></span>
+        </div>
+        <div class="pt-rm-body">
+          <svg class="pt-rm-svg" id="rm-svg" viewBox="0 0 720 360" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
     </div>
 
-    <!-- map: later step -->
   </div>`;
 
 export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
   resetBlockProduction();
+  initChainPulse();
+  renderUpcomingBlocks([]);
+  renderRelayMap();
 }
 
-export async function updateNow(src, snap) {
+// Called every fast tick (~1s) — no SSH I/O, all derived from snap.
+export function updateNowFast(snap) {
   renderHero(snap);
   renderBlockProduction(snap.blockProduction);
-  const [pulse, upcoming, mp] = await Promise.all([
+  setChainPulseStatus(snap.atTip, snap.tipBlock);
+}
+
+// One-time bootstrap on connect — pulls cncli history + initial mempool.
+// Takes ~30s due to the cncli query but runs in background; fast loop
+// continues polling tip the whole time.
+export async function bootstrapNow(src) {
+  const [pulse, mp] = await Promise.all([
     src.getChainPulse(),
-    src.getUpcomingBlocks(),
     src.getMempool(),
   ]);
   renderChainPulse(pulse);
-  renderUpcomingBlocks(upcoming);
+  renderMempool(mp);
+}
+
+// Called periodically (~5s) — just the mempool, fast (~110ms).
+export async function refreshMempool(src) {
+  const mp = await src.getMempool();
   renderMempool(mp);
 }
 

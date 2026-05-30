@@ -2,14 +2,9 @@
  * PoolTerminal — Data Source Contract
  * ===================================
  * Both LiveDataSource (live.js) and DemoDataSource (demo.js) implement this
- * interface. Views ONLY talk to the router (index.js) — never to live or demo
- * directly. The router decides which backend is active (LIVE / DEMO).
+ * interface. Views ONLY talk to the router (index.js).
  *
- * All methods are async (return Promises) so the live backend can do SSH /
- * Koios / cache I/O behind the same interface the demo backend satisfies
- * instantly.
- *
- * Shapes (documented as JSDoc typedefs — this module emits no runtime code):
+ * Shapes (JSDoc typedefs — no runtime code):
  *
  * @typedef {Object} PoolIdentity
  * @property {string} ticker
@@ -50,11 +45,16 @@
  * @property {number} slot
  * @property {number} etaSeconds
  *
+ * Density windows (blocks ÷ slots over each window — ~5% healthy on mainnet):
+ *   short windows (m1, m5, m20) are useful — noisy enough to actually move
+ *   long windows (h1, d1, epoch) almost always sit on 5% — kept for reference
+ *
  * @typedef {Object} ChainDensity
+ * @property {number} m1
  * @property {number} m5
+ * @property {number} m20
  * @property {number} h1
- * @property {number} h24
- * @property {number} d7
+ * @property {number} d1
  * @property {number} epoch
  *
  * @typedef {Object} WindowStats
@@ -66,8 +66,10 @@
  * @property {number}   sinceLastBlockSeconds   informational — NEVER colour-coded red
  * @property {boolean}  atTip                   the actual health signal
  * @property {number}   tipBlock
- * @property {number[]} recentBlockTimes        unix ts of recent arrivals (heartbeat)
- * @property {WindowStats}  windowStats
+ * @property {number[]} recentBlockTimes        unix ts of arrivals over last ~1 hour
+ *                                              (heartbeat tabs select a sub-window)
+ * @property {WindowStats}  windowStats         reference; the renderer recomputes
+ *                                              stats from the selected heartbeat window
  * @property {ChainDensity} density
  *
  * @typedef {Object} MempoolTx
@@ -85,10 +87,6 @@
  *   getUpcomingBlocks() -> Promise<UpcomingBlock[]>
  *   getChainPulse()     -> Promise<ChainPulse>
  *   getMempool()        -> Promise<Mempool>
- *
- * Future phases extend this contract with HISTORY / DELEGATORS / NODE HEALTH /
- * REWARDS / GOVERNANCE / MAP methods. Adding a method means implementing it in
- * BOTH demo.js and live.js.
  */
 
 export {}; // documentation-only module

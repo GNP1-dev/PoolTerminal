@@ -1,17 +1,45 @@
 /**
  * PoolTerminal — entry.
  *
- * Phase 1: always-on poll loop drives the tickertape (global chrome) and, when
- * the NOW tab is active, the NOW view's panels (hero row + chain pulse).
+ * Polling architecture (gLiveView-style):
+ *   - Fast loop (1s)  : cardano-cli query tip via SSH (~50ms, local socket).
+ *                       Drives tickertape, hero cards, block detection.
+ *                       Every 5s also refreshes mempool (~110ms).
+ *   - Bootstrap (1x)  : cncli sqlite + initial mempool, runs ONCE in the
+ *                       background after first connect. Populates the
+ *                       heartbeat with last hour of historical blocks.
+ *                       Never repeated.
+ *
+ * After bootstrap, the heartbeat is fed entirely by real-time observations
+ * from the fast loop (tip.block increments → appendTick). cncli is never
+ * queried again unless the user reconnects.
+ *
+ * BP load steady-state: ~1 tip query/sec + 1 mempool/5s ≈ 1.2 SSH cmd/sec.
+ * Comparable to gLiveView; both use the local Unix socket for tip.
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale } from './ui/tickertape.js';
-import { mountNow, updateNow, unmountNow } from './views/now.js';
+import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
+import {
+  mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
+} from './views/now.js';
+import { showConnectModal } from './views/connect.js';
+import { getSession } from './data/session.js';
 
-const POLL_INTERVAL_MS = 1000;
-let pollTimer = null;
-let lastError = null;
+const FAST_INTERVAL_MS = 1000;
+const MEMPOOL_REFRESH_EVERY_S = 5;
+
+let fastTimer = null;
+let fastPolling = false;
+let lastFastError = null;
+let fastCount = 0;
+let latestSnap = null;
+let lastSeenBlock = null;
+let lastPollTime = null;
+let lastMempoolRefreshTime = 0;
+let bootstrapStarted = false;
+
 let activeView = 'now';
 let canvasEl = null;
 
@@ -33,32 +61,105 @@ function mountView(view) {
   }
 }
 
-async function pollTick() {
+async function bootstrap() {
+  if (bootstrapStarted) return;
+  bootstrapStarted = true;
+  try {
+    const src = dataSource();
+    console.log('[bootstrap] cncli + mempool (background, ~30s)');
+    const t0 = performance.now();
+    await bootstrapNow(src);
+    console.log(`[bootstrap] OK in ${Math.round(performance.now() - t0)}ms`);
+  } catch (e) {
+    console.warn('[bootstrap] FAIL:', e.message);
+  }
+}
+
+async function fastPollTick() {
+  if (fastPolling) return;
+  fastPolling = true;
+  fastCount++;
+  const ctx = `[fast #${fastCount}]`;
+  const nowSec = Math.floor(Date.now() / 1000);
   try {
     const src = dataSource();
     const snap = await src.getNowSnapshot();
     renderTickertape(snap);
     markTickertapeStale(false);
-    lastError = null;
-    if (activeView === 'now') await updateNow(src, snap);
+    const firstSnap = !latestSnap;
+    latestSnap = snap;
+    lastFastError = null;
+
+    if (activeView === 'now') {
+      updateNowFast(snap);
+    }
+
+    // Detect new blocks via tip.block increment. Spread synthetic ticks across
+    // the interval since the previous fast poll so they render at distinct x
+    // positions instead of stacking at the right edge.
+    if (snap.tipBlock != null) {
+      if (lastSeenBlock != null && snap.tipBlock > lastSeenBlock) {
+        const delta = snap.tipBlock - lastSeenBlock;
+        const T0 = lastPollTime != null ? lastPollTime : nowSec;
+        const T1 = nowSec;
+        const span = Math.max(0, T1 - T0);
+        console.log(`${ctx} block ${lastSeenBlock} → ${snap.tipBlock} (+${delta}, span=${span}s)`);
+        for (let i = 1; i <= delta; i++) {
+          const t = span > 0 ? T0 + Math.round(span * i / delta) : nowSec;
+          appendChainPulseTick(t);
+        }
+      }
+      lastSeenBlock = snap.tipBlock;
+    }
+    lastPollTime = nowSec;
+
+    // Mempool refresh every Nth second (background, doesn't gate this tick).
+    if (activeView === 'now' && nowSec - lastMempoolRefreshTime >= MEMPOOL_REFRESH_EVERY_S) {
+      lastMempoolRefreshTime = nowSec;
+      refreshMempool(dataSource()).catch((e) =>
+        console.warn('[mempool refresh] FAIL:', e.message)
+      );
+    }
+
+    // Kick off one-time bootstrap after first snap (background task).
+    if (firstSnap) bootstrap();
   } catch (e) {
-    if (e.message !== lastError) {
-      console.warn('[poll]', e.message);
-      lastError = e.message;
+    if (e.message !== lastFastError) {
+      console.warn(`${ctx} FAIL:`, e.message);
+      lastFastError = e.message;
     }
     markTickertapeStale(true);
+  } finally {
+    fastPolling = false;
   }
 }
 
 function startPolling() {
-  if (pollTimer) return;
-  pollTick();
-  pollTimer = setInterval(pollTick, POLL_INTERVAL_MS);
+  if (fastTimer) return;
+  fastPollTick();
+  fastTimer = setInterval(fastPollTick, FAST_INTERVAL_MS);
+}
+
+function paintMode() {
+  const modeBadge = document.getElementById('ttape-mode');
+  const isDemo = getMode() === 'demo';
+  modeBadge.classList.toggle('pt-mode-demo', isDemo);
+  if (isDemo) {
+    modeBadge.textContent = '● DEMO';
+  } else {
+    const s = getSession();
+    modeBadge.textContent = `● LIVE · ${s.host || '—'}`;
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  console.log('PoolTerminal — Phase 1: NOW (hero + chain pulse)');
+  console.log('PoolTerminal — Phase 3 (1s fast loop, cncli bootstrap-only)');
   canvasEl = document.getElementById('pt-canvas');
+
+  window.__pt_ssh = async (cmd) => {
+    const r = await window.__TAURI__.core.invoke('ssh_run', { command: cmd });
+    return typeof r === 'string' ? r : r.stdout;
+  };
 
   const tabs = document.querySelectorAll('.pt-tab');
   tabs.forEach((tab) => {
@@ -66,25 +167,27 @@ window.addEventListener('DOMContentLoaded', () => {
       tabs.forEach((t) => t.classList.remove('pt-tab-active'));
       tab.classList.add('pt-tab-active');
       mountView(tab.dataset.view);
-      if (activeView === 'now') pollTick();
     });
   });
 
   const modeBadge = document.getElementById('ttape-mode');
-  function paintMode() {
-    const isDemo = getMode() === 'demo';
-    modeBadge.classList.toggle('pt-mode-demo', isDemo);
-    modeBadge.textContent = isDemo ? '● DEMO' : '● LIVE';
-  }
   modeBadge.addEventListener('click', () => {
-    setMode(getMode() === 'demo' ? 'live' : 'demo');
-    paintMode();
-    lastError = null;
-    pollTick();
+    showConnectModal(() => {
+      paintMode();
+      lastFastError = null;
+      lastSeenBlock = null;
+      lastPollTime = null;
+      bootstrapStarted = false;
+      fastPollTick();
+    });
   });
 
   setMode('demo');
   paintMode();
   mountView('now');
-  startPolling();
+
+  showConnectModal((result) => {
+    paintMode();
+    startPolling();
+  });
 });

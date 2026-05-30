@@ -1,20 +1,25 @@
 /**
  * PoolTerminal — Chain Pulse panel.
  *
- * Strip-chart ECG mode (10s / 30s / 1m / 5m):
- *   • Baseline = POOL of <line> elements (no filter — filter on a line with
- *     zero-height bbox doesn't render).
- *   • Each frame, all visible complex screen ranges are sorted+merged and
- *     baseline segments fill the gaps between them.
- *   • Complex created on block arrival; stroke-dashoffset animated to 0
- *     over 500ms (the pen tracing). T wave is two line segments (sharp
- *     triangular peak).
- *   • Path includes a small flat tail past xR (PATH_TAIL viewBox units).
- *     The tail sits at BL and overlaps the resumed baseline — a forced
- *     visual handshake so the trace and baseline connect as a continuous
- *     red line at BL even with sub-pixel rendering quirks.
+ * Strip-chart ECG mode:
+ *   • 10s / 30s / 1m views: full QRS-T complex (P wave, PR, Q dip, R spike,
+ *     S dip, ST flat, small gentle T wave via Bezier — T wave is half as
+ *     long and half as high as the original).
+ *   • 5m view: QRS-only complex (Q dip, R spike, S dip, recovery), centered
+ *     in a 20-unit-wide complex. The QRS shape itself is identical to the
+ *     QRS section of the 1m view; the P wave and T wave are stripped.
+ *   • Tick mode for 15m / 1h: vertical blue lines (unchanged).
  *
- * Tick mode (15m / 1h): unchanged blue lines.
+ * History preservation: rebuildHeartbeat plants historical complexes from
+ * lastData.recentBlockTimes (visible subset) on every rebuild — init, tab
+ * switch, bootstrap. Switching tabs no longer wipes the visualization.
+ *
+ * Timescale: horizontal ruler at the bottom of every view, ticks + labels
+ * (now, -10s, -20s, …) sized to the current window.
+ *
+ * Path tail (PATH_TAIL viewBox units past xR) at baseline level overlaps
+ * the resumed baseline — forced visual handshake to bridge any perceived
+ * gap between trace end and baseline start.
  */
 
 import { commas, duration } from './format.js';
@@ -28,16 +33,20 @@ const R_HEIGHT   = 55;
 const Q_DEPTH    = 5;
 const S_DEPTH    = 18;
 const P_HEIGHT   = 8;
-const T_HEIGHT   = 24;
+const T_HEIGHT   = 7;      // half of previous (14)
 const ECG_STROKE = '#ff3344';
 const DRAW_DURATION_S = 0.5;
-const PATH_TAIL = 6;   // viewBox units the path extends past xR
+const PATH_TAIL = 6;
 
 const TICK_BASELINE_Y  = 92;
 const TICK_LATEST_TOP  = 22;
 const TICK_NORMAL_TOP  = 40;
 const TICK_NOWMARK_TOP = 8;
-const TICK_NOWMARK_BOT = 112;
+const TICK_NOWMARK_BOT = 96;
+
+const TIMESCALE_Y_TOP = 102;
+const TIMESCALE_Y_BOT = 105;
+const TIMESCALE_LABEL_Y = 115;
 
 let ticks = [];
 let baselineSegments = [];
@@ -55,10 +64,10 @@ function byId(id) { return document.getElementById(id); }
 function setText(id, v) { const el = byId(id); if (el) el.textContent = v; }
 
 function getComplexWidth() {
-  if (currentWindow <= 10) return 80;
-  if (currentWindow <= 30) return 65;
-  if (currentWindow <= 60) return 50;
-  return 35;
+  if (currentWindow <= 10) return 70;
+  if (currentWindow <= 30) return 55;
+  if (currentWindow <= 60) return 42;
+  return 20;    // 5m: QRS-only complex, narrow with QRS centred
 }
 
 function makeLine(y1, y2, color, width) {
@@ -142,16 +151,21 @@ function recomputeDensity() {
 function recomputeStats() {
   if (!lastData) return;
   const now = Date.now() / 1000;
-  const times = lastData.recentBlockTimes.filter((t) => now - t <= 3600);
+
+  // AVG/MAX/MIN over the last hour for stable sample size
+  const longTimes = lastData.recentBlockTimes.filter((t) => now - t <= 3600);
   const gaps = [];
-  for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+  for (let i = 1; i < longTimes.length; i++) gaps.push(longTimes[i] - longTimes[i - 1]);
   const avg = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
   const max = gaps.length ? Math.max(...gaps) : 0;
   const min = gaps.length ? Math.min(...gaps) : 0;
   setText('cp-avg', avg + 's');
   setText('cp-max', max + 's');
   setText('cp-min', min + 's');
-  setText('cp-blockcount', times.length + ' blocks');
+
+  // Block count reflects currently selected interval
+  const windowTimes = lastData.recentBlockTimes.filter((t) => now - t <= currentWindow);
+  setText('cp-blockcount', windowTimes.length + ' blocks');
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -162,6 +176,22 @@ function buildComplexPath(cw) {
   const BL = BASELINE_Y;
   const xat = (p) => -cw * (1 - p);
 
+  // 5m view: QRS-only complex with QRS centred at p=0.50.
+  // Percentages chosen so PR_end→Q→R→S→recovery spans exactly 6 viewBox
+  // units, identical absolute QRS width to the 1m view.
+  if (currentWindow >= 300) {
+    let d = `M ${xat(0).toFixed(1)},${BL}`;
+    d += ` L ${xat(0.35).toFixed(1)},${BL}`;                       // lead-in flat
+    d += ` L ${xat(0.425).toFixed(1)},${BL + Q_DEPTH}`;            // Q
+    d += ` L ${xat(0.50).toFixed(1)},${BL - R_HEIGHT}`;            // R
+    d += ` L ${xat(0.575).toFixed(1)},${BL + S_DEPTH}`;            // S
+    d += ` L ${xat(0.65).toFixed(1)},${BL}`;                       // recovery
+    d += ` L ${xat(1.00).toFixed(1)},${BL}`;                       // trailing flat
+    d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;                       // tail past xR
+    return d;
+  }
+
+  // 10s / 30s / 1m: full QRS-T complex with smaller T wave.
   let d = `M ${xat(0).toFixed(1)},${BL}`;
   // P wave (Bezier)
   d += ` Q ${xat(0.08).toFixed(1)},${(BL - 2 * P_HEIGHT).toFixed(1)} ${xat(0.16).toFixed(1)},${BL}`;
@@ -175,20 +205,18 @@ function buildComplexPath(cw) {
   d += ` L ${xat(0.33).toFixed(1)},${BL + S_DEPTH}`;
   // Back to BL
   d += ` L ${xat(0.36).toFixed(1)},${BL}`;
-  // ST flat
-  d += ` L ${xat(0.50).toFixed(1)},${BL}`;
-  // T wave (sharp triangular peak via line segments)
-  d += ` L ${xat(0.78).toFixed(1)},${(BL - T_HEIGHT).toFixed(1)}`;
+  // ST flat (brief — T wave now starts right after QRS recovery)
+  d += ` L ${xat(0.42).toFixed(1)},${BL}`;
+  // T wave (Bezier, peak control at 0.60, ends at 0.78 — close to QRS)
+  d += ` Q ${xat(0.60).toFixed(1)},${(BL - 2 * T_HEIGHT).toFixed(1)} ${xat(0.78).toFixed(1)},${BL}`;
+  // Trailing flat
   d += ` L ${xat(1.00).toFixed(1)},${BL}`;
-  // Flat tail past xR — overlaps the resumed baseline for forced handshake.
+  // Tail past xR
   d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;
   return d;
 }
 
-function plantComplex(eventTime) {
-  if (!complexGroup) return;
-
-  const cw = getComplexWidth();
+function buildComplexElement(cw) {
   const el = document.createElementNS(SVGNS, 'path');
   el.setAttribute('d', buildComplexPath(cw));
   el.setAttribute('fill', 'none');
@@ -198,8 +226,15 @@ function plantComplex(eventTime) {
   el.setAttribute('stroke-linejoin', 'round');
   el.setAttribute('vector-effect', 'non-scaling-stroke');
   el.setAttribute('filter', 'url(#ecg-glow)');
-  el.setAttribute('transform', `translate(${W}, 0)`);
+  return el;
+}
 
+function plantComplex(eventTime) {
+  if (!complexGroup) return;
+
+  const cw = getComplexWidth();
+  const el = buildComplexElement(cw);
+  el.setAttribute('transform', `translate(${W}, 0)`);
   complexGroup.appendChild(el);
 
   const len = el.getTotalLength();
@@ -211,7 +246,6 @@ function plantComplex(eventTime) {
   el.style.transition = `stroke-dashoffset ${DRAW_DURATION_S}s linear`;
   el.style.strokeDashoffset = '0';
 
-  // Clear dasharray after the reveal so no remnant clips the tail.
   setTimeout(() => {
     el.style.transition = 'none';
     el.style.strokeDasharray = 'none';
@@ -220,6 +254,21 @@ function plantComplex(eventTime) {
 
   activeComplexes.push({ el, eventTime, complexWidth: cw });
   updateBaseline();
+}
+
+function plantHistoricalComplex(eventTime) {
+  if (!complexGroup) return;
+
+  const cw = getComplexWidth();
+  const el = buildComplexElement(cw);
+
+  const now = Date.now() / 1000;
+  const pps = W / currentWindow;
+  const x = W - (now - eventTime) * pps;
+  el.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
+  complexGroup.appendChild(el);
+
+  activeComplexes.push({ el, eventTime, complexWidth: cw });
 }
 
 function setupECGMode(svg) {
@@ -245,9 +294,6 @@ function setupECGMode(svg) {
   defs.appendChild(filter);
   svg.appendChild(defs);
 
-  // Baseline — plain <line>, no filter (lines have zero-height bbox so
-  // percentage-based filter regions render as zero-area and the line
-  // disappears).
   baselineSegments = [];
   const seg = makeBaselineLine();
   seg.setAttribute('x1', 0);
@@ -361,9 +407,10 @@ function setupTickMode(svg, allTimes) {
     const ln = makeLine(
       latest ? TICK_LATEST_TOP : TICK_NORMAL_TOP,
       TICK_BASELINE_Y,
-      latest ? 'var(--pt-accent-blue-bright)' : 'var(--pt-accent-blue)',
+      ECG_STROKE,
       latest ? 2 : 1
     );
+    if (!latest) ln.style.opacity = '0.7';
     svg.appendChild(ln);
     ticks.push({ el: ln, time: t });
   });
@@ -389,6 +436,67 @@ function animateTicks() {
 }
 
 // ════════════════════════════════════════════════════════════════════════
+// TIMESCALE
+// ════════════════════════════════════════════════════════════════════════
+
+function getTimescaleInterval() {
+  switch (currentWindow) {
+    case 10:   return 2;
+    case 30:   return 5;
+    case 60:   return 10;
+    case 300:  return 60;
+    case 900:  return 180;
+    case 3600: return 600;
+    default:   return Math.max(1, Math.round(currentWindow / 6));
+  }
+}
+
+function formatTimeAgoLabel(secs) {
+  if (secs === 0) return 'now';
+  if (secs < 60) return `-${secs}s`;
+  if (secs < 3600) return `-${Math.floor(secs / 60)}m`;
+  return `-${Math.floor(secs / 3600)}h`;
+}
+
+function setupTimescale(svg) {
+  const tsGroup = document.createElementNS(SVGNS, 'g');
+  tsGroup.setAttribute('id', 'cp-timescale');
+
+  const interval = getTimescaleInterval();
+  for (let timeAgo = 0; timeAgo <= currentWindow; timeAgo += interval) {
+    const x = W * (1 - timeAgo / currentWindow);
+
+    const mark = document.createElementNS(SVGNS, 'line');
+    mark.setAttribute('x1', x.toFixed(1));
+    mark.setAttribute('y1', TIMESCALE_Y_TOP);
+    mark.setAttribute('x2', x.toFixed(1));
+    mark.setAttribute('y2', TIMESCALE_Y_BOT);
+    mark.setAttribute('stroke-width', '0.5');
+    mark.setAttribute('vector-effect', 'non-scaling-stroke');
+    mark.style.stroke = 'var(--pt-muted, #6a6a6a)';
+    mark.style.opacity = '0.7';
+    tsGroup.appendChild(mark);
+
+    let anchor = 'middle';
+    if (timeAgo === 0) anchor = 'end';
+    else if (timeAgo === currentWindow) anchor = 'start';
+
+    const text = document.createElementNS(SVGNS, 'text');
+    text.setAttribute('x', x.toFixed(1));
+    text.setAttribute('y', TIMESCALE_LABEL_Y);
+    text.setAttribute('text-anchor', anchor);
+    text.setAttribute('font-size', '8');
+    text.setAttribute('font-family', 'ui-monospace, monospace');
+    text.style.fill = 'var(--pt-muted, #6a6a6a)';
+    text.style.opacity = '0.85';
+    text.textContent = formatTimeAgoLabel(timeAgo);
+    tsGroup.appendChild(text);
+  }
+
+  svg.appendChild(tsGroup);
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // MODE DISPATCH
 // ════════════════════════════════════════════════════════════════════════
 
@@ -403,9 +511,20 @@ function rebuildHeartbeat(allTimes) {
 
   if (currentWindow <= 300) {
     setupECGMode(svg);
+    const now = Date.now() / 1000;
+    const visible = (allTimes || [])
+      .filter((t) => {
+        const dt = now - t;
+        return dt >= 0 && dt <= currentWindow;
+      })
+      .sort((a, b) => a - b);
+    for (const t of visible) plantHistoricalComplex(t);
+    updateBaseline();
   } else {
-    setupTickMode(svg, allTimes);
+    setupTickMode(svg, allTimes || []);
   }
+
+  setupTimescale(svg);
   recomputeStats();
 }
 
@@ -460,9 +579,10 @@ export function appendTick(timeSec) {
         const prev = ticks[ticks.length - 1];
         prev.el.setAttribute('y1', TICK_NORMAL_TOP);
         prev.el.setAttribute('stroke-width', 1);
-        prev.el.style.stroke = 'var(--pt-accent-blue)';
+        prev.el.style.stroke = ECG_STROKE;
+        prev.el.style.opacity = '0.7';
       }
-      const ln = makeLine(TICK_LATEST_TOP, TICK_BASELINE_Y, 'var(--pt-accent-blue-bright)', 2);
+      const ln = makeLine(TICK_LATEST_TOP, TICK_BASELINE_Y, ECG_STROKE, 2);
       ln.setAttribute('x1', W);
       ln.setAttribute('x2', W);
       svg.appendChild(ln);

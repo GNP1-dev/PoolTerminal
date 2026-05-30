@@ -1,50 +1,85 @@
 /**
  * PoolTerminal — Chain Pulse panel.
  *
- * Two rendering entry points:
- *   renderChainPulse(pulse)  — one-time bootstrap (cncli historical data).
- *                              Merges in any optimistic ticks already collected.
- *   appendTick(timeSec)      — fast loop on tip-block change. Adds a single
- *                              bright tick for instant feedback (~1s after the
- *                              block lands, matching gLiveView).
+ * Strip-chart ECG mode (10s / 30s / 1m / 5m):
+ *   • Baseline = POOL of <line> elements (no filter — filter on a line with
+ *     zero-height bbox doesn't render).
+ *   • Each frame, all visible complex screen ranges are sorted+merged and
+ *     baseline segments fill the gaps between them.
+ *   • Complex created on block arrival; stroke-dashoffset animated to 0
+ *     over 500ms (the pen tracing). T wave is two line segments (sharp
+ *     triangular peak).
+ *   • Path includes a small flat tail past xR (PATH_TAIL viewBox units).
+ *     The tail sits at BL and overlaps the resumed baseline — a forced
+ *     visual handshake so the trace and baseline connect as a continuous
+ *     red line at BL even with sub-pixel rendering quirks.
  *
- * Density is computed client-side from the current tick set, recomputed on
- * every appendTick and periodically in the rAF loop so windows drift correctly
- * as blocks age out.
- *
- * Module-level state is preserved across mount/unmount (tab switches) so
- * accumulated history doesn't reset. Only the SVG DOM and tick refs need
- * rebuilding on remount.
+ * Tick mode (15m / 1h): unchanged blue lines.
  */
 
 import { commas, duration } from './format.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const W = 600;
-const H = 56;
+const H = 120;
+
+const BASELINE_Y = 70;
+const R_HEIGHT   = 55;
+const Q_DEPTH    = 5;
+const S_DEPTH    = 18;
+const P_HEIGHT   = 8;
+const T_HEIGHT   = 24;
+const ECG_STROKE = '#ff3344';
+const DRAW_DURATION_S = 0.5;
+const PATH_TAIL = 6;   // viewBox units the path extends past xR
+
+const TICK_BASELINE_Y  = 92;
+const TICK_LATEST_TOP  = 22;
+const TICK_NORMAL_TOP  = 40;
+const TICK_NOWMARK_TOP = 8;
+const TICK_NOWMARK_BOT = 112;
 
 let ticks = [];
+let baselineSegments = [];
+let complexGroup = null;
+let activeComplexes = [];
 let rafId = null;
 let lastData = null;
-let currentWindow = 300;
+let currentWindow = 60;
 let optimisticTimes = [];
 let densityFrameCounter = 0;
 
-// Optimistic ticks within this many seconds of any cncli tick (during bootstrap
-// merge) are deduped. Optimistic time uses browser-now; cncli uses slotToUnix.
 const TICK_DEDUP_TOLERANCE_S = 10;
 
 function byId(id) { return document.getElementById(id); }
 function setText(id, v) { const el = byId(id); if (el) el.textContent = v; }
 
-function makeLine(y1, colorVar, width) {
+function getComplexWidth() {
+  if (currentWindow <= 10) return 80;
+  if (currentWindow <= 30) return 65;
+  if (currentWindow <= 60) return 50;
+  return 35;
+}
+
+function makeLine(y1, y2, color, width) {
   const ln = document.createElementNS(SVGNS, 'line');
   ln.setAttribute('y1', y1);
-  ln.setAttribute('y2', 42);
+  ln.setAttribute('y2', y2);
   ln.setAttribute('stroke-width', width);
   ln.setAttribute('vector-effect', 'non-scaling-stroke');
-  ln.style.stroke = colorVar;
+  ln.style.stroke = color;
   return ln;
+}
+
+function makeBaselineLine() {
+  return makeLine(BASELINE_Y, BASELINE_Y, ECG_STROKE, 1.6);
+}
+
+function clearComplexes() {
+  for (const c of activeComplexes) {
+    if (c.el && c.el.parentNode) c.el.parentNode.removeChild(c.el);
+  }
+  activeComplexes = [];
 }
 
 function ensureTabsWired() {
@@ -55,7 +90,8 @@ function ensureTabsWired() {
     if (!tab) return;
     currentWindow = Number(tab.dataset.window);
     paintActiveTab();
-    if (lastData) rebuildTicks(lastData.recentBlockTimes);
+    clearComplexes();
+    if (lastData) rebuildHeartbeat(lastData.recentBlockTimes);
   });
   container._wired = true;
 }
@@ -89,9 +125,7 @@ function recomputeDensity() {
   if (!lastData) return;
   const now = Date.now() / 1000;
   const ageCutoff = now - 3700;
-  // Prune block times older than 1h (out of any window).
   lastData.recentBlockTimes = lastData.recentBlockTimes.filter((t) => t > ageCutoff);
-
   const times = lastData.recentBlockTimes;
   const countWithin = (w) => times.filter((t) => now - t <= w).length;
   lastData.density = {
@@ -108,7 +142,7 @@ function recomputeDensity() {
 function recomputeStats() {
   if (!lastData) return;
   const now = Date.now() / 1000;
-  const times = lastData.recentBlockTimes.filter((t) => now - t <= currentWindow);
+  const times = lastData.recentBlockTimes.filter((t) => now - t <= 3600);
   const gaps = [];
   for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
   const avg = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
@@ -120,10 +154,263 @@ function recomputeStats() {
   setText('cp-blockcount', times.length + ' blocks');
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// ECG SCROLL MODE
+// ════════════════════════════════════════════════════════════════════════
+
+function buildComplexPath(cw) {
+  const BL = BASELINE_Y;
+  const xat = (p) => -cw * (1 - p);
+
+  let d = `M ${xat(0).toFixed(1)},${BL}`;
+  // P wave (Bezier)
+  d += ` Q ${xat(0.08).toFixed(1)},${(BL - 2 * P_HEIGHT).toFixed(1)} ${xat(0.16).toFixed(1)},${BL}`;
+  // PR flat
+  d += ` L ${xat(0.24).toFixed(1)},${BL}`;
+  // Q dip
+  d += ` L ${xat(0.27).toFixed(1)},${BL + Q_DEPTH}`;
+  // R spike
+  d += ` L ${xat(0.30).toFixed(1)},${BL - R_HEIGHT}`;
+  // S dip
+  d += ` L ${xat(0.33).toFixed(1)},${BL + S_DEPTH}`;
+  // Back to BL
+  d += ` L ${xat(0.36).toFixed(1)},${BL}`;
+  // ST flat
+  d += ` L ${xat(0.50).toFixed(1)},${BL}`;
+  // T wave (sharp triangular peak via line segments)
+  d += ` L ${xat(0.78).toFixed(1)},${(BL - T_HEIGHT).toFixed(1)}`;
+  d += ` L ${xat(1.00).toFixed(1)},${BL}`;
+  // Flat tail past xR — overlaps the resumed baseline for forced handshake.
+  d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;
+  return d;
+}
+
+function plantComplex(eventTime) {
+  if (!complexGroup) return;
+
+  const cw = getComplexWidth();
+  const el = document.createElementNS(SVGNS, 'path');
+  el.setAttribute('d', buildComplexPath(cw));
+  el.setAttribute('fill', 'none');
+  el.setAttribute('stroke', ECG_STROKE);
+  el.setAttribute('stroke-width', '1.6');
+  el.setAttribute('stroke-linecap', 'round');
+  el.setAttribute('stroke-linejoin', 'round');
+  el.setAttribute('vector-effect', 'non-scaling-stroke');
+  el.setAttribute('filter', 'url(#ecg-glow)');
+  el.setAttribute('transform', `translate(${W}, 0)`);
+
+  complexGroup.appendChild(el);
+
+  const len = el.getTotalLength();
+  el.style.strokeDasharray = `${len}`;
+  el.style.strokeDashoffset = `${len}`;
+  el.style.transition = 'none';
+  el.getBoundingClientRect();
+
+  el.style.transition = `stroke-dashoffset ${DRAW_DURATION_S}s linear`;
+  el.style.strokeDashoffset = '0';
+
+  // Clear dasharray after the reveal so no remnant clips the tail.
+  setTimeout(() => {
+    el.style.transition = 'none';
+    el.style.strokeDasharray = 'none';
+    el.style.strokeDashoffset = '0';
+  }, DRAW_DURATION_S * 1000 + 60);
+
+  activeComplexes.push({ el, eventTime, complexWidth: cw });
+  updateBaseline();
+}
+
+function setupECGMode(svg) {
+  const defs = document.createElementNS(SVGNS, 'defs');
+  const filter = document.createElementNS(SVGNS, 'filter');
+  filter.setAttribute('id', 'ecg-glow');
+  filter.setAttribute('x', '-20%');
+  filter.setAttribute('y', '-20%');
+  filter.setAttribute('width', '140%');
+  filter.setAttribute('height', '140%');
+  const blur = document.createElementNS(SVGNS, 'feGaussianBlur');
+  blur.setAttribute('stdDeviation', '2.2');
+  blur.setAttribute('result', 'blur');
+  filter.appendChild(blur);
+  const merge = document.createElementNS(SVGNS, 'feMerge');
+  const m1 = document.createElementNS(SVGNS, 'feMergeNode');
+  m1.setAttribute('in', 'blur');
+  merge.appendChild(m1);
+  const m2 = document.createElementNS(SVGNS, 'feMergeNode');
+  m2.setAttribute('in', 'SourceGraphic');
+  merge.appendChild(m2);
+  filter.appendChild(merge);
+  defs.appendChild(filter);
+  svg.appendChild(defs);
+
+  // Baseline — plain <line>, no filter (lines have zero-height bbox so
+  // percentage-based filter regions render as zero-area and the line
+  // disappears).
+  baselineSegments = [];
+  const seg = makeBaselineLine();
+  seg.setAttribute('x1', 0);
+  seg.setAttribute('x2', W);
+  svg.appendChild(seg);
+  baselineSegments.push(seg);
+
+  complexGroup = document.createElementNS(SVGNS, 'g');
+  svg.appendChild(complexGroup);
+}
+
+function updateBaseline() {
+  if (baselineSegments.length === 0) return;
+  const parent = baselineSegments[0].parentNode;
+  if (!parent) return;
+
+  const now = Date.now() / 1000;
+  const pps = W / currentWindow;
+
+  const ranges = [];
+  for (const c of activeComplexes) {
+    const xR = W - (now - c.eventTime) * pps;
+    const xL = xR - c.complexWidth;
+    if (xR <= 0 || xL >= W) continue;
+    ranges.push({
+      left:  Math.max(0, xL),
+      right: Math.min(W, xR),
+    });
+  }
+
+  ranges.sort((a, b) => a.left - b.left);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && last.right >= r.left) {
+      last.right = Math.max(last.right, r.right);
+    } else {
+      merged.push({ left: r.left, right: r.right });
+    }
+  }
+
+  const segs = [];
+  let cursor = 0;
+  for (const r of merged) {
+    if (r.left > cursor) {
+      segs.push({ x1: cursor, x2: r.left });
+    }
+    cursor = r.right;
+  }
+  if (cursor < W) {
+    segs.push({ x1: cursor, x2: W });
+  }
+
+  while (baselineSegments.length < segs.length) {
+    const ln = makeBaselineLine();
+    if (complexGroup && complexGroup.parentNode === parent) {
+      parent.insertBefore(ln, complexGroup);
+    } else {
+      parent.appendChild(ln);
+    }
+    baselineSegments.push(ln);
+  }
+
+  segs.forEach((s, i) => {
+    const ln = baselineSegments[i];
+    ln.setAttribute('x1', s.x1.toFixed(1));
+    ln.setAttribute('x2', s.x2.toFixed(1));
+    ln.style.display = '';
+  });
+  for (let i = segs.length; i < baselineSegments.length; i++) {
+    baselineSegments[i].style.display = 'none';
+  }
+}
+
+function animateECG() {
+  if (!complexGroup) return;
+  const now = Date.now() / 1000;
+  const pps = W / currentWindow;
+
+  for (let i = activeComplexes.length - 1; i >= 0; i--) {
+    const c = activeComplexes[i];
+    const dt = now - c.eventTime;
+    const x = W - dt * pps;
+
+    if (x < -10) {
+      if (c.el && c.el.parentNode) c.el.parentNode.removeChild(c.el);
+      activeComplexes.splice(i, 1);
+      continue;
+    }
+    c.el.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
+  }
+
+  updateBaseline();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// TICK MODE (15m / 1h)
+// ════════════════════════════════════════════════════════════════════════
+
+function setupTickMode(svg, allTimes) {
+  const now = Date.now() / 1000;
+  const visible = allTimes.filter((t) => now - t <= currentWindow);
+
+  const base = makeLine(TICK_BASELINE_Y, TICK_BASELINE_Y, 'var(--pt-border)', 1);
+  base.setAttribute('x1', 0);
+  base.setAttribute('x2', W);
+  svg.appendChild(base);
+
+  visible.forEach((t, i) => {
+    const latest = i === visible.length - 1;
+    const ln = makeLine(
+      latest ? TICK_LATEST_TOP : TICK_NORMAL_TOP,
+      TICK_BASELINE_Y,
+      latest ? 'var(--pt-accent-blue-bright)' : 'var(--pt-accent-blue)',
+      latest ? 2 : 1
+    );
+    svg.appendChild(ln);
+    ticks.push({ el: ln, time: t });
+  });
+
+  const nowm = makeLine(TICK_NOWMARK_TOP, TICK_NOWMARK_BOT, 'var(--pt-status-good)', 1);
+  nowm.setAttribute('x1', W - 1);
+  nowm.setAttribute('x2', W - 1);
+  nowm.setAttribute('stroke-dasharray', '2 2');
+  nowm.setAttribute('opacity', '0.5');
+  svg.appendChild(nowm);
+}
+
+function animateTicks() {
+  const now = Date.now() / 1000;
+  for (const t of ticks) {
+    const age = now - t.time;
+    const drawAge = Math.max(0, age);
+    const x = (W * (1 - drawAge / currentWindow)).toFixed(1);
+    t.el.setAttribute('x1', x);
+    t.el.setAttribute('x2', x);
+    t.el.style.display = age > currentWindow ? 'none' : '';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// MODE DISPATCH
+// ════════════════════════════════════════════════════════════════════════
+
+function rebuildHeartbeat(allTimes) {
+  const svg = byId('cp-heartbeat');
+  if (!svg) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  ticks = [];
+  baselineSegments = [];
+  complexGroup = null;
+  activeComplexes = [];
+
+  if (currentWindow <= 300) {
+    setupECGMode(svg);
+  } else {
+    setupTickMode(svg, allTimes);
+  }
+  recomputeStats();
+}
+
 export function initChainPulse() {
   if (!lastData) {
-    // First-time init OR remount after long absence: seed with any accumulated
-    // optimistic ticks (block detections during a tab switch, etc.).
     const cutoff = Date.now() / 1000 - 3700;
     optimisticTimes = optimisticTimes.filter((t) => t > cutoff);
     lastData = {
@@ -136,7 +423,7 @@ export function initChainPulse() {
   ensureTabsWired();
   paintActiveTab();
   renderDensity(lastData.density);
-  rebuildTicks(lastData.recentBlockTimes);
+  rebuildHeartbeat(lastData.recentBlockTimes);
   if (!rafId) loop();
 }
 
@@ -155,47 +442,39 @@ export function setChainPulseStatus(atTip, tipBlock) {
 }
 
 export function appendTick(timeSec) {
-  // Track optimistic time even if panel isn't mounted (preserved across mount/unmount).
   const cutoff = Date.now() / 1000 - 3700;
   optimisticTimes = optimisticTimes.filter((t) => t > cutoff);
   optimisticTimes.push(timeSec);
 
-  if (!lastData) {
-    // Panel not yet initialized — just track the time, will be picked up on next init.
-    return;
-  }
+  if (!lastData) return;
 
-  // Insert into recentBlockTimes (maintain sorted order).
   lastData.recentBlockTimes.push(timeSec);
   lastData.recentBlockTimes.sort((a, b) => a - b);
 
   const svg = byId('cp-heartbeat');
-  if (!svg) return;
-
-  // Demote previous "latest" tick (was bright/tall) to normal.
-  if (ticks.length > 0) {
-    const prev = ticks[ticks.length - 1];
-    prev.el.setAttribute('y1', 14);
-    prev.el.setAttribute('stroke-width', currentWindow <= 300 ? 1.5 : 1);
-    prev.el.style.stroke = 'var(--pt-accent-blue)';
+  if (svg) {
+    if (currentWindow <= 300) {
+      plantComplex(Date.now() / 1000);
+    } else {
+      if (ticks.length > 0) {
+        const prev = ticks[ticks.length - 1];
+        prev.el.setAttribute('y1', TICK_NORMAL_TOP);
+        prev.el.setAttribute('stroke-width', 1);
+        prev.el.style.stroke = 'var(--pt-accent-blue)';
+      }
+      const ln = makeLine(TICK_LATEST_TOP, TICK_BASELINE_Y, 'var(--pt-accent-blue-bright)', 2);
+      ln.setAttribute('x1', W);
+      ln.setAttribute('x2', W);
+      svg.appendChild(ln);
+      ticks.push({ el: ln, time: timeSec });
+    }
   }
-
-  // Add new latest tick at right edge.
-  const now = Date.now() / 1000;
-  const age = Math.max(0, now - timeSec);
-  const x = (W * (1 - age / currentWindow)).toFixed(1);
-  const ln = makeLine(8, 'var(--pt-accent-blue-bright)', 2);
-  ln.setAttribute('x1', x);
-  ln.setAttribute('x2', x);
-  svg.appendChild(ln);
-  ticks.push({ el: ln, time: timeSec });
 
   recomputeStats();
   recomputeDensity();
 }
 
 export function renderChainPulse(pulse) {
-  // Bootstrap path: merge cncli history with any optimistic ticks already collected.
   const cutoff = Date.now() / 1000 - 3700;
   optimisticTimes = optimisticTimes.filter((t) => t > cutoff);
 
@@ -232,55 +511,10 @@ export function renderChainPulse(pulse) {
   }
   setText('cp-tipblock', commas(pulse.tipBlock));
 
-  rebuildTicks(merged);
+  rebuildHeartbeat(merged);
   recomputeDensity();
 
   if (!rafId) loop();
-}
-
-function rebuildTicks(allTimes) {
-  const svg = byId('cp-heartbeat');
-  if (!svg) return;
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  ticks = [];
-
-  const now = Date.now() / 1000;
-  const visible = allTimes.filter((t) => now - t <= currentWindow);
-
-  const gaps = [];
-  for (let i = 1; i < visible.length; i++) gaps.push(visible[i] - visible[i - 1]);
-  const avg = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
-  const max = gaps.length ? Math.max(...gaps) : 0;
-  const min = gaps.length ? Math.min(...gaps) : 0;
-  setText('cp-avg', avg + 's');
-  setText('cp-max', max + 's');
-  setText('cp-min', min + 's');
-  setText('cp-blockcount', visible.length + ' blocks');
-
-  const base = makeLine(42, 'var(--pt-border)', 1);
-  base.setAttribute('x1', 0);
-  base.setAttribute('x2', W);
-  svg.appendChild(base);
-
-  const thick = currentWindow <= 300 ? 1.5 : 1;
-  visible.forEach((t, i) => {
-    const latest = i === visible.length - 1;
-    const ln = makeLine(
-      latest ? 8 : 14,
-      latest ? 'var(--pt-accent-blue-bright)' : 'var(--pt-accent-blue)',
-      latest ? 2 : thick
-    );
-    svg.appendChild(ln);
-    ticks.push({ el: ln, time: t });
-  });
-
-  const nowm = makeLine(2, 'var(--pt-status-good)', 1);
-  nowm.setAttribute('x1', W - 1);
-  nowm.setAttribute('x2', W - 1);
-  nowm.setAttribute('y2', H);
-  nowm.setAttribute('stroke-dasharray', '2 2');
-  nowm.setAttribute('opacity', '0.7');
-  svg.appendChild(nowm);
 }
 
 function loop() {
@@ -292,16 +526,12 @@ function loop() {
   const latest = times.length ? times[times.length - 1] : now;
   setText('cp-since', duration(Math.max(0, Math.floor(now - latest))));
 
-  for (const t of ticks) {
-    const age = now - t.time;
-    const drawAge = Math.max(0, age);
-    const x = (W * (1 - drawAge / currentWindow)).toFixed(1);
-    t.el.setAttribute('x1', x);
-    t.el.setAttribute('x2', x);
-    t.el.style.display = age > currentWindow ? 'none' : '';
+  if (currentWindow <= 300) {
+    animateECG();
+  } else {
+    animateTicks();
   }
 
-  // Recompute density + stats roughly every second (60 frames @ 60fps).
   densityFrameCounter++;
   if (densityFrameCounter >= 60) {
     densityFrameCounter = 0;
@@ -316,5 +546,7 @@ export function stopChainPulse() {
     rafId = null;
   }
   ticks = [];
-  // Keep lastData and optimisticTimes — they're preserved across mount/unmount.
+  baselineSegments = [];
+  complexGroup = null;
+  activeComplexes = [];
 }

@@ -1,13 +1,11 @@
 /**
  * PoolTerminal — NOW view.
- * Layout: hero / chain pulse / (BP | Mempool) / (Upcoming | Relay map elastic row).
  *
- * Exports split for two-tier polling:
- *   updateNowFast(snap)     — every fast tick (~1s). Hero + BP + chain pulse
- *                              header status. No SSH I/O.
- *   bootstrapNow(src)        — one-time at startup, in background. Pulls
- *                              cncli history + initial mempool via SSH.
- *   refreshMempool(src)      — every ~5s. Mempool gauge refresh via SSH.
+ * Layout: hero / chain pulse (compact top row + 140px ECG strip) / (BP | Mempool) / (Upcoming | Relay map).
+ *
+ * Chain pulse top row now packs Since-Last-Block, AVG/MAX/MIN stats, and the
+ * full density readout into one ribbon — the big density panel that used to
+ * sit below the heartbeat is gone.
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
@@ -23,6 +21,53 @@ import { renderMempool } from '../ui/mempool.js';
 import { renderRelayMap } from '../ui/relay-map.js';
 
 const NOW_HTML = `
+  <style>
+    .pt-cp-top {
+      display: flex;
+      align-items: baseline;
+      gap: 24px;
+      flex-wrap: wrap;
+      padding: 10px 14px 6px 14px;
+    }
+    .pt-cp-since-block {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex: 0 0 auto;
+    }
+    .pt-cp-since-label {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      opacity: 0.55;
+      text-transform: uppercase;
+    }
+    .pt-cp-since {
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .pt-cp-stats-inline {
+      display: flex;
+      gap: 14px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .pt-cp-density-inline {
+      display: flex;
+      gap: 14px;
+      font-size: 12px;
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      align-items: baseline;
+    }
+    .pt-cp-density-inline > span { white-space: nowrap; }
+    .pt-cp-density-label-inline {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      opacity: 0.55;
+      text-transform: uppercase;
+    }
+  </style>
   <div class="pt-now">
     <div class="pt-hero-row">
       <div class="pt-hero-card" id="hero-pulse">
@@ -58,20 +103,31 @@ const NOW_HTML = `
       </div>
       <div class="pt-chainpulse-body">
         <div class="pt-cp-top">
-          <div>
-            <div class="pt-cp-since-label">Since last block</div>
-            <div class="pt-cp-since" id="cp-since">—</div>
+          <div class="pt-cp-since-block">
+            <span class="pt-cp-since-label">Since last block</span>
+            <span class="pt-cp-since" id="cp-since">—</span>
           </div>
-          <div class="pt-cp-stats">
-            <div><span class="pt-muted">AVG</span>&nbsp;&nbsp;<span id="cp-avg">—</span></div>
-            <div><span class="pt-muted">MAX</span>&nbsp;&nbsp;<span id="cp-max">—</span></div>
-            <div><span class="pt-muted">MIN</span>&nbsp;&nbsp;<span id="cp-min">—</span></div>
+          <div class="pt-cp-stats-inline">
+            <span><span class="pt-muted">AVG</span>&nbsp;<span id="cp-avg">—</span></span>
+            <span><span class="pt-muted">MAX</span>&nbsp;<span id="cp-max">—</span></span>
+            <span><span class="pt-muted">MIN</span>&nbsp;<span id="cp-min">—</span></span>
+          </div>
+          <div class="pt-cp-density-inline">
+            <span class="pt-cp-density-label-inline">Density</span>
+            <span><span class="pt-muted">1m</span>&nbsp;<span id="cp-d-m1">—</span></span>
+            <span><span class="pt-muted">5m</span>&nbsp;<span id="cp-d-m5">—</span></span>
+            <span><span class="pt-muted">20m</span>&nbsp;<span id="cp-d-m20">—</span></span>
+            <span><span class="pt-muted">1h</span>&nbsp;<span id="cp-d-h1">—</span></span>
+            <span><span class="pt-muted">1d</span>&nbsp;<span id="cp-d-d1">—</span></span>
+            <span><span class="pt-muted">epoch</span>&nbsp;<span id="cp-d-epoch">—</span></span>
           </div>
         </div>
         <div class="pt-cp-hb-label">
           <span>HEARTBEAT</span>
           <span class="pt-cp-hb-right">
             <span class="pt-cp-tabs" id="cp-tabs">
+              <span class="pt-cp-tab" data-window="10">10s</span>
+              <span class="pt-cp-tab" data-window="30">30s</span>
               <span class="pt-cp-tab" data-window="60">1m</span>
               <span class="pt-cp-tab" data-window="300">5m</span>
               <span class="pt-cp-tab" data-window="900">15m</span>
@@ -80,16 +136,9 @@ const NOW_HTML = `
             <span class="pt-accent" id="cp-blockcount">—</span>
           </span>
         </div>
-        <svg class="pt-cp-heartbeat" id="cp-heartbeat" viewBox="0 0 600 56" preserveAspectRatio="none"></svg>
-        <div class="pt-cp-density-label">DENSITY · blocks ÷ slots</div>
-        <div class="pt-cp-density">
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1m</div><div class="pt-cp-dval" id="cp-d-m1">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">5m</div><div class="pt-cp-dval" id="cp-d-m5">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">20m</div><div class="pt-cp-dval" id="cp-d-m20">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1h</div><div class="pt-cp-dval" id="cp-d-h1">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">1d</div><div class="pt-cp-dval" id="cp-d-d1">—</div></div>
-          <div class="pt-cp-dcell"><div class="pt-cp-dwin">epoch</div><div class="pt-cp-dval" id="cp-d-epoch">—</div></div>
-        </div>
+        <svg class="pt-cp-heartbeat" id="cp-heartbeat"
+             viewBox="0 0 600 120" preserveAspectRatio="none"
+             style="height: 140px !important; width: 100%; display: block;"></svg>
       </div>
     </div>
 
@@ -149,16 +198,12 @@ export function mountNow(canvas) {
   renderRelayMap();
 }
 
-// Called every fast tick (~1s) — no SSH I/O, all derived from snap.
 export function updateNowFast(snap) {
   renderHero(snap);
   renderBlockProduction(snap.blockProduction);
   setChainPulseStatus(snap.atTip, snap.tipBlock);
 }
 
-// One-time bootstrap on connect — pulls cncli history + initial mempool.
-// Takes ~30s due to the cncli query but runs in background; fast loop
-// continues polling tip the whole time.
 export async function bootstrapNow(src) {
   const [pulse, mp] = await Promise.all([
     src.getChainPulse(),
@@ -168,7 +213,6 @@ export async function bootstrapNow(src) {
   renderMempool(mp);
 }
 
-// Called periodically (~5s) — just the mempool, fast (~110ms).
 export async function refreshMempool(src) {
   const mp = await src.getMempool();
   renderMempool(mp);

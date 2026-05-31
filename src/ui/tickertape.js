@@ -66,3 +66,21 @@ export function markTickertapeStale(isStale) {
   const el = byId('pt-tickertape');
   if (el) el.classList.toggle('pt-stale', isStale);
 }
+
+/**
+ * Set the role badge next to the pool name.
+ * role: 'BP' | 'RELAY' | 'UNKNOWN' | null (hides)
+ */
+export function setRoleBadge(role) {
+  const el = byId('ttape-role');
+  if (!el) return;
+  if (!role) {
+    el.style.display = 'none';
+    el.className = 'pt-ticker-role';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = role;
+  el.className = 'pt-ticker-role pt-role-' + role.toLowerCase();
+}

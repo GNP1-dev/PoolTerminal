@@ -19,13 +19,14 @@
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
-import { renderTickertape, markTickertapeStale } from './ui/tickertape.js';
+import { renderTickertape, markTickertapeStale, setRoleBadge } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
 } from './views/now.js';
 import { showConnectModal } from './views/connect.js';
-import { getSession } from './data/session.js';
+import { getSession, setNodeProbe } from './data/session.js';
+import { probeNode } from './data/node-probe.js';
 
 const FAST_INTERVAL_MS = 1000;
 const MEMPOOL_REFRESH_EVERY_S = 5;
@@ -152,6 +153,21 @@ function paintMode() {
   }
 }
 
+async function runProbeAndPaintRole() {
+  if (getMode() !== 'live') {
+    setRoleBadge(null);
+    return;
+  }
+  try {
+    const probe = await probeNode();
+    setNodeProbe(probe);
+    setRoleBadge(probe.role);
+  } catch (e) {
+    console.warn('[probe] FAIL:', e.message);
+    setRoleBadge('UNKNOWN');
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   console.log('PoolTerminal — Phase 3 (1s fast loop, cncli bootstrap-only)');
   canvasEl = document.getElementById('pt-canvas');
@@ -178,16 +194,19 @@ window.addEventListener('DOMContentLoaded', () => {
       lastSeenBlock = null;
       lastPollTime = null;
       bootstrapStarted = false;
+      runProbeAndPaintRole();
       fastPollTick();
     });
   });
 
   setMode('demo');
   paintMode();
+  setRoleBadge(null);
   mountView('now');
 
   showConnectModal((result) => {
     paintMode();
+    runProbeAndPaintRole();
     startPolling();
   });
 });

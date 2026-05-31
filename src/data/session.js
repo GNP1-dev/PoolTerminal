@@ -20,10 +20,14 @@ const STATE = {
   envFile: null,
   authOrder: null,
   envVars: {},   // { CCLI, CARDANO_NODE_SOCKET_PATH, CNCLI_DB, NETWORK_NAME, ... }
+  nodeProbe: null,  // { role, pid, port, topologyPath, args } once probed
 };
 
 export function getSession() { return STATE; }
 export function isConnected() { return STATE.connected; }
+
+export function setNodeProbe(probe) { STATE.nodeProbe = probe; }
+export function getNodeProbe() { return STATE.nodeProbe; }
 
 export function loadConfig() {
   try {
@@ -63,4 +67,5 @@ export function markConnected(conn, envVars) {
 export function markDisconnected() {
   STATE.connected = false;
   STATE.envVars = {};
+  STATE.nodeProbe = null;
 }

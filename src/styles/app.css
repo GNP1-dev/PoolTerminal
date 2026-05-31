@@ -35,6 +35,30 @@
   letter-spacing: 0.5px;
 }
 
+.pt-ticker-role {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  border: 1px solid currentColor;
+  border-radius: var(--pt-radius-sm);
+  vertical-align: 1px;
+}
+
+.pt-ticker-role.pt-role-bp {
+  color: var(--pt-status-good);
+}
+
+.pt-ticker-role.pt-role-relay {
+  color: var(--pt-accent-blue);
+}
+
+.pt-ticker-role.pt-role-unknown {
+  color: var(--pt-status-warn);
+}
+
 .pt-ticker-sep {
   color: var(--pt-text-disabled);
   margin: 0 9px;

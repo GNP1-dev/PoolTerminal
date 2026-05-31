@@ -19,7 +19,7 @@
  */
 
 import { dataSource, setMode, getMode } from './data/index.js';
-import { renderTickertape, markTickertapeStale, setRoleBadge } from './ui/tickertape.js';
+import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
@@ -27,9 +27,11 @@ import {
 import { showConnectModal } from './views/connect.js';
 import { getSession, setNodeProbe } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
+import { queryPeers } from './data/peers-query.js';
 
 const FAST_INTERVAL_MS = 1000;
 const MEMPOOL_REFRESH_EVERY_S = 5;
+const PEERS_REFRESH_EVERY_S = 5;
 
 let fastTimer = null;
 let fastPolling = false;
@@ -39,6 +41,7 @@ let latestSnap = null;
 let lastSeenBlock = null;
 let lastPollTime = null;
 let lastMempoolRefreshTime = 0;
+let lastPeersRefreshTime = 0;
 let bootstrapStarted = false;
 
 let activeView = 'now';
@@ -122,6 +125,16 @@ async function fastPollTick() {
       );
     }
 
+    // Peers refresh every Nth second (live mode only; demo paints via snap).
+    if (getMode() === 'live' && nowSec - lastPeersRefreshTime >= PEERS_REFRESH_EVERY_S) {
+      lastPeersRefreshTime = nowSec;
+      queryPeers().then((r) => {
+        if (r) setPeerCounts(r.outbound.length, r.inbound.length);
+      }).catch((e) =>
+        console.warn('[peers refresh] FAIL:', e.message)
+      );
+    }
+
     // Kick off one-time bootstrap after first snap (background task).
     if (firstSnap) bootstrap();
   } catch (e) {
@@ -193,7 +206,10 @@ window.addEventListener('DOMContentLoaded', () => {
       lastFastError = null;
       lastSeenBlock = null;
       lastPollTime = null;
+      lastMempoolRefreshTime = 0;
+      lastPeersRefreshTime = 0;
       bootstrapStarted = false;
+      setPeerCounts(null, null);
       runProbeAndPaintRole();
       fastPollTick();
     });

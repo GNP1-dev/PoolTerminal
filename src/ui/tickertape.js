@@ -56,7 +56,10 @@ export function renderTickertape(snap) {
   }
 
   // peers shown OUT/IN (matches the approved NOW-view mock)
-  setText('ttape-peers', `${snap.peersOut}/${snap.peersIn}`);
+  // Live mode leaves these null and lets peers-query paint via setPeerCounts.
+  if (snap.peersOut != null && snap.peersIn != null) {
+    setText('ttape-peers', `${snap.peersOut}/${snap.peersIn}`);
+  }
 
   renderForging(snap.forging);
 }
@@ -83,4 +86,16 @@ export function setRoleBadge(role) {
   el.style.display = '';
   el.textContent = role;
   el.className = 'pt-ticker-role pt-role-' + role.toLowerCase();
+}
+
+/**
+ * Paint the PEERS slot directly. Format: "out/in".
+ * Called by the peers-query poll (live mode); demo mode uses snap-based render.
+ */
+export function setPeerCounts(out, inb) {
+  if (out == null || inb == null) {
+    setText('ttape-peers', '—');
+    return;
+  }
+  setText('ttape-peers', `${out}/${inb}`);
 }

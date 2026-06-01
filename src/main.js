@@ -21,6 +21,7 @@
 import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
+import { renderPeersPanel } from './ui/peers-panel.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
 } from './views/now.js';
@@ -129,7 +130,10 @@ async function fastPollTick() {
     if (getMode() === 'live' && nowSec - lastPeersRefreshTime >= PEERS_REFRESH_EVERY_S) {
       lastPeersRefreshTime = nowSec;
       queryPeers().then((r) => {
-        if (r) setPeerCounts(r.outbound.length, r.inbound.length);
+        if (r) {
+          setPeerCounts(r.outbound.length, r.inbound.length);
+          renderPeersPanel(r);
+        }
       }).catch((e) =>
         console.warn('[peers refresh] FAIL:', e.message)
       );

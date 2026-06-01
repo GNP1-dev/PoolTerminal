@@ -31,7 +31,7 @@
 
 .pt-ticker-name {
   color: var(--pt-accent-blue);
-  font-weight: 500;
+  font-weight: 700;
   letter-spacing: 0.5px;
 }
 
@@ -139,6 +139,9 @@
   flex: 1;
   overflow: auto;
   padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .pt-placeholder {

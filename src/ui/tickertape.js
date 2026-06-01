@@ -83,8 +83,9 @@ export function setRoleBadge(role) {
     el.textContent = '';
     return;
   }
+  const labels = { BP: 'Block Producer', RELAY: 'Relay', UNKNOWN: 'Unknown' };
   el.style.display = '';
-  el.textContent = role;
+  el.textContent = labels[role] || role;
   el.className = 'pt-ticker-role pt-role-' + role.toLowerCase();
 }
 

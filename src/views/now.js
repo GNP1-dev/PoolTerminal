@@ -1,11 +1,12 @@
 /**
  * PoolTerminal — NOW view.
  *
- * Layout: hero / chain pulse (compact top row + 140px ECG strip) / (BP | Mempool) / (Upcoming | Relay map).
- *
- * Chain pulse top row now packs Since-Last-Block, AVG/MAX/MIN stats, and the
- * full density readout into one ribbon — the big density panel that used to
- * sit below the heartbeat is gone.
+ * Layout (fills viewport height):
+ *   hero row (8 cards): Epoch · Pulse · KES · Ideal · Leader · Adopt · Confirmed · Lost
+ *   chain pulse (full width; large "since last block" readout)
+ *   bottom grid (3-col, Relay Map spans both rows; bottom grid flex-fills):
+ *     row 1: Mempool   | Peers   | Relay Map
+ *     row 2: Upcoming Blocks (2 cols)        | Relay Map (continues)
  */
 
 import { renderHero, resetHero } from '../ui/now-hero.js';
@@ -15,10 +16,10 @@ import {
   setChainPulseStatus,
   stopChainPulse,
 } from '../ui/chain-pulse.js';
-import { renderBlockProduction, resetBlockProduction } from '../ui/block-production.js';
 import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.js';
 import { renderMempool } from '../ui/mempool.js';
 import { renderRelayMap } from '../ui/relay-map.js';
+import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
 
 const NOW_HTML = `
   <style>
@@ -27,24 +28,27 @@ const NOW_HTML = `
       align-items: baseline;
       gap: 24px;
       flex-wrap: wrap;
-      padding: 10px 14px 6px 14px;
+      padding: 12px 16px 8px 16px;
     }
     .pt-cp-since-block {
       display: flex;
       align-items: baseline;
-      gap: 10px;
+      gap: 12px;
       flex: 0 0 auto;
     }
     .pt-cp-since-label {
-      font-size: 10px;
+      font-size: 12px;
       letter-spacing: 0.06em;
-      opacity: 0.55;
+      color: var(--pt-text-muted);
       text-transform: uppercase;
+      font-weight: 600;
     }
     .pt-cp-since {
-      font-size: 22px;
+      font-size: 36px;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: var(--pt-text-primary);
     }
     .pt-cp-stats-inline {
       display: flex;
@@ -69,26 +73,43 @@ const NOW_HTML = `
     }
   </style>
   <div class="pt-now">
-    <div class="pt-hero-row">
-      <div class="pt-hero-card" id="hero-pulse">
-        <div class="pt-hero-label">Pulse</div>
-        <div class="pt-hero-value" id="hero-pulse-val">—<span class="pt-hero-unit">/100</span></div>
-        <div class="pt-hero-sub" id="hero-pulse-delta">—</div>
-      </div>
+    <div class="pt-hero-row pt-hero-row-8">
       <div class="pt-hero-card" id="hero-epoch">
         <div class="pt-hero-label">Epoch</div>
         <div class="pt-hero-value" id="hero-epoch-val">—<span class="pt-hero-unit">%</span></div>
         <div class="pt-hero-bar"><div class="pt-hero-bar-fill" id="hero-epoch-bar"></div></div>
       </div>
-      <div class="pt-hero-card pt-hero-accent" id="hero-blocks">
-        <div class="pt-hero-label">Blocks</div>
-        <div class="pt-hero-value" id="hero-blocks-val">—<span class="pt-hero-unit">/—</span></div>
-        <div class="pt-hero-sub" id="hero-blocks-sub">—</div>
+      <div class="pt-hero-card" id="hero-pulse">
+        <div class="pt-hero-label">Pulse</div>
+        <div class="pt-hero-value" id="hero-pulse-val">—<span class="pt-hero-unit">/100</span></div>
+        <div class="pt-hero-sub" id="hero-pulse-delta">—</div>
       </div>
       <div class="pt-hero-card" id="hero-kes">
         <div class="pt-hero-label">KES</div>
         <div class="pt-hero-value" id="hero-kes-val">—<span class="pt-hero-unit">d</span></div>
+        <div class="pt-hero-bar"><div class="pt-hero-bar-fill" id="hero-kes-bar"></div></div>
         <div class="pt-hero-sub" id="hero-kes-sub">—</div>
+      </div>
+      <div class="pt-hero-card" id="hero-ideal">
+        <div class="pt-hero-label">Ideal</div>
+        <div class="pt-hero-value" id="hero-ideal-val">—</div>
+      </div>
+      <div class="pt-hero-card" id="hero-leader">
+        <div class="pt-hero-label">Leader</div>
+        <div class="pt-hero-value" id="hero-leader-val">—</div>
+      </div>
+      <div class="pt-hero-card" id="hero-adopt">
+        <div class="pt-hero-label">Adopt</div>
+        <div class="pt-hero-value" id="hero-adopt-val">—</div>
+        <div class="pt-hero-sub" id="hero-adopt-sub">—</div>
+      </div>
+      <div class="pt-hero-card" id="hero-conf">
+        <div class="pt-hero-label">Confirmed</div>
+        <div class="pt-hero-value" id="hero-conf-val">—</div>
+      </div>
+      <div class="pt-hero-card" id="hero-lost">
+        <div class="pt-hero-label">Lost</div>
+        <div class="pt-hero-value" id="hero-lost-val">—</div>
       </div>
     </div>
 
@@ -142,33 +163,30 @@ const NOW_HTML = `
       </div>
     </div>
 
-    <div class="pt-now-2col">
-      <div class="pt-panel">
-        <div class="pt-panel-header">
-          <span class="pt-panel-title">Block production</span>
-          <span class="pt-panel-meta"><span class="pt-muted">this epoch</span></span>
-        </div>
-        <div class="pt-bp-grid">
-          <div class="pt-bp-cell"><div class="pt-bp-label">Leader</div><div class="pt-bp-val" id="bp-leader">—</div></div>
-          <div class="pt-bp-cell"><div class="pt-bp-label">Ideal</div><div class="pt-bp-val" id="bp-ideal">—</div></div>
-          <div class="pt-bp-cell"><div class="pt-bp-label">Luck</div><div class="pt-bp-val" id="bp-luck">—</div></div>
-          <div class="pt-bp-cell" id="bp-cell-adopt"><div class="pt-bp-label">Adopt</div><div class="pt-bp-val" id="bp-adopt">—</div></div>
-          <div class="pt-bp-cell" id="bp-cell-conf"><div class="pt-bp-label">Conf</div><div class="pt-bp-val" id="bp-conf">—</div></div>
-          <div class="pt-bp-cell"><div class="pt-bp-label">Lost</div><div class="pt-bp-val" id="bp-lost">—</div></div>
-        </div>
-      </div>
-
-      <div class="pt-panel">
+    <div class="pt-now-grid">
+      <div class="pt-panel pt-panel-flex pt-grid-mempool">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Mempool</span>
           <span class="pt-panel-meta"><span id="mp-count">—</span></span>
         </div>
         <div class="pt-mp-body" id="mp-body"></div>
       </div>
-    </div>
 
-    <div class="pt-now-bottom">
-      <div class="pt-panel pt-panel-flex">
+      <div class="pt-panel pt-panel-flex pt-grid-peers">
+        <div class="pt-panel-header">
+          <span class="pt-panel-title">Peers</span>
+          <span class="pt-panel-meta">
+            <span id="pp-total">—</span>&nbsp;<span class="pt-muted">total</span>
+            <span class="pt-sep">·</span>
+            <span class="pt-muted">IN</span>&nbsp;<span id="pp-in">—</span>
+            <span class="pt-sep">·</span>
+            <span class="pt-muted">OUT</span>&nbsp;<span id="pp-out">—</span>
+          </span>
+        </div>
+        <div class="pt-pp-body" id="pp-body"></div>
+      </div>
+
+      <div class="pt-panel pt-panel-flex pt-grid-upcoming">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Upcoming blocks</span>
           <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
@@ -176,7 +194,7 @@ const NOW_HTML = `
         <div class="pt-ub-body" id="ub-body"></div>
       </div>
 
-      <div class="pt-panel pt-panel-flex">
+      <div class="pt-panel pt-panel-flex pt-grid-map">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Relay map</span>
           <span class="pt-panel-meta"><span id="rm-meta" class="pt-muted">—</span></span>
@@ -192,15 +210,14 @@ const NOW_HTML = `
 export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
-  resetBlockProduction();
   initChainPulse();
   renderUpcomingBlocks([]);
   renderRelayMap();
+  resetPeersPanel();
 }
 
 export function updateNowFast(snap) {
   renderHero(snap);
-  renderBlockProduction(snap.blockProduction);
   setChainPulseStatus(snap.atTip, snap.tipBlock);
 }
 

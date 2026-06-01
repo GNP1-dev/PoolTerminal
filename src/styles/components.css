@@ -10,6 +10,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--pt-gap);
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---- Hero row (4 metric cards) ---- */
@@ -17,6 +19,19 @@
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--pt-gap);
+}
+
+/* Eight-card variant used by the NOW view since BP stats moved up.
+   All cards use a uniform stronger border — no accent variant. */
+.pt-hero-row-8 {
+  grid-template-columns: repeat(8, 1fr);
+}
+.pt-hero-row-8 .pt-hero-card {
+  padding: 10px 12px;
+  border: 1px solid var(--pt-text-disabled);
+}
+.pt-hero-row-8 .pt-hero-value {
+  font-size: var(--pt-text-data-mid);
 }
 
 .pt-hero-card {
@@ -210,6 +225,18 @@
 .pt-bp-cell:nth-child(3n) { border-right: none; }
 .pt-bp-cell:nth-last-child(-n+3) { border-bottom: none; }
 
+/* Compact variant: single row of 6 (used in the 3-column NOW row). */
+.pt-bp-grid-flat {
+  grid-template-columns: repeat(6, 1fr);
+}
+.pt-bp-grid-flat .pt-bp-cell {
+  padding: 8px 8px;
+  border-bottom: none;
+  border-right: var(--pt-border-line);
+}
+.pt-bp-grid-flat .pt-bp-cell:nth-child(3n) { border-right: var(--pt-border-line); }
+.pt-bp-grid-flat .pt-bp-cell:nth-child(6n) { border-right: none; }
+
 .pt-bp-label {
   color: var(--pt-text-muted);
   font-family: var(--pt-font-sans);
@@ -227,12 +254,102 @@
   line-height: 1;
 }
 
-/* ---- NOW: 2-column row (Block production | Upcoming blocks) ---- */
+/* ---- NOW: 2-column row (legacy; retained in case anything still uses it) ---- */
 .pt-now-2col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--pt-gap);
 }
+
+/* ---- NOW bottom area: 3-col grid, Relay Map spans both rows ----
+   row 1: Mempool   | Peers     | Relay Map
+   row 2: Upcoming Blocks (2 cols)        | Relay Map (continues)
+   Relay Map column is twice the width of either sibling (~50% of row width).
+   Grid flex-fills the remaining viewport height. */
+.pt-now-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 2fr;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "mempool peers map"
+    "upcoming upcoming map";
+  gap: var(--pt-gap);
+  flex: 1;
+  min-height: 0;
+}
+.pt-grid-mempool  { grid-area: mempool; }
+.pt-grid-peers    { grid-area: peers; }
+.pt-grid-upcoming { grid-area: upcoming; }
+.pt-grid-map      { grid-area: map; }
+
+/* Panels inside the grid stretch to fill their cells. */
+.pt-now-grid > .pt-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pt-now-grid .pt-mp-body,
+.pt-now-grid .pt-pp-body,
+.pt-now-grid .pt-ub-body {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow-y: auto;
+}
+.pt-now-grid .pt-rm-body {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- Peers panel ---- */
+.pt-pp-body {
+  height: 200px;
+  overflow-y: auto;
+  font-family: var(--pt-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--pt-text-data-sm);
+}
+.pt-pp-row {
+  display: grid;
+  grid-template-columns: 16px 1fr 60px;
+  align-items: center;
+  padding: 4px 12px;
+  gap: 8px;
+  border-bottom: var(--pt-border-line);
+}
+.pt-pp-row:last-child { border-bottom: none; }
+.pt-pp-row:hover { background: var(--pt-bg-row-hover); }
+
+.pt-pp-dir {
+  font-weight: 700;
+  text-align: center;
+  font-family: var(--pt-font-sans);
+}
+.pt-pp-dir-in .pt-pp-dir { color: var(--pt-accent-blue); }
+.pt-pp-dir-out .pt-pp-dir { color: var(--pt-status-good); }
+
+.pt-pp-ip { color: var(--pt-text-primary); }
+
+.pt-pp-rtt {
+  text-align: right;
+  color: var(--pt-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-pp-empty {
+  padding: 16px 14px;
+  color: var(--pt-text-muted);
+  font-size: var(--pt-text-data-sm);
+}
+
+.pt-pp-body::-webkit-scrollbar { width: 6px; }
+.pt-pp-body::-webkit-scrollbar-track { background: transparent; }
+.pt-pp-body::-webkit-scrollbar-thumb {
+  background: var(--pt-border);
+  border-radius: 3px;
+}
+.pt-pp-body::-webkit-scrollbar-thumb:hover { background: var(--pt-text-disabled); }
 
 /* ---- Upcoming blocks panel ---- */
 .pt-ub-body {
@@ -329,18 +446,11 @@
   cursor: help;
 }
 
-/* ---- NOW view height management (fit window, no overall scroll) ---- */
+/* ---- NOW view height management (fit window, no overall scroll) ----
+   The .pt-canvas, .pt-now and .pt-now-grid flex chain is defined above.
+   This block intentionally only contains rules that don't conflict with it. */
 .pt-canvas {
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.pt-now {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(120px, 1fr) auto;
-  gap: var(--pt-gap);
 }
 .pt-panel-flex {
   display: flex;
@@ -353,14 +463,10 @@
   min-height: 0;
   max-height: none;
 }
-/* Tighter heights so the elastic upcoming-blocks row has room */
-.pt-cp-heartbeat { height: 40px; }
 .pt-chainpulse-body { padding: 10px 12px; }
 .pt-cp-top { margin-bottom: 10px; }
 .pt-cp-density-label { margin-top: 10px; }
-.pt-rm-svg { height: 100px; }
 .pt-rm-body { padding: 8px; }
-.pt-mp-body { max-height: 120px; }
 
 /* ---- Chain pulse: heartbeat tabs + 6-cell density ---- */
 .pt-cp-hb-right {
@@ -394,14 +500,9 @@
 }
 .pt-cp-density { grid-template-columns: repeat(6, 1fr); }
 
-/* ---- NOW bottom row: Upcoming + Relay map side-by-side ---- */
-.pt-now { grid-template-rows: auto auto auto minmax(220px, 1fr); }
-.pt-now-bottom {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--pt-gap);
-  min-height: 0;
-}
+/* ---- NOW bottom row legacy (no longer used; grid-area layout above
+   handles both rows). Kept commented out for reference: 2-col Upcoming + Map. */
+/* .pt-now-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pt-gap); min-height: 0; } */
 
 /* Relay map fills its half-panel naturally at 2:1 */
 .pt-rm-body {

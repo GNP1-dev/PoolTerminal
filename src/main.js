@@ -22,6 +22,7 @@ import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import { renderPeersPanel } from './ui/peers-panel.js';
+import { renderRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
 } from './views/now.js';
@@ -131,13 +132,13 @@ async function fastPollTick() {
       lastPeersRefreshTime = nowSec;
       queryPeers().then((r) => {
         if (!r) return;
-        // Prefer Prometheus counts when available; otherwise show socket total.
         if (r.metrics) {
           setPeerCounts(r.metrics.outgoingConns, r.metrics.incomingConns);
         } else {
           setPeerCounts(r.total, 0);
         }
         renderPeersPanel(r);
+        renderRelayMap(r.peers);
       }).catch((e) =>
         console.warn('[peers refresh] FAIL:', e.message)
       );

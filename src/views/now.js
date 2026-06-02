@@ -18,7 +18,7 @@ import {
 } from '../ui/chain-pulse.js';
 import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.js';
 import { renderMempool } from '../ui/mempool.js';
-import { renderRelayMap } from '../ui/relay-map.js';
+import { renderRelayMap, initRelayMap } from '../ui/relay-map.js';
 import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
 
 const NOW_HTML = `
@@ -215,6 +215,7 @@ export function mountNow(canvas) {
   initChainPulse();
   renderUpcomingBlocks([]);
   renderRelayMap();
+  initRelayMap();
   resetPeersPanel();
 }
 

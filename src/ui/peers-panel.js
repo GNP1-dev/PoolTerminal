@@ -1,14 +1,19 @@
 /**
  * PoolTerminal — Peers panel.
  *
- * Renders the live peer list from peers-query into the NOW view. Each row
- * shows direction arrow, remote IP:port, and the kernel's smoothed RTT.
+ * Header (when Prometheus available):  OUT 60 · IN 12 · BiDir 80 · Duplex 5
+ * Header (fallback when not):          N sockets
  *
- * Sorted outbound-first (peers WE chose), then inbound; within each group
- * fastest peers (lowest RTT) first.
+ * Body: peer list from `ss`, one row per established TCP connection,
+ *       sorted by RTT (fastest first). RTT is colour-coded:
+ *       < 50 ms   = green
+ *       < 150 ms  = amber
+ *       >= 150 ms = red
  *
- * Phase 2 (later): geo (ip-api.com batch) and AS in their own columns.
- * Phase 3 (later): BiDir / Duplex breakdown from Prometheus metrics.
+ * Per-peer direction is intentionally omitted: in P2P mode the kernel
+ * socket info cannot distinguish whom-dialed-whom because cardano-node
+ * binds outbound connections to its listen port (SO_REUSEPORT). The
+ * accurate direction breakdown is shown in the header from Prometheus.
  */
 
 function byId(id) { return document.getElementById(id); }
@@ -25,15 +30,39 @@ function formatRtt(rtt) {
   return (rtt / 1000).toFixed(1) + 's';
 }
 
-function rowHtml(peer, dir) {
-  const arrow = dir === 'in' ? '↓' : '↑';
+function rttClass(rtt) {
+  if (rtt == null) return 'pt-rtt-unknown';
+  if (rtt < 50)  return 'pt-rtt-good';
+  if (rtt < 150) return 'pt-rtt-warn';
+  return 'pt-rtt-bad';
+}
+
+function rowHtml(peer) {
   return (
-    `<div class="pt-pp-row pt-pp-dir-${dir}">` +
-      `<span class="pt-pp-dir">${arrow}</span>` +
+    `<div class="pt-pp-row">` +
       `<span class="pt-pp-ip">${peer.ip}:${peer.port}</span>` +
-      `<span class="pt-pp-rtt">${formatRtt(peer.rtt)}</span>` +
+      `<span class="pt-pp-rtt ${rttClass(peer.rtt)}">${formatRtt(peer.rtt)}</span>` +
     `</div>`
   );
+}
+
+function fmt(v) { return v == null ? '—' : v; }
+
+function paintHeader(peerData) {
+  const m = peerData && peerData.metrics;
+  if (m) {
+    setText('pp-out',    fmt(m.outgoingConns));
+    setText('pp-in',     fmt(m.incomingConns));
+    setText('pp-bidir',  fmt(m.duplexConns));
+    setText('pp-duplex', fmt(m.prunableConns));
+  } else {
+    // Fallback when Prometheus is disabled on this node
+    const total = peerData ? peerData.total : null;
+    setText('pp-out',    '—');
+    setText('pp-in',     '—');
+    setText('pp-bidir',  '—');
+    setText('pp-duplex', total != null ? String(total) : '—');
+  }
 }
 
 export function renderPeersPanel(peerData) {
@@ -42,27 +71,18 @@ export function renderPeersPanel(peerData) {
 
   if (!peerData) {
     body.innerHTML = '<div class="pt-pp-empty">No peer data yet…</div>';
-    setText('pp-total', '—');
-    setText('pp-in', '—');
-    setText('pp-out', '—');
+    paintHeader(null);
     return;
   }
 
-  const { inbound = [], outbound = [], total = 0 } = peerData;
-  setText('pp-total', total);
-  setText('pp-in', inbound.length);
-  setText('pp-out', outbound.length);
+  paintHeader(peerData);
 
-  if (total === 0) {
+  if (!peerData.total) {
     body.innerHTML = '<div class="pt-pp-empty">No peers connected.</div>';
     return;
   }
 
-  const rows = [
-    ...outbound.map((p) => rowHtml(p, 'out')),
-    ...inbound.map((p) => rowHtml(p, 'in')),
-  ];
-  body.innerHTML = rows.join('');
+  body.innerHTML = peerData.peers.map(rowHtml).join('');
 }
 
 export function resetPeersPanel() {

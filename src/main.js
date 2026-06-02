@@ -130,10 +130,14 @@ async function fastPollTick() {
     if (getMode() === 'live' && nowSec - lastPeersRefreshTime >= PEERS_REFRESH_EVERY_S) {
       lastPeersRefreshTime = nowSec;
       queryPeers().then((r) => {
-        if (r) {
-          setPeerCounts(r.outbound.length, r.inbound.length);
-          renderPeersPanel(r);
+        if (!r) return;
+        // Prefer Prometheus counts when available; otherwise show socket total.
+        if (r.metrics) {
+          setPeerCounts(r.metrics.outgoingConns, r.metrics.incomingConns);
+        } else {
+          setPeerCounts(r.total, 0);
         }
+        renderPeersPanel(r);
       }).catch((e) =>
         console.warn('[peers refresh] FAIL:', e.message)
       );

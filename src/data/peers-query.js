@@ -1,29 +1,28 @@
 /**
  * PoolTerminal — Peers query.
  *
- * Single SSH call: `ss -tnpi state established` — includes TCP info per
- * connection so we get RTT alongside the addresses. JS filters by the
- * probed cardano-node PID.
+ * Two SSH calls in parallel:
+ *   ss -tnpi  → established connections + RTT (kernel TCP info)
+ *   curl prom → cardano-node Prometheus metrics (in/out/bidir/duplex)
  *
- * Direction classification (P2P-safe):
- *   remote port < 32768 → OUT  (we dialed them; remote is on its listen port)
- *   remote port >= 32768 → IN  (they dialed us; remote port is their ephemeral)
+ * Returns:
+ *   { peers:    [{ ip, port, localPort, rtt }, …],   // ss-based, sorted by RTT
+ *     total:    number,
+ *     metrics:  { incomingConns, outgoingConns, ... } | null,
+ *     timestamp: number }
  *
- * The older "local port == node port" rule failed on P2P relays because
- * cardano-node uses SO_REUSEPORT — even outbound connections bind to the
- * listen port. Classifying by remote port is robust for both P2P and
- * non-P2P (BP) modes.
- *
- * BiDir / Duplex breakdown requires Prometheus metrics from the node — see
- * future step (cardano_node_metrics_connectionManager_*).
- *
- * Returns { inbound:[{ip,port,localPort,rtt}], outbound:[...], total, timestamp }.
+ * NOTE on P2P direction:
+ *   cardano-node P2P uses SO_REUSEPORT, so even outbound TCP connections
+ *   bind to the listen port. ss alone cannot distinguish OUT from IN for
+ *   P2P peers. We therefore present a single sorted list of peers in the
+ *   panel body, and rely on Prometheus metrics for the in/out breakdown
+ *   shown in the panel header.
+ *   gLiveView (cardano-community) confirms this limitation in its docs.
  */
 
 import { invoke } from './tauri.js';
 import { getNodeProbe } from './session.js';
-
-const EPHEMERAL_PORT_THRESHOLD = 32768;
+import { queryMetrics } from './metrics-query.js';
 
 let lastResult = null;
 
@@ -36,17 +35,13 @@ async function runCmd(command) {
 export function getLastPeerData() { return lastResult; }
 
 function parseAddrPair(line) {
-  // Find the first two ipv4:port pairs on the line. ss output:
-  //   ESTAB 0 0  192.168.0.62:3001  78.31.67.243:3001  users:(...)
   const re = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)/g;
-  const m1 = re.exec(line);
-  if (!m1) return null;
-  const m2 = re.exec(line);
-  if (!m2) return null;
+  const m1 = re.exec(line); if (!m1) return null;
+  const m2 = re.exec(line); if (!m2) return null;
   return {
-    localIp: m1[1],
-    localPort: parseInt(m1[2], 10),
-    remoteIp: m2[1],
+    localIp:    m1[1],
+    localPort:  parseInt(m1[2], 10),
+    remoteIp:   m2[1],
     remotePort: parseInt(m2[2], 10),
   };
 }
@@ -54,17 +49,10 @@ function parseAddrPair(line) {
 function parseRtt(statsLine) {
   if (!statsLine) return null;
   const m = statsLine.match(/\srtt:([\d.]+)\//);
-  if (!m) return null;
-  return parseFloat(m[1]);
+  return m ? parseFloat(m[1]) : null;
 }
 
-export async function queryPeers() {
-  const probe = getNodeProbe();
-  if (!probe || !probe.pid) return null;
-
-  const t0 = performance.now();
-  // -t TCP, -n numeric, -p processes (for the pid= tag), -i TCP info (rtt).
-  // Output has connection line followed by an indented stats line.
+async function queryPeerList(probe) {
   const cmd = `ss -tnpi state established 2>/dev/null`;
   let out;
   try {
@@ -74,8 +62,7 @@ export async function queryPeers() {
     return null;
   }
 
-  const inbound = [];
-  const outbound = [];
+  const peers = [];
   const pidTag = `pid=${probe.pid},`;
   const lines = out.split('\n');
 
@@ -91,49 +78,55 @@ export async function queryPeers() {
       parsed.remoteIp === '0.0.0.0'
     ) continue;
 
-    // RTT is on the immediately-following indented stats line.
     let rtt = null;
     if (i + 1 < lines.length) {
       const next = lines[i + 1];
-      if (next && next.startsWith('\t') || (next && /^\s+\S/.test(next))) {
-        rtt = parseRtt(next);
-      }
+      if (next && /^\s+\S/.test(next)) rtt = parseRtt(next);
     }
 
-    const peer = {
-      ip: parsed.remoteIp,
-      port: parsed.remotePort,
+    peers.push({
+      ip:        parsed.remoteIp,
+      port:      parsed.remotePort,
       localPort: parsed.localPort,
       rtt,
-    };
-
-    if (parsed.remotePort < EPHEMERAL_PORT_THRESHOLD) {
-      outbound.push(peer);
-    } else {
-      inbound.push(peer);
-    }
+    });
   }
 
-  // Within each direction, fastest peers first.
-  const byRtt = (a, b) => {
+  // Fastest first, unknown RTTs last
+  peers.sort((a, b) => {
     if (a.rtt == null && b.rtt == null) return 0;
     if (a.rtt == null) return 1;
     if (b.rtt == null) return -1;
     return a.rtt - b.rtt;
-  };
-  outbound.sort(byRtt);
-  inbound.sort(byRtt);
+  });
+
+  return { peers, total: peers.length };
+}
+
+export async function queryPeers() {
+  const probe = getNodeProbe();
+  if (!probe || !probe.pid) return null;
+
+  const t0 = performance.now();
+  const [peerList, metrics] = await Promise.all([
+    queryPeerList(probe),
+    queryMetrics(),
+  ]);
+  if (!peerList) return null;
 
   lastResult = {
-    inbound,
-    outbound,
-    total: inbound.length + outbound.length,
+    peers:     peerList.peers,
+    total:     peerList.total,
+    metrics,
     timestamp: Date.now(),
   };
 
   console.log(
     `[peers] ${Math.round(performance.now() - t0)}ms · ` +
-    `${lastResult.total} total · IN ${inbound.length} · OUT ${outbound.length}`
+    `${lastResult.total} sockets · ` +
+    (metrics
+      ? `metrics OUT ${metrics.outgoingConns} / IN ${metrics.incomingConns}`
+      : `no metrics (Prometheus disabled)`)
   );
 
   return lastResult;

@@ -176,11 +176,13 @@ const NOW_HTML = `
         <div class="pt-panel-header">
           <span class="pt-panel-title">Peers</span>
           <span class="pt-panel-meta">
-            <span id="pp-total">—</span>&nbsp;<span class="pt-muted">total</span>
+            <span class="pt-muted">OUT</span>&nbsp;<span id="pp-out">—</span>
             <span class="pt-sep">·</span>
             <span class="pt-muted">IN</span>&nbsp;<span id="pp-in">—</span>
             <span class="pt-sep">·</span>
-            <span class="pt-muted">OUT</span>&nbsp;<span id="pp-out">—</span>
+            <span class="pt-muted">BiDir</span>&nbsp;<span id="pp-bidir">—</span>
+            <span class="pt-sep">·</span>
+            <span class="pt-muted">Duplex</span>&nbsp;<span id="pp-duplex">—</span>
           </span>
         </div>
         <div class="pt-pp-body" id="pp-body"></div>

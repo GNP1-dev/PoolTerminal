@@ -35,6 +35,9 @@ function readMetric(text, name) {
   return m ? parseFloat(m[1]) : null;
 }
 
+let lastMetrics = null;
+export function getLastMetrics() { return lastMetrics; }
+
 export async function queryMetrics() {
   const probe = getNodeProbe();
   if (!probe || !probe.prometheusPort) return null;
@@ -61,7 +64,11 @@ export async function queryMetrics() {
     peersCold:            readMetric(out, 'cardano_node_metrics_peerSelection_Cold_int'),
     peersWarm:            readMetric(out, 'cardano_node_metrics_peerSelection_Warm_int'),
     peersHot:             readMetric(out, 'cardano_node_metrics_peerSelection_Hot_int'),
+    // Used by the mempool panel for throughput (delta between successive reads)
+    txsProcessed:         readMetric(out, 'cardano_node_metrics_txsProcessedNum_int'),
   };
+
+  lastMetrics = result;
 
   console.log(
     `[metrics] ${Math.round(performance.now() - t0)}ms · ` +

@@ -233,9 +233,9 @@ export async function bootstrapNow(src) {
   renderMempool(mp);
 }
 
-export async function refreshMempool(src) {
+export async function refreshMempool(src, tipBlock) {
   const mp = await src.getMempool();
-  renderMempool(mp);
+  renderMempool(mp, { tipBlock });
 }
 
 export function unmountNow() {

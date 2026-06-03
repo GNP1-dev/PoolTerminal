@@ -122,7 +122,7 @@ async function fastPollTick() {
     // Mempool refresh every Nth second (background, doesn't gate this tick).
     if (activeView === 'now' && nowSec - lastMempoolRefreshTime >= MEMPOOL_REFRESH_EVERY_S) {
       lastMempoolRefreshTime = nowSec;
-      refreshMempool(dataSource()).catch((e) =>
+      refreshMempool(dataSource(), latestSnap?.tipBlock).catch((e) =>
         console.warn('[mempool refresh] FAIL:', e.message)
       );
     }

@@ -64,8 +64,9 @@ export async function queryMetrics() {
     peersCold:            readMetric(out, 'cardano_node_metrics_peerSelection_Cold_int'),
     peersWarm:            readMetric(out, 'cardano_node_metrics_peerSelection_Warm_int'),
     peersHot:             readMetric(out, 'cardano_node_metrics_peerSelection_Hot_int'),
-    // Used by the mempool panel for throughput (delta between successive reads)
-    txsProcessed:         readMetric(out, 'cardano_node_metrics_txsProcessedNum_int'),
+    // Used by the mempool panel for throughput (delta between successive reads).
+    // cardano-node 11.0.1 renamed this from _int to _counter (it's cumulative).
+    txsProcessed:         readMetric(out, 'cardano_node_metrics_txsProcessedNum_counter'),
   };
 
   lastMetrics = result;

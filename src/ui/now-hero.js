@@ -52,26 +52,29 @@ export function renderHero(snap) {
   const pp = snap.poolPulse;
 
   // --- Pulse ---
-  setHTML('hero-pulse-val', `${pp.score}<span class="pt-hero-unit">/100</span>`);
-  byId('hero-pulse-val').style.color = pulseColor(pp.score);
-  const arrow = pp.delta > 0 ? '▲' : pp.delta < 0 ? '▼' : '·';
-  const deltaEl = byId('hero-pulse-delta');
-  deltaEl.textContent = `${arrow} ${pp.delta >= 0 ? '+' : ''}${pp.delta}`;
-  deltaEl.style.color = pp.delta >= 0 ? 'var(--pt-status-good)' : 'var(--pt-status-bad)';
-  flashCard('hero-pulse', pp.score, prev.pulse);
+  if (pp.score == null) {
+    setHTML('hero-pulse-val', '—');
+    byId('hero-pulse-val').style.color = 'var(--pt-text-muted)';
+    const deltaEl = byId('hero-pulse-delta');
+    if (deltaEl) { deltaEl.textContent = ''; }
+  } else {
+    setHTML('hero-pulse-val', `${pp.score}<span class="pt-hero-unit">/100</span>`);
+    byId('hero-pulse-val').style.color = pulseColor(pp.score);
+    const arrow = pp.delta > 0 ? '▲' : pp.delta < 0 ? '▼' : '·';
+    const deltaEl = byId('hero-pulse-delta');
+    deltaEl.textContent = `${arrow} ${pp.delta >= 0 ? '+' : ''}${pp.delta}`;
+    deltaEl.style.color = pp.delta >= 0 ? 'var(--pt-status-good)' : 'var(--pt-status-bad)';
+    flashCard('hero-pulse', pp.score, prev.pulse);
+  }
 
   // --- Epoch (continuous: no flash, smooth bar) ---
   const epPct = (snap.epochProgress * 100).toFixed(1);
   setHTML('hero-epoch-val', `${epPct}<span class="pt-hero-unit">%</span>`);
   byId('hero-epoch-bar').style.width = epPct + '%';
 
-  // --- Leader ---
+  // --- Leader / Ideal / Adopt / Conf / Lost ---
   setText('hero-leader-val', bp.leader);
-
-  // --- Ideal ---
   setText('hero-ideal-val', bp.ideal);
-
-  // --- Adopt (carries Blocks's old role: count + Luck % in sub) ---
   setText('hero-adopt-val', bp.adopted);
   const luckEl = byId('hero-adopt-sub');
   if (luckEl) {
@@ -80,7 +83,6 @@ export function renderHero(snap) {
   }
   flashCard('hero-adopt', bp.adopted, prev.adopted);
 
-  // --- Conf ---
   const confEl = byId('hero-conf-val');
   if (confEl) {
     confEl.textContent = bp.confirmed;
@@ -88,7 +90,6 @@ export function renderHero(snap) {
   }
   flashCard('hero-conf', bp.confirmed, prev.confirmed);
 
-  // --- Lost (always red — losing a block is always noteworthy) ---
   const lostEl = byId('hero-lost-val');
   if (lostEl) {
     lostEl.textContent = bp.lost;
@@ -96,31 +97,42 @@ export function renderHero(snap) {
   }
 
   // --- KES ---
-  setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit">d</span>`);
-  byId('hero-kes-val').style.color = kesColor(snap.kesDaysRemaining);
-
-  // Progress bar: remaining / 62 periods (mainnet max KES evolutions).
-  // Red fill once we're inside the 7-day danger window.
-  const KES_MAX_PERIODS = 62;
-  const kesPct = Math.max(
-    0,
-    Math.min(100, (snap.kesPeriodsRemaining / KES_MAX_PERIODS) * 100)
-  );
+  const kesVal = byId('hero-kes-val');
   const kesBar = byId('hero-kes-bar');
-  if (kesBar) {
-    kesBar.style.width = kesPct + '%';
-    kesBar.style.background = snap.kesDaysRemaining < 7
-      ? 'var(--pt-status-bad)'
-      : 'var(--pt-accent-blue)';
+  const kesSub = byId('hero-kes-sub');
+  if (snap.kesDaysRemaining == null) {
+    if (kesVal) { kesVal.innerHTML = '—'; kesVal.style.color = 'var(--pt-text-muted)'; }
+    if (kesBar) { kesBar.style.width = '0%'; }
+    if (kesSub) { kesSub.textContent = 'no op.cert'; }
+  } else {
+    setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit">d</span>`);
+    kesVal.style.color = kesColor(snap.kesDaysRemaining);
+    const KES_MAX_PERIODS = 62;
+    const kesPct = Math.max(
+      0,
+      Math.min(100, (snap.kesPeriodsRemaining / KES_MAX_PERIODS) * 100)
+    );
+    if (kesBar) {
+      kesBar.style.width = kesPct + '%';
+      kesBar.style.background = snap.kesDaysRemaining < 7
+        ? 'var(--pt-status-bad)'
+        : 'var(--pt-accent-blue)';
+    }
+    // Use the exact expiry unix timestamp from the cli when available,
+    // otherwise fall back to "now + days" (less precise — rounded down).
+    const expiry = snap.kesKeyExpiryUnix != null
+      ? new Date(snap.kesKeyExpiryUnix * 1000)
+      : new Date(Date.now() + snap.kesDaysRemaining * 86400000);
+    const dd   = String(expiry.getDate()).padStart(2, '0');
+    const mmm  = expiry.toLocaleString('en-GB', { month: 'short' });
+    const yyyy = expiry.getFullYear();
+    const hh   = String(expiry.getHours()).padStart(2, '0');
+    const mm   = String(expiry.getMinutes()).padStart(2, '0');
+    const periods = snap.kesPeriodsRemaining != null
+      ? `${snap.kesPeriodsRemaining}p · `
+      : '';
+    setText('hero-kes-sub', `${periods}${dd} ${mmm} ${yyyy} ${hh}:${mm}`);
   }
-
-  // Sub line shows the actual expiry datetime, e.g. "23 Aug 14:32"
-  const expiry = new Date(Date.now() + snap.kesDaysRemaining * 86400000);
-  const dd = String(expiry.getDate()).padStart(2, '0');
-  const mmm = expiry.toLocaleString('en-GB', { month: 'short' });
-  const hh = String(expiry.getHours()).padStart(2, '0');
-  const mm = String(expiry.getMinutes()).padStart(2, '0');
-  setText('hero-kes-sub', `${dd} ${mmm} ${hh}:${mm}`);
 
   prev = {
     pulse: pp.score,

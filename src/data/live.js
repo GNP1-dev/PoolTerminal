@@ -9,14 +9,23 @@
  * genesis time, not the Shelley era start. Slot 0 is in Byron (20-second
  * slots); Shelley begins at slot BYRON_SLOTS after the Byron era.
  *
- * Snapshot returns tip.block as tipBlock so the fast loop can detect new
- * blocks via tip-block increment.
+ * KES query is cached for 60s — periods change once every 1.5 days so
+ * re-polling every snapshot would be wasteful. Only attempts the query
+ * when the node-probe surfaced an opCertPath (i.e. we're connected to
+ * a BP). Sets kesDaysRemaining/kesPeriodsRemaining to null on relays.
+ *
+ * Pulse score is a weighted sum of four real components:
+ *   KES health (0-30) · Sync at tip (0-30) · Peers ≥1 (0-25) · Mempool (0-15)
+ * Total max 100. Null when we have no data yet.
  */
 
 import { invoke } from './tauri.js';
 import { getSession } from './session.js';
+import { getNodeProbe } from './session.js';
+import { getLastMetrics } from './metrics-query.js';
 
 const BYRON_SLOT_LEN_S = 20;
+const KES_REFRESH_S    = 60;
 
 function envOf() { return getSession().envVars || {}; }
 
@@ -59,8 +68,7 @@ function cliCmd(args) {
   return `CARDANO_NODE_SOCKET_PATH=${e.CARDANO_NODE_SOCKET_PATH} ${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
 }
 
-const ZERO_BP    = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
-const ZERO_PULSE = { score: 0, delta: 0, components: {} };
+const ZERO_BP = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
 
 function emptyChainPulse(tipBlock = 0) {
   return {
@@ -77,10 +85,48 @@ function emptyMempool() {
   return { txCount: 0, totalBytes: 0, recent: [] };
 }
 
+function computePulse(snap) {
+  let total = 0;
+  const components = {};
+
+  // KES health (0-30)
+  if (snap.kesDaysRemaining != null) {
+    if      (snap.kesDaysRemaining > 30) components.kes = 30;
+    else if (snap.kesDaysRemaining > 14) components.kes = 20;
+    else if (snap.kesDaysRemaining > 7)  components.kes = 10;
+    else                                  components.kes = 0;
+  } else {
+    // No op.cert (relay) — neutral 25 so Pulse isn't penalised
+    components.kes = 25;
+  }
+  total += components.kes;
+
+  // Sync at tip (0-30)
+  components.sync = snap.atTip ? 30 : (snap.syncPercent >= 95 ? 15 : 0);
+  total += components.sync;
+
+  // Peers (0-25)
+  const totalPeers = (snap.peersIn || 0) + (snap.peersOut || 0);
+  components.peers = totalPeers >= 1 ? 25 : 0;
+  total += components.peers;
+
+  // Mempool reachable (0-15) — proxy for "node is responsive"
+  const m = getLastMetrics();
+  components.mempool = m ? 15 : 0;
+  total += components.mempool;
+
+  return { score: total, components };
+}
+
 export class LiveDataSource {
   constructor() {
     this.mode = 'live';
     this._lastTip = null;
+    this._kesDays = null;
+    this._kesPeriods = null;
+    this._kesExpiryMs = null;
+    this._kesAt = 0;
+    this._lastPulseScore = null;
   }
 
   async getPoolIdentity() {
@@ -92,6 +138,56 @@ export class LiveDataSource {
     };
   }
 
+  async _maybeRefreshKes() {
+    const now = Date.now() / 1000;
+    if (now - this._kesAt < KES_REFRESH_S) return;
+
+    const probe = getNodeProbe();
+    if (!probe?.opCertPath) {
+      this._kesDays    = null;
+      this._kesPeriods = null;
+      this._kesAt      = now;
+      return;
+    }
+
+    const cmd = cliCmd(`query kes-period-info --op-cert-file '${probe.opCertPath}'`);
+    try {
+      const out  = await runCmd(cmd);
+      // cardano-cli emits checkmark validation lines BEFORE the JSON; skip
+      // everything up to the first '{' before parsing.
+      const jsonStart = out.indexOf('{');
+      if (jsonStart < 0) throw new Error('no JSON object in kes-period-info output');
+      const info = JSON.parse(out.slice(jsonStart));
+      const cur  = info.qKesCurrentKesPeriod;
+      const end  = info.qKesEndKesInterval;
+      this._kesPeriods = Math.max(0, end - cur);
+
+      this._kesExpiryMs = null;
+      if (info.qKesKesKeyExpiry) {
+        const expiryMs = Date.parse(info.qKesKesKeyExpiry);
+        if (expiryMs > 0) {
+          this._kesExpiryMs = expiryMs;
+          this._kesDays = Math.max(0, Math.floor((expiryMs - Date.now()) / 86400000));
+        }
+      }
+      if (this._kesDays == null) {
+        const slotsPerKes = info.qKesSlotsPerKesPeriod || 129600;
+        this._kesDays = Math.floor((this._kesPeriods * slotsPerKes) / 86400);
+        // Approximate expiry from periods if cli didn't give us a timestamp
+        if (this._kesPeriods > 0) {
+          this._kesExpiryMs = Date.now() + this._kesPeriods * slotsPerKes * 1000;
+        }
+      }
+      console.log(`[live.kes] periods=${this._kesPeriods} days=${this._kesDays}`);
+    } catch (err) {
+      console.warn('[live.kes] query failed:', err.message);
+      this._kesDays     = null;
+      this._kesPeriods  = null;
+      this._kesExpiryMs = null;
+    }
+    this._kesAt = now;
+  }
+
   async getNowSnapshot() {
     const out = await runCmd(cliCmd('query tip'));
     const tip = JSON.parse(out);
@@ -100,8 +196,15 @@ export class LiveDataSource {
     const sync     = parseFloat(tip.syncProgress || '0');
     this._lastTip  = tip;
     const e = envOf();
-    return {
+
+    // KES refresh runs in the background; doesn't gate the snapshot.
+    this._maybeRefreshKes();
+
+    // Build snap with KES + everything else needed for Pulse
+    const snap = {
       poolTicker:        e.POOL_TICKER || e.POOL_NAME || 'POOL',
+      network:           e.NETWORK_NAME || (e.NETWORK_IDENTIFIER || '').replace(/^--/, '') || 'Mainnet',
+      era:               tip.era || '',
       epoch:             tip.epoch,
       epochProgress:     progress,
       slot:              tip.slot,
@@ -109,14 +212,21 @@ export class LiveDataSource {
       tipBlock:          tip.block,
       syncPercent:       sync,
       atTip:             sync >= 99.95,
-      kesDaysRemaining:    0,
-      kesPeriodsRemaining: 0,
+      kesDaysRemaining:    this._kesDays,
+      kesPeriodsRemaining: this._kesPeriods,
+      kesKeyExpiryUnix:    this._kesExpiryMs ? Math.floor(this._kesExpiryMs / 1000) : null,
       peersIn:  null,
       peersOut: null,
-      forging:  true,
       blockProduction: { ...ZERO_BP },
-      poolPulse:       { ...ZERO_PULSE },
     };
+
+    // Pulse formula — computed last from the fields above
+    const pulse = computePulse(snap);
+    const delta = this._lastPulseScore == null ? 0 : pulse.score - this._lastPulseScore;
+    this._lastPulseScore = pulse.score;
+    snap.poolPulse = { score: pulse.score, delta, components: pulse.components };
+
+    return snap;
   }
 
   async getUpcomingBlocks() {

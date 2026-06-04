@@ -1,15 +1,22 @@
 /**
  * PoolTerminal — tickertape binding.
  * Renders a NowSnapshot into the persistent top strip. The strip is global
- * chrome (visible on every view), so it's driven by the always-on poll loop in
- * main.js, not by any single view.
+ * chrome (visible on every view), so it's driven by the always-on poll loop
+ * in main.js, not by any single view.
+ *
+ * Layout (left to right):
+ *   POOL [Role] · NET·ERA · EPOCH · BLOCK · SYNC · KES · PEERS · LIVE/DEMO
+ *
+ * BLOCK replaces the old SLOT slot — block height changes once per ~20s
+ * and is visibly "alive", whereas absolute slot ticks 1/sec on a 9-digit
+ * number which is hard to see.
+ *
+ * FORGING dot has been retired: redundant with the Role badge.
  */
 
 import { commas } from './format.js';
 
-function byId(id) {
-  return document.getElementById(id);
-}
+function byId(id) { return document.getElementById(id); }
 function setText(id, val) {
   const el = byId(id);
   if (el) el.textContent = val;
@@ -23,22 +30,20 @@ function kesColor(days) {
   return 'var(--pt-text-primary)';
 }
 
-function renderForging(forging) {
-  const el = byId('ttape-forging');
-  if (!el) return;
-  el.innerHTML = forging
-    ? '<span class="pt-dot pt-dot-good"></span>' +
-      '<span class="pt-ticker-val" style="color: var(--pt-status-good)">FORGING</span>'
-    : '<span class="pt-dot pt-dot-bad"></span>' +
-      '<span class="pt-ticker-val" style="color: var(--pt-status-bad)">NOT FORGING</span>';
-}
-
 export function renderTickertape(snap) {
   const nameEl = document.querySelector('.pt-ticker-name');
   if (nameEl) nameEl.textContent = snap.poolTicker;
 
+  // NET · ERA (combined slot)
+  const netEraEl = byId('ttape-net');
+  if (netEraEl) {
+    const net = snap.network || '—';
+    const era = snap.era || '';
+    netEraEl.textContent = era ? `${net} · ${era}` : net;
+  }
+
   setText('ttape-epoch', snap.epoch);
-  setText('ttape-slot', commas(snap.slot));
+  setText('ttape-block', snap.tipBlock != null ? commas(snap.tipBlock) : '—');
 
   const syncEl = byId('ttape-sync');
   if (syncEl) {
@@ -51,17 +56,20 @@ export function renderTickertape(snap) {
 
   const kesEl = byId('ttape-kes');
   if (kesEl) {
-    kesEl.textContent = snap.kesDaysRemaining + 'd';
-    kesEl.style.color = kesColor(snap.kesDaysRemaining);
+    if (snap.kesDaysRemaining == null) {
+      kesEl.textContent = '—';
+      kesEl.style.color = 'var(--pt-text-muted)';
+    } else {
+      kesEl.textContent = snap.kesDaysRemaining + 'd';
+      kesEl.style.color = kesColor(snap.kesDaysRemaining);
+    }
   }
 
-  // peers shown OUT/IN (matches the approved NOW-view mock)
-  // Live mode leaves these null and lets peers-query paint via setPeerCounts.
+  // Peers in live mode are painted directly by setPeerCounts (Prometheus);
+  // demo mode supplies non-null fields here.
   if (snap.peersOut != null && snap.peersIn != null) {
     setText('ttape-peers', `${snap.peersOut}/${snap.peersIn}`);
   }
-
-  renderForging(snap.forging);
 }
 
 /** Dim the whole strip when data is stale (DESIGN.md §8: 60% opacity). */

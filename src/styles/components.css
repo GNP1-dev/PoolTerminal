@@ -559,8 +559,13 @@
   display: block;
 }
 
-/* Upcoming blocks: progress-bar column + tighter grid */
-.pt-ub-row { grid-template-columns: 36px 1fr 100px 64px; gap: 12px; }
+/* Upcoming blocks: progress-bar column + tighter grid (5 cols incl. when) */
+.pt-ub-row { grid-template-columns: 32px 110px auto 1fr 64px; gap: 12px; }
+.pt-ub-when {
+  color: var(--pt-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.pt-ub-row-next .pt-ub-when { color: var(--pt-accent-blue); }
 .pt-ub-bar-track {
   width: 100%;
   height: 6px;

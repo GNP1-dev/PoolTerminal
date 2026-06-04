@@ -238,6 +238,11 @@ export async function refreshMempool(src, tipBlock) {
   renderMempool(mp, { tipBlock });
 }
 
+export async function refreshUpcomingBlocks(src) {
+  const list = await src.getUpcomingBlocks();
+  renderUpcomingBlocks(list);
+}
+
 export function unmountNow() {
   stopChainPulse();
   stopUpcomingBlocks();

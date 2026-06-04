@@ -55,14 +55,17 @@ export class DemoDataSource {
     const luckPercent = Math.round((leader / ideal) * 100);
     const adopted = Math.min(leader, Math.round(leader * e.progress));
     const pulseScore = 90 + Math.round(4 * Math.sin(nowSec() / 600) + 2);
+    // Synthetic chain height: ~1 block per 20s since Shelley start.
+    const tipBlock = Math.floor((nowSec() - SHELLEY_START) / 20);
     return {
       poolTicker: 'DEMO1',
+      network: 'Mainnet', era: 'Conway',
       epoch: e.epoch, epochProgress: e.progress,
       slot: e.absSlot, slotInEpoch: e.slotInEpoch,
+      tipBlock,
       syncPercent: 100.0, atTip: true,
       kesDaysRemaining: 47, kesPeriodsRemaining: 34,
       peersIn: 8 + Math.floor(Math.random() * 4), peersOut: 12,
-      forging: true,
       blockProduction: {
         leader, ideal: Math.round(ideal * 10) / 10, luckPercent,
         adopted, confirmed: adopted, lost: 0,
@@ -82,14 +85,26 @@ export class DemoDataSource {
     const seed = epochSeed(e.epoch);
     const leader = 18 + Math.floor(seed * 6);
     const adopted = Math.min(leader, Math.round(leader * e.progress));
-    const remaining = Math.max(0, leader - adopted);
     const slotsLeft = EPOCH_LEN - e.slotInEpoch;
+    // Demo always shows at least 6 upcoming blocks spread across up to
+    // ~60h so the panel is interesting even late in the simulated epoch.
+    const remaining = Math.max(6, leader - adopted);
+    const maxEta = Math.min(slotsLeft, 60 * 3600);
+    const now = nowSec();
     const blocks = [];
     let cursor = 0;
     for (let i = 0; i < remaining; i++) {
-      cursor += slotsLeft / (remaining + 1);
-      const eta = Math.max(1, Math.floor(cursor + (Math.random() - 0.5) * (slotsLeft / (remaining + 2))));
-      blocks.push({ index: 0, slot: e.absSlot + eta, etaSeconds: eta });
+      cursor += maxEta / (remaining + 1);
+      const eta = Math.max(
+        60,
+        Math.floor(cursor + (Math.random() - 0.5) * (maxEta / (remaining + 2)))
+      );
+      blocks.push({
+        index:       0,
+        slot:        e.absSlot + eta,
+        etaSeconds:  eta,
+        atTimestamp: now + eta,
+      });
     }
     blocks.sort((a, b) => a.etaSeconds - b.etaSeconds);
     blocks.forEach((b, i) => (b.index = i + 1));

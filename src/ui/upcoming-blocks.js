@@ -1,15 +1,15 @@
 /**
  * PoolTerminal — Upcoming blocks panel.
  *
- * Each row shows a horizontal progress bar whose WIDTH conveys how close that
- * block is to arriving, relative to the furthest block in the list:
- *   width = (1 - liveETA / referenceETA) * 100%
- * So the closest block (top) has the widest bar; the furthest block has the
- * narrowest. As time elapses, every bar widens smoothly via rAF.
+ * Each row shows:
+ *   #idx · slot · wall-clock time · animated progress bar · live ETA
  *
- * Reference ETA is the longest ETA + 15% headroom, so even the furthest block
- * shows a small bar (rather than empty), and there's room for new blocks that
- * land beyond the current max.
+ * The bar's width conveys how close the block is relative to the furthest
+ * one in the list: closest (top) has the widest, furthest has the narrowest.
+ * Every frame (rAF), bars widen and ETAs count down smoothly.
+ *
+ * The wall-clock column expects an atTimestamp (Unix epoch seconds). If
+ * the data source doesn't provide it, we fall back to "now + etaSeconds".
  */
 
 import { commas, duration } from './format.js';
@@ -21,16 +21,46 @@ let rafId = null;
 
 function byId(id) { return document.getElementById(id); }
 
+function sameDay(a, b) {
+  return a.getFullYear() === b.getFullYear() &&
+         a.getMonth()    === b.getMonth() &&
+         a.getDate()     === b.getDate();
+}
+
+function formatWhen(ts) {
+  const when = new Date(ts * 1000);
+  const now  = new Date();
+  const hh = String(when.getHours()).padStart(2, '0');
+  const mm = String(when.getMinutes()).padStart(2, '0');
+  const time = `${hh}:${mm}`;
+
+  if (sameDay(when, now)) return `${time} today`;
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (sameDay(when, tomorrow)) return `${time} tomorrow`;
+
+  const diffDays = Math.round((when - now) / 86400000);
+  if (diffDays >= 0 && diffDays < 7) {
+    const dayName = when.toLocaleDateString('en-GB', { weekday: 'short' });
+    return `${time} ${dayName}`;
+  }
+
+  const dateStr = when.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  return `${time} ${dateStr}`;
+}
+
 export function renderUpcomingBlocks(list) {
   polledAt = Date.now() / 1000;
   blocks = list.map((b) => ({
-    index: b.index,
-    slot: b.slot,
-    etaAtPoll: b.etaSeconds,
+    index:       b.index,
+    slot:        b.slot,
+    etaAtPoll:   b.etaSeconds,
+    atTimestamp: b.atTimestamp || (Math.floor(Date.now() / 1000) + b.etaSeconds),
   }));
   maxEtaAtPoll = Math.max(1, ...blocks.map((b) => b.etaAtPoll));
 
-  const body = byId('ub-body');
+  const body  = byId('ub-body');
   const count = byId('ub-count');
   if (!body || !count) return;
 
@@ -45,6 +75,7 @@ export function renderUpcomingBlocks(list) {
         (b, i) => `
         <div class="pt-ub-row${i === 0 ? ' pt-ub-row-next' : ''}">
           <div class="pt-ub-idx">#${b.index}</div>
+          <div class="pt-ub-when">${formatWhen(b.atTimestamp)}</div>
           <div class="pt-ub-slot">slot ${commas(b.slot)}</div>
           <div class="pt-ub-bar-track">
             <div class="pt-ub-bar" id="ub-bar-${b.index}" style="width: 0%"></div>
@@ -61,12 +92,12 @@ export function renderUpcomingBlocks(list) {
 function loop() {
   rafId = requestAnimationFrame(loop);
   if (!blocks.length) return;
-  const elapsed = Date.now() / 1000 - polledAt;
+  const elapsed   = Date.now() / 1000 - polledAt;
   const reference = maxEtaAtPoll * 1.15;
   for (const b of blocks) {
     const liveETA = Math.max(0, b.etaAtPoll - elapsed);
-    const etaEl = byId(`ub-eta-${b.index}`);
-    const barEl = byId(`ub-bar-${b.index}`);
+    const etaEl   = byId(`ub-eta-${b.index}`);
+    const barEl   = byId(`ub-bar-${b.index}`);
     if (etaEl) etaEl.textContent = duration(liveETA);
     if (barEl) {
       const fill = Math.min(100, Math.max(0, (1 - liveETA / reference) * 100));

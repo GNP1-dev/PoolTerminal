@@ -21,10 +21,10 @@
 import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
-import { renderPeersPanel } from './ui/peers-panel.js';
-import { renderRelayMap } from './ui/relay-map.js';
+import { renderPeersPanel, resetPeersPanel } from './ui/peers-panel.js';
+import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
-  mountNow, updateNowFast, bootstrapNow, refreshMempool, unmountNow,
+  mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
 } from './views/now.js';
 import { showConnectModal } from './views/connect.js';
 import { getSession, setNodeProbe } from './data/session.js';
@@ -34,6 +34,7 @@ import { queryPeers } from './data/peers-query.js';
 const FAST_INTERVAL_MS = 1000;
 const MEMPOOL_REFRESH_EVERY_S = 5;
 const PEERS_REFRESH_EVERY_S = 5;
+const UPCOMING_REFRESH_EVERY_S = 60;
 
 let fastTimer = null;
 let fastPolling = false;
@@ -44,6 +45,7 @@ let lastSeenBlock = null;
 let lastPollTime = null;
 let lastMempoolRefreshTime = 0;
 let lastPeersRefreshTime = 0;
+let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
 
 let activeView = 'now';
@@ -124,6 +126,16 @@ async function fastPollTick() {
       lastMempoolRefreshTime = nowSec;
       refreshMempool(dataSource(), latestSnap?.tipBlock).catch((e) =>
         console.warn('[mempool refresh] FAIL:', e.message)
+      );
+    }
+
+    // Upcoming-blocks refresh every minute — leadership schedule changes only
+    // once per epoch in practice; we still re-poll for the new "next epoch"
+    // schedule once the safe window opens.
+    if (activeView === 'now' && nowSec - lastUpcomingRefreshTime >= UPCOMING_REFRESH_EVERY_S) {
+      lastUpcomingRefreshTime = nowSec;
+      refreshUpcomingBlocks(dataSource()).catch((e) =>
+        console.warn('[upcoming refresh] FAIL:', e.message)
       );
     }
 
@@ -217,8 +229,11 @@ window.addEventListener('DOMContentLoaded', () => {
       lastPollTime = null;
       lastMempoolRefreshTime = 0;
       lastPeersRefreshTime = 0;
+      lastUpcomingRefreshTime = 0;
       bootstrapStarted = false;
       setPeerCounts(null, null);
+      resetPeersPanel();
+      resetRelayMap();
       runProbeAndPaintRole();
       fastPollTick();
     });

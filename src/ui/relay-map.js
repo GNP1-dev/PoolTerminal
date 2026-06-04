@@ -218,3 +218,10 @@ export function renderRelayMap(peers = []) {
   }
   paint(peers);
 }
+
+/** Clear peer state on reconnect / mode switch. Keeps the world map and
+ *  own location cached for efficiency (they don't change per-session). */
+export function resetRelayMap() {
+  lastPeers = [];
+  paint([]);
+}

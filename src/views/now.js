@@ -23,53 +23,67 @@ import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
 
 const NOW_HTML = `
   <style>
-    .pt-cp-top {
+    .pt-chainpulse-body {
+      padding: 4px 16px 10px 16px;
       display: flex;
-      align-items: baseline;
-      gap: 24px;
-      flex-wrap: wrap;
-      padding: 12px 16px 8px 16px;
+      flex-direction: column;
     }
-    .pt-cp-since-block {
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-      flex: 0 0 auto;
-    }
-    .pt-cp-since-label {
-      font-size: 12px;
-      letter-spacing: 0.06em;
-      color: var(--pt-text-muted);
-      text-transform: uppercase;
-      font-weight: 600;
-    }
-    .pt-cp-since {
-      font-size: 36px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      line-height: 1;
-      color: var(--pt-text-primary);
-    }
-    .pt-cp-stats-inline {
+    .pt-cp-density-row {
       display: flex;
       gap: 14px;
-      font-size: 12px;
-      font-variant-numeric: tabular-nums;
-    }
-    .pt-cp-density-inline {
-      display: flex;
-      gap: 14px;
-      font-size: 12px;
-      margin-left: auto;
+      font-size: 11px;
       font-variant-numeric: tabular-nums;
       align-items: baseline;
+      padding: 2px 0 4px 0;
     }
-    .pt-cp-density-inline > span { white-space: nowrap; }
-    .pt-cp-density-label-inline {
+    .pt-cp-density-row > span { white-space: nowrap; }
+    .pt-cp-density-label {
       font-size: 10px;
       letter-spacing: 0.06em;
       opacity: 0.55;
       text-transform: uppercase;
+    }
+    .pt-cp-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0 4px 0;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .pt-cp-stats-inline {
+      display: flex;
+      gap: 14px;
+    }
+    .pt-cp-timer-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-top: 2px;
+    }
+    .pt-cp-timer {
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      min-width: 64px;
+      color: var(--pt-status-good);
+      transition: color 0.3s linear;
+    }
+    .pt-cp-progress {
+      flex: 1;
+      height: 8px;
+      background: var(--pt-border);
+      border-radius: 4px;
+      overflow: hidden;
+      display: block;
+    }
+    .pt-cp-progress-fill {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: var(--pt-status-good);
+      transition: width 0.3s linear, background 0.3s linear;
     }
   </style>
   <div class="pt-now">
@@ -120,46 +134,44 @@ const NOW_HTML = `
           <span id="cp-attip"></span>
           <span class="pt-sep">│</span>
           <span class="pt-muted">block</span>&nbsp;<span id="cp-tipblock">—</span>
+          <span class="pt-sep">│</span>
+          <span id="cp-blockcount" class="pt-muted">—</span>
         </span>
       </div>
       <div class="pt-chainpulse-body">
-        <div class="pt-cp-top">
-          <div class="pt-cp-since-block">
-            <span class="pt-cp-since-label">Since last block</span>
-            <span class="pt-cp-since" id="cp-since">—</span>
-          </div>
-          <div class="pt-cp-stats-inline">
-            <span><span class="pt-muted">AVG</span>&nbsp;<span id="cp-avg">—</span></span>
-            <span><span class="pt-muted">MAX</span>&nbsp;<span id="cp-max">—</span></span>
-            <span><span class="pt-muted">MIN</span>&nbsp;<span id="cp-min">—</span></span>
-          </div>
-          <div class="pt-cp-density-inline">
-            <span class="pt-cp-density-label-inline">Density</span>
-            <span><span class="pt-muted">1m</span>&nbsp;<span id="cp-d-m1">—</span></span>
-            <span><span class="pt-muted">5m</span>&nbsp;<span id="cp-d-m5">—</span></span>
-            <span><span class="pt-muted">20m</span>&nbsp;<span id="cp-d-m20">—</span></span>
-            <span><span class="pt-muted">1h</span>&nbsp;<span id="cp-d-h1">—</span></span>
-            <span><span class="pt-muted">1d</span>&nbsp;<span id="cp-d-d1">—</span></span>
-            <span><span class="pt-muted">epoch</span>&nbsp;<span id="cp-d-epoch">—</span></span>
-          </div>
-        </div>
-        <div class="pt-cp-hb-label">
-          <span>HEARTBEAT</span>
-          <span class="pt-cp-hb-right">
-            <span class="pt-cp-tabs" id="cp-tabs">
-              <span class="pt-cp-tab" data-window="10">10s</span>
-              <span class="pt-cp-tab" data-window="30">30s</span>
-              <span class="pt-cp-tab" data-window="60">1m</span>
-              <span class="pt-cp-tab" data-window="300">5m</span>
-              <span class="pt-cp-tab" data-window="900">15m</span>
-              <span class="pt-cp-tab" data-window="3600">1h</span>
-            </span>
-            <span class="pt-accent" id="cp-blockcount">—</span>
-          </span>
+        <div class="pt-cp-density-row">
+          <span class="pt-cp-density-label">Density</span>
+          <span><span class="pt-muted">1m</span>&nbsp;<span id="cp-d-m1">—</span></span>
+          <span><span class="pt-muted">5m</span>&nbsp;<span id="cp-d-m5">—</span></span>
+          <span><span class="pt-muted">20m</span>&nbsp;<span id="cp-d-m20">—</span></span>
+          <span><span class="pt-muted">1h</span>&nbsp;<span id="cp-d-h1">—</span></span>
+          <span><span class="pt-muted">1d</span>&nbsp;<span id="cp-d-d1">—</span></span>
+          <span><span class="pt-muted">epoch</span>&nbsp;<span id="cp-d-epoch">—</span></span>
         </div>
         <svg class="pt-cp-heartbeat" id="cp-heartbeat"
              viewBox="0 0 600 120" preserveAspectRatio="none"
              style="height: 140px !important; width: 100%; display: block;"></svg>
+        <div class="pt-cp-controls">
+          <span class="pt-cp-tabs" id="cp-tabs">
+            <span class="pt-cp-tab" data-window="10">10s</span>
+            <span class="pt-cp-tab" data-window="30">30s</span>
+            <span class="pt-cp-tab" data-window="60">1m</span>
+            <span class="pt-cp-tab" data-window="300">5m</span>
+            <span class="pt-cp-tab" data-window="900">15m</span>
+            <span class="pt-cp-tab" data-window="3600">1h</span>
+          </span>
+          <span class="pt-cp-stats-inline">
+            <span><span class="pt-muted">AVG</span>&nbsp;<span id="cp-avg">—</span></span>
+            <span><span class="pt-muted">MAX</span>&nbsp;<span id="cp-max">—</span></span>
+            <span><span class="pt-muted">MIN</span>&nbsp;<span id="cp-min">—</span></span>
+          </span>
+        </div>
+        <div class="pt-cp-timer-row">
+          <span class="pt-cp-timer" id="cp-since">—</span>
+          <span class="pt-cp-progress">
+            <span class="pt-cp-progress-fill" id="cp-progress-fill"></span>
+          </span>
+        </div>
       </div>
     </div>
 

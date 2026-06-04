@@ -10,16 +10,18 @@
  *     QRS section of the 1m view; the P wave and T wave are stripped.
  *   • Tick mode for 15m / 1h: vertical blue lines (unchanged).
  *
- * History preservation: rebuildHeartbeat plants historical complexes from
- * lastData.recentBlockTimes (visible subset) on every rebuild — init, tab
- * switch, bootstrap. Switching tabs no longer wipes the visualization.
+ * AVG / MAX / MIN are computed over the SELECTED window (currentWindow) —
+ * matches what you're looking at in the visualisation. For windows shorter
+ * than ~one block-time (e.g. 10s) you may have only 0 or 1 blocks in the
+ * window in which case gaps can't be computed; stats fall back to "—".
  *
- * Timescale: horizontal ruler at the bottom of every view, ticks + labels
- * (now, -10s, -20s, …) sized to the current window.
- *
- * Path tail (PATH_TAIL viewBox units past xR) at baseline level overlaps
- * the resumed baseline — forced visual handshake to bridge any perceived
- * gap between trace end and baseline start.
+ * Below the ECG there's a timer + progress bar showing time since the
+ * last block, both coloured by elapsed seconds:
+ *   0-20s   : green
+ *   20-40s  : light orange
+ *   40-60s  : dark orange
+ *   60s+    : red
+ * Progress bar fills left→right and maxes out (100%) at 150s.
  */
 
 import { commas, duration } from './format.js';
@@ -33,7 +35,7 @@ const R_HEIGHT   = 55;
 const Q_DEPTH    = 5;
 const S_DEPTH    = 18;
 const P_HEIGHT   = 8;
-const T_HEIGHT   = 7;      // half of previous (14)
+const T_HEIGHT   = 7;
 const ECG_STROKE = '#ff3344';
 const DRAW_DURATION_S = 0.5;
 const PATH_TAIL = 6;
@@ -47,6 +49,9 @@ const TICK_NOWMARK_BOT = 96;
 const TIMESCALE_Y_TOP = 102;
 const TIMESCALE_Y_BOT = 105;
 const TIMESCALE_LABEL_Y = 115;
+
+// Progress bar maxes at this elapsed-seconds value (Russell's spec).
+const PROGRESS_MAX_S = 150;
 
 let ticks = [];
 let baselineSegments = [];
@@ -63,11 +68,19 @@ const TICK_DEDUP_TOLERANCE_S = 10;
 function byId(id) { return document.getElementById(id); }
 function setText(id, v) { const el = byId(id); if (el) el.textContent = v; }
 
+/** Colour for the elapsed-since-last-block timer + its progress bar. */
+function elapsedColor(secs) {
+  if (secs < 20) return 'var(--pt-status-good)';   // green
+  if (secs < 40) return '#ffb84d';                 // light orange
+  if (secs < 60) return '#ff7a18';                 // dark orange
+  return 'var(--pt-status-bad)';                   // red
+}
+
 function getComplexWidth() {
   if (currentWindow <= 10) return 70;
   if (currentWindow <= 30) return 55;
   if (currentWindow <= 60) return 42;
-  return 20;    // 5m: QRS-only complex, narrow with QRS centred
+  return 20;
 }
 
 function makeLine(y1, y2, color, width) {
@@ -148,23 +161,29 @@ function recomputeDensity() {
   renderDensity(lastData.density);
 }
 
+/**
+ * AVG / MAX / MIN of inter-block gaps over the CURRENTLY SELECTED window.
+ * When the window is short and contains 0 or 1 blocks we can't form gaps,
+ * so stats show "—" rather than misleading zeros.
+ */
 function recomputeStats() {
   if (!lastData) return;
   const now = Date.now() / 1000;
-
-  // AVG/MAX/MIN over the last hour for stable sample size
-  const longTimes = lastData.recentBlockTimes.filter((t) => now - t <= 3600);
-  const gaps = [];
-  for (let i = 1; i < longTimes.length; i++) gaps.push(longTimes[i] - longTimes[i - 1]);
-  const avg = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
-  const max = gaps.length ? Math.max(...gaps) : 0;
-  const min = gaps.length ? Math.min(...gaps) : 0;
-  setText('cp-avg', avg + 's');
-  setText('cp-max', max + 's');
-  setText('cp-min', min + 's');
-
-  // Block count reflects currently selected interval
   const windowTimes = lastData.recentBlockTimes.filter((t) => now - t <= currentWindow);
+  const gaps = [];
+  for (let i = 1; i < windowTimes.length; i++) {
+    gaps.push(windowTimes[i] - windowTimes[i - 1]);
+  }
+  if (gaps.length === 0) {
+    setText('cp-avg', '—');
+    setText('cp-max', '—');
+    setText('cp-min', '—');
+  } else {
+    const avg = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
+    setText('cp-avg', avg + 's');
+    setText('cp-max', Math.max(...gaps) + 's');
+    setText('cp-min', Math.min(...gaps) + 's');
+  }
   setText('cp-blockcount', windowTimes.length + ' blocks');
 }
 
@@ -176,42 +195,28 @@ function buildComplexPath(cw) {
   const BL = BASELINE_Y;
   const xat = (p) => -cw * (1 - p);
 
-  // 5m view: QRS-only complex with QRS centred at p=0.50.
-  // Percentages chosen so PR_end→Q→R→S→recovery spans exactly 6 viewBox
-  // units, identical absolute QRS width to the 1m view.
   if (currentWindow >= 300) {
     let d = `M ${xat(0).toFixed(1)},${BL}`;
-    d += ` L ${xat(0.35).toFixed(1)},${BL}`;                       // lead-in flat
-    d += ` L ${xat(0.425).toFixed(1)},${BL + Q_DEPTH}`;            // Q
-    d += ` L ${xat(0.50).toFixed(1)},${BL - R_HEIGHT}`;            // R
-    d += ` L ${xat(0.575).toFixed(1)},${BL + S_DEPTH}`;            // S
-    d += ` L ${xat(0.65).toFixed(1)},${BL}`;                       // recovery
-    d += ` L ${xat(1.00).toFixed(1)},${BL}`;                       // trailing flat
-    d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;                       // tail past xR
+    d += ` L ${xat(0.35).toFixed(1)},${BL}`;
+    d += ` L ${xat(0.425).toFixed(1)},${BL + Q_DEPTH}`;
+    d += ` L ${xat(0.50).toFixed(1)},${BL - R_HEIGHT}`;
+    d += ` L ${xat(0.575).toFixed(1)},${BL + S_DEPTH}`;
+    d += ` L ${xat(0.65).toFixed(1)},${BL}`;
+    d += ` L ${xat(1.00).toFixed(1)},${BL}`;
+    d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;
     return d;
   }
 
-  // 10s / 30s / 1m: full QRS-T complex with smaller T wave.
   let d = `M ${xat(0).toFixed(1)},${BL}`;
-  // P wave (Bezier)
   d += ` Q ${xat(0.08).toFixed(1)},${(BL - 2 * P_HEIGHT).toFixed(1)} ${xat(0.16).toFixed(1)},${BL}`;
-  // PR flat
   d += ` L ${xat(0.24).toFixed(1)},${BL}`;
-  // Q dip
   d += ` L ${xat(0.27).toFixed(1)},${BL + Q_DEPTH}`;
-  // R spike
   d += ` L ${xat(0.30).toFixed(1)},${BL - R_HEIGHT}`;
-  // S dip
   d += ` L ${xat(0.33).toFixed(1)},${BL + S_DEPTH}`;
-  // Back to BL
   d += ` L ${xat(0.36).toFixed(1)},${BL}`;
-  // ST flat (brief — T wave now starts right after QRS recovery)
   d += ` L ${xat(0.42).toFixed(1)},${BL}`;
-  // T wave (Bezier, peak control at 0.60, ends at 0.78 — close to QRS)
   d += ` Q ${xat(0.60).toFixed(1)},${(BL - 2 * T_HEIGHT).toFixed(1)} ${xat(0.78).toFixed(1)},${BL}`;
-  // Trailing flat
   d += ` L ${xat(1.00).toFixed(1)},${BL}`;
-  // Tail past xR
   d += ` L ${PATH_TAIL.toFixed(1)},${BL}`;
   return d;
 }
@@ -231,7 +236,6 @@ function buildComplexElement(cw) {
 
 function plantComplex(eventTime) {
   if (!complexGroup) return;
-
   const cw = getComplexWidth();
   const el = buildComplexElement(cw);
   el.setAttribute('transform', `translate(${W}, 0)`);
@@ -258,16 +262,13 @@ function plantComplex(eventTime) {
 
 function plantHistoricalComplex(eventTime) {
   if (!complexGroup) return;
-
   const cw = getComplexWidth();
   const el = buildComplexElement(cw);
-
   const now = Date.now() / 1000;
   const pps = W / currentWindow;
   const x = W - (now - eventTime) * pps;
   el.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
   complexGroup.appendChild(el);
-
   activeComplexes.push({ el, eventTime, complexWidth: cw });
 }
 
@@ -318,10 +319,7 @@ function updateBaseline() {
     const xR = W - (now - c.eventTime) * pps;
     const xL = xR - c.complexWidth;
     if (xR <= 0 || xL >= W) continue;
-    ranges.push({
-      left:  Math.max(0, xL),
-      right: Math.min(W, xR),
-    });
+    ranges.push({ left: Math.max(0, xL), right: Math.min(W, xR) });
   }
 
   ranges.sort((a, b) => a.left - b.left);
@@ -338,14 +336,10 @@ function updateBaseline() {
   const segs = [];
   let cursor = 0;
   for (const r of merged) {
-    if (r.left > cursor) {
-      segs.push({ x1: cursor, x2: r.left });
-    }
+    if (r.left > cursor) segs.push({ x1: cursor, x2: r.left });
     cursor = r.right;
   }
-  if (cursor < W) {
-    segs.push({ x1: cursor, x2: W });
-  }
+  if (cursor < W) segs.push({ x1: cursor, x2: W });
 
   while (baselineSegments.length < segs.length) {
     const ln = makeBaselineLine();
@@ -385,7 +379,6 @@ function animateECG() {
     }
     c.el.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
   }
-
   updateBaseline();
 }
 
@@ -566,7 +559,6 @@ export function appendTick(timeSec) {
   optimisticTimes.push(timeSec);
 
   if (!lastData) return;
-
   lastData.recentBlockTimes.push(timeSec);
   lastData.recentBlockTimes.sort((a, b) => a - b);
 
@@ -644,7 +636,19 @@ function loop() {
 
   const times = lastData.recentBlockTimes;
   const latest = times.length ? times[times.length - 1] : now;
-  setText('cp-since', duration(Math.max(0, Math.floor(now - latest))));
+  const elapsed = Math.max(0, Math.floor(now - latest));
+  setText('cp-since', duration(elapsed));
+
+  // Timer + progress bar colour by elapsed seconds; bar max at PROGRESS_MAX_S.
+  const color = elapsedColor(elapsed);
+  const timerEl = byId('cp-since');
+  if (timerEl) timerEl.style.color = color;
+  const progressFill = byId('cp-progress-fill');
+  if (progressFill) {
+    const pct = Math.min(100, (elapsed / PROGRESS_MAX_S) * 100);
+    progressFill.style.width = pct.toFixed(1) + '%';
+    progressFill.style.background = color;
+  }
 
   if (currentWindow <= 300) {
     animateECG();

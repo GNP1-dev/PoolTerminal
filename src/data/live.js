@@ -23,6 +23,7 @@ import { invoke } from './tauri.js';
 import { getSession } from './session.js';
 import { getNodeProbe } from './session.js';
 import { getLastMetrics } from './metrics-query.js';
+import * as readModel from './read-model.js';
 
 const BYRON_SLOT_LEN_S = 20;
 const KES_REFRESH_S    = 60;
@@ -69,6 +70,11 @@ function cliCmd(args) {
 }
 
 const ZERO_BP = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
+
+// Expected blocks minted network-wide per epoch, at full decentralisation:
+//   epoch_length (432000 slots) × active_slot_coeff (0.05) = 21600  (mainnet)
+// A pool's Ideal = σ × this, where σ = poolStakeGo / totalStakeGo.
+const EXPECTED_BLOCKS_PER_EPOCH = 21600;
 
 function emptyChainPulse(tipBlock = 0) {
   return {
@@ -127,6 +133,15 @@ export class LiveDataSource {
     this._kesExpiryMs = null;
     this._kesAt = 0;
     this._lastPulseScore = null;
+
+    // Ideal blocks — computed once per epoch from cardano-cli stake-snapshot.
+    // stakeGo is frozen for the epoch, so this only changes on epoch rollover.
+    this._ideal = null;
+    this._idealEpoch = null;
+    this._idealInFlight = false;
+
+    // Fresh read-model state per connection (backfill flag, throttles, caches).
+    readModel.resetReadModel();
   }
 
   async getPoolIdentity() {
@@ -136,6 +151,57 @@ export class LiveDataSource {
       poolId: '',
       poolIdHex: e.POOL_ID || '',
     };
+  }
+
+  /**
+   * Ideal blocks for the current epoch — computed entirely from cardano-cli,
+   * no cncli. Ideal = σ × EXPECTED_BLOCKS_PER_EPOCH, σ = poolStakeGo / totalStakeGo.
+   *
+   * "Go" is the snapshot frozen at the start of THIS epoch — the stake that
+   * governs block production right now (stakeSet = next epoch, stakeMark = two
+   * epochs out). It is constant within an epoch, so we compute once and cache
+   * in memory, recomputing only when the epoch changes.
+   *
+   * Note: totalStakeGo (~2.17e16) exceeds JS's safe-integer range (2^53 ≈
+   * 9.0e15), so JSON.parse rounds it by ~1 lovelace. That's a relative error
+   * of ~5e-17 — utterly irrelevant to a value we display to 2 decimal places.
+   */
+  async _maybeRefreshIdeal(epoch) {
+    if (this._idealInFlight) return;
+    if (this._idealEpoch === epoch) return;   // already computed this epoch
+
+    const e = envOf();
+    if (!e.POOL_ID) {
+      this._ideal = null;
+      this._idealEpoch = epoch;
+      return;
+    }
+
+    this._idealInFlight = true;
+    try {
+      const out = await runCmd(cliCmd(`query stake-snapshot --stake-pool-id ${e.POOL_ID}`));
+      const jsonStart = out.indexOf('{');
+      if (jsonStart < 0) throw new Error('no JSON in stake-snapshot output');
+      const json = JSON.parse(out.slice(jsonStart));
+
+      // cardano-node 11.0.1 nested format first; fall back to legacy flat keys.
+      const poolGo  = json.pools?.[e.POOL_ID]?.stakeGo ?? json.poolStakeGo;
+      const totalGo = json.total?.stakeGo              ?? json.activeStakeGo;
+      if (poolGo == null || totalGo == null || totalGo === 0) {
+        throw new Error(`missing stakeGo (pool=${poolGo} total=${totalGo})`);
+      }
+
+      const sigma = poolGo / totalGo;
+      this._ideal = Math.round(sigma * EXPECTED_BLOCKS_PER_EPOCH * 100) / 100;
+      this._idealEpoch = epoch;
+      console.log(`[live.ideal] epoch ${epoch}: σ=${sigma.toExponential(3)} ideal=${this._ideal}`);
+    } catch (err) {
+      console.warn('[live.ideal] failed:', err.message);
+      this._ideal = null;
+      this._idealEpoch = epoch;   // mark attempted; wait for next epoch, no retry-storm
+    } finally {
+      this._idealInFlight = false;
+    }
   }
 
   async _maybeRefreshKes() {
@@ -199,6 +265,14 @@ export class LiveDataSource {
 
     // KES refresh runs in the background; doesn't gate the snapshot.
     this._maybeRefreshKes();
+    // Ideal refresh — also background, fire-and-forget, once per epoch.
+    this._maybeRefreshIdeal(tip.epoch);
+
+    // Read-model collectors — all fire-and-forget, internally throttled:
+    //   backfill (once), semi-live samples (~3 min), block production (per epoch).
+    readModel.backfillIfNeeded();
+    readModel.refreshSemiLive();
+    readModel.refreshBlockProduction(tip.epoch, this._ideal);
 
     // Build snap with KES + everything else needed for Pulse
     const snap = {
@@ -218,7 +292,7 @@ export class LiveDataSource {
       kesKeyExpiryUnix:    this._kesExpiryMs ? Math.floor(this._kesExpiryMs / 1000) : null,
       peersIn:  null,
       peersOut: null,
-      blockProduction: { ...ZERO_BP },
+      blockProduction: readModel.currentBlockProduction() || { ...ZERO_BP, ideal: this._ideal ?? 0 },
     };
 
     // Pulse formula — computed last from the fields above

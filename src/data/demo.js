@@ -60,7 +60,7 @@ export class DemoDataSource {
     return {
       poolTicker: 'DEMO1',
       network: 'Mainnet', era: 'Conway',
-      epoch: e.epoch, epochProgress: e.progress,
+      epoch: e.epoch, epochProgress: e.progress, epochLength: EPOCH_LEN,
       slot: e.absSlot, slotInEpoch: e.slotInEpoch,
       tipBlock,
       syncPercent: 100.0, atTip: true,

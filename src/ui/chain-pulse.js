@@ -539,7 +539,7 @@ export function initChainPulse() {
   if (!rafId) loop();
 }
 
-export function setChainPulseStatus(atTip, tipBlock) {
+export function setChainPulseStatus(atTip, tipBlock, slot, slotInEpoch, epochLength) {
   if (lastData) {
     lastData.atTip = atTip;
     lastData.tipBlock = tipBlock;
@@ -550,7 +550,15 @@ export function setChainPulseStatus(atTip, tipBlock) {
       ? '<span class="pt-dot pt-dot-good"></span><span style="color:var(--pt-status-good)">AT TIP</span>'
       : '<span class="pt-dot pt-dot-warn"></span><span style="color:var(--pt-status-warn)">BEHIND</span>';
   }
-  setText('cp-tipblock', commas(tipBlock));
+  setText('cp-tipblock', tipBlock != null ? commas(tipBlock) : '—');
+  setText('cp-slot',     slot != null ? commas(slot) : '—');
+  if (slotInEpoch != null && epochLength) {
+    setText('cp-epslot', `${commas(slotInEpoch)} / ${commas(epochLength)}`);
+  } else if (slotInEpoch != null) {
+    setText('cp-epslot', commas(slotInEpoch));
+  } else {
+    setText('cp-epslot', '—');
+  }
 }
 
 export function appendTick(timeSec) {

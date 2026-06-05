@@ -207,6 +207,7 @@ export class LiveDataSource {
       era:               tip.era || '',
       epoch:             tip.epoch,
       epochProgress:     progress,
+      epochLength:       epochLen,
       slot:              tip.slot,
       slotInEpoch:       tip.slotInEpoch || 0,
       tipBlock:          tip.block,

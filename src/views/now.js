@@ -135,6 +135,10 @@ const NOW_HTML = `
           <span class="pt-sep">│</span>
           <span class="pt-muted">block</span>&nbsp;<span id="cp-tipblock">—</span>
           <span class="pt-sep">│</span>
+          <span class="pt-muted">slot</span>&nbsp;<span id="cp-slot">—</span>
+          <span class="pt-sep">│</span>
+          <span class="pt-muted">ep-slot</span>&nbsp;<span id="cp-epslot">—</span>
+          <span class="pt-sep">│</span>
           <span id="cp-blockcount" class="pt-muted">—</span>
         </span>
       </div>
@@ -233,7 +237,7 @@ export function mountNow(canvas) {
 
 export function updateNowFast(snap) {
   renderHero(snap);
-  setChainPulseStatus(snap.atTip, snap.tipBlock);
+  setChainPulseStatus(snap.atTip, snap.tipBlock, snap.slot, snap.slotInEpoch, snap.epochLength);
 }
 
 export async function bootstrapNow(src) {

@@ -76,6 +76,8 @@ export async function probeNode() {
   const portMatch    = args.match(/--port\s+(\d+)/);
   const topoMatch    = args.match(/--topology\s+(\S+)/);
   const opCertMatch  = args.match(/--shelley-operational-certificate\s+(\S+)/);
+  const vrfMatch     = args.match(/--shelley-vrf-key\s+(\S+)/);
+  const configMatch  = args.match(/--config\s+(\S+)/);
 
   const result = {
     role: isBp ? 'BP' : 'RELAY',
@@ -83,6 +85,8 @@ export async function probeNode() {
     port: portMatch ? parseInt(portMatch[1], 10) : null,
     topologyPath: topoMatch ? topoMatch[1] : null,
     opCertPath:   opCertMatch ? opCertMatch[1] : null,
+    vrfSkeyPath:  vrfMatch    ? vrfMatch[1]    : null,
+    configPath:   configMatch ? configMatch[1] : null,
     prometheusPort: promPort,
     args,
   };
@@ -91,7 +95,9 @@ export async function probeNode() {
     `[node-probe] pid=${result.pid} role=${result.role} ` +
     `port=${result.port} prom=${result.prometheusPort || 'off'} ` +
     `topology=${result.topologyPath} ` +
-    `opcert=${result.opCertPath || 'none'}`
+    `opcert=${result.opCertPath || 'none'} ` +
+    `vrf=${result.vrfSkeyPath || 'none'} ` +
+    `config=${result.configPath || 'none'}`
   );
 
   return result;

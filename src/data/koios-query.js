@@ -11,6 +11,13 @@
  * SSH session — the node has internet egress, the WebView hits CORS walls.
  * No reqwest crate, no CSP changes, fully portable.
  *
+ * TRANSPORT SEAM (planned, see MANUAL §4.7): the curl-over-SSH transport is
+ * isolated to runCmd() below. A future install-wizard option will let the
+ * operator choose where public-API calls run — via the node (this, default),
+ * via the host machine (Rust reqwest, for egress-locked BPs), or offline from
+ * a pre-built seed DB (air-gapped). When that lands, only runCmd() changes;
+ * every fetch function and the read-model stay transport-agnostic.
+ *
  * All functions are defensive: on any SSH/curl/parse failure they log and
  * return null (objects) or [] (lists) rather than throwing, so a Koios outage
  * degrades gracefully to "stale at 60% opacity" per DESIGN.md, never a crash.
@@ -213,8 +220,90 @@ export async function getEpochBlockCount(poolBech32, epochNo) {
 }
 
 // ============================================================
-// pool_delegators — current delegator list (GET) — for DELEGATORS view
+// epoch_info — network-wide totals for an epoch (GET)
 // ============================================================
+
+/**
+ * Network-wide figures for one epoch. Returns a normalised object or null.
+ *
+ * Why this exists: Koios pool_history.active_stake_pct (the pool's share of
+ * active stake) is only populated for RECENT epochs — it is null for the bulk
+ * of historical epochs. So Ideal cannot be derived from pool_history alone for
+ * old epochs. epoch_info gives the network's total `active_stake` (the correct
+ * denominator — delegated stake, NOT total supply) and the real `blk_count`
+ * minted that epoch, letting us compute Ideal correctly for every epoch:
+ *
+ *   σ(epoch)     = pool_active_stake / network_active_stake
+ *   ideal(epoch) = σ × blk_count        (real network blocks, not the 21600 const)
+ *
+ * Past epochs are finalised, so this is computed once and cached forever.
+ */
+export async function getEpochInfo(epochNo) {
+  const url = `${KOIOS_BASE}/epoch_info?_epoch_no=${epochNo}`;
+  const cmd = `curl -sf --max-time ${CURL_MAX_TIME} '${url}'`;
+
+  let out;
+  try {
+    out = await runCmd(cmd);
+  } catch (err) {
+    console.warn('[koios] epoch_info SSH failure:', err.message);
+    return null;
+  }
+
+  const arr = parseJson(out, null);
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const e = arr[0];
+
+  return {
+    epoch:                 e.epoch_no,
+    networkActiveStake:    lovelaceToAda(e.active_stake),
+    networkActiveStakeRaw: e.active_stake,   // string lovelace — denominator for σ
+    blkCount:              e.blk_count,       // real blocks minted network-wide
+    startTime:             e.start_time,
+    endTime:               e.end_time,
+    era:                   e.era,
+    raw:                   e,
+  };
+}
+
+// ============================================================
+// account_rewards — operator (leader) reward for a stake address (POST)
+// ============================================================
+
+/**
+ * Leader (operator) reward earned by a reward/stake address in an epoch.
+ * Returns ADA (number) or null if none / not yet published.
+ *
+ * This is the operator's TOTAL reward that epoch (fixed fee + margin + reward on
+ * own pledge stake). Combined with pool params it splits into the components the
+ * HISTORY table shows:
+ *   marginEarn   = margin × (leader − fixed_cost)
+ *   pledgeReward = leader − fixed_cost − marginEarn
+ * (Delegator rewards come separately from pool_history.member_rewards.)
+ *
+ * A zero-block epoch has no leader row → 0 (finalised fact, not unknown).
+ */
+export async function getLeaderReward(stakeAddress, epochNo) {
+  const body = JSON.stringify({ _stake_addresses: [stakeAddress], _epoch_no: epochNo });
+  const cmd =
+    `curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/account_rewards' ` +
+    `-H 'content-type: application/json' -d '${shellEscape(body)}'`;
+
+  let out;
+  try {
+    out = await runCmd(cmd);
+  } catch (err) {
+    console.warn('[koios] account_rewards SSH failure:', err.message);
+    return null;
+  }
+
+  const arr = parseJson(out, null);
+  if (!Array.isArray(arr) || arr.length === 0) return null;       // not published yet → null
+  const rewards = arr[0].rewards;
+  if (!Array.isArray(rewards)) return 0;
+  const leader = rewards.find((r) => r.type === 'leader');
+  return leader ? lovelaceToAda(leader.amount) : 0;               // no leader row = 0 earned
+}
 
 /**
  * Current delegators with their stake. Returns an array (possibly empty).

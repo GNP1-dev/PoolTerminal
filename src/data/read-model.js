@@ -29,6 +29,17 @@ import { probeNode } from './node-probe.js';
 import * as koios from './koios-query.js';
 
 // ============================================================
+// Koios transport switch
+// ============================================================
+// When false, every Koios-dependent collector is a no-op: no external calls,
+// no rate-limit risk. Node-direct live data (tip, KES, peers, mempool, chain
+// pulse, cli Ideal) is unaffected; HISTORY shows whatever is already cached.
+// Temporarily OFF while the public free-tier cooldown clears. This is also the
+// first piece of the planned transport selector (node / host / off) — flip to
+// true (or wire to a setting) to re-enable.
+const KOIOS_ENABLED = false;
+
+// ============================================================
 // bech32 (pool id hex → pool1...) — portable, offline, no deps
 // ============================================================
 
@@ -166,45 +177,200 @@ function ensurePoolBech32() {
 // 1. Backfill (first run only)
 // ============================================================
 
+// Bump to force a one-time rebuild of all epoch rows after a data-shape fix.
+// v2: store raw active_stake lovelace; ideal recomputed via epoch_info filler.
+// v4: store margin + fixedCost; leaderReward filled via account_rewards.
+const BACKFILL_VERSION = '4';
+
 let _backfillInFlight = false;
 let _backfillDone = false;
 
+// Operator reward address (for account_rewards leader lookups), resolved once.
+let _rewardAddr = null;
+async function ensureRewardAddr() {
+  if (_rewardAddr) return _rewardAddr;
+  const info = liveInfo() || (ensurePoolBech32() ? await koios.getPoolInfo(ensurePoolBech32()) : null);
+  _rewardAddr = info ? info.rewardAddr : null;
+  return _rewardAddr;
+}
+
+function historyRow(h) {
+  return {
+    epoch:               h.epoch,
+    activeStake:         h.activeStake,                       // ADA, for display
+    activeStakeLovelace: h.raw ? h.raw.active_stake : null,   // raw, σ denominator
+    delegators:          h.delegators,
+    adopted:             h.blockCount,
+    confirmed:           h.blockCount,                        // Koios counts canonical only
+    ideal:               h.ideal,                             // null for old epochs → filler computes
+    saturation:          h.saturation,
+    ros:                 h.ros,
+    delegRewards:        h.delegRewards,                      // gross delegator pot (pre-fee)
+    memberRewards:       h.memberRewards,                     // net to delegators
+    margin:              h.margin,                            // for reward split
+    fixedCost:           h.fixedCost,                         // ADA, for reward split
+    // leaderReward intentionally absent → enrich filler fetches via account_rewards
+    leader:              null,                                // assignment is forward-only
+    lost:                null,
+    source:              'koios_history',
+  };
+}
+
+/** Compute Ideal for one history row from epoch_info, or leave null on failure. */
+async function computeIdeal(row) {
+  if (!row.activeStakeLovelace) return null;
+  const ei = await koios.getEpochInfo(row.epoch);
+  if (!ei || !ei.networkActiveStakeRaw) return null;
+  const sigma = Number(row.activeStakeLovelace) / Number(ei.networkActiveStakeRaw);
+  return Math.round(sigma * (ei.blkCount || 21600) * 100) / 100;
+}
+
 export async function backfillIfNeeded() {
+  if (!KOIOS_ENABLED) return;
   if (_backfillDone || _backfillInFlight) return;
   _backfillInFlight = true;
   try {
-    if ((await cacheMetaGet('backfill_done')) === '1') { _backfillDone = true; return; }
+    if ((await cacheMetaGet('backfill_version')) === BACKFILL_VERSION) { _backfillDone = true; return; }
     const bech32 = ensurePoolBech32();
     if (!bech32) return;
 
     const hist = await koios.getPoolHistory(bech32, { limit: 0 });
     if (!hist.length) return;
 
-    for (const h of hist) {
-      await cachePutEpoch(h.epoch, {
-        epoch:         h.epoch,
-        activeStake:   h.activeStake,
-        delegators:    h.delegators,
-        adopted:       h.blockCount,
-        confirmed:     h.blockCount,
-        ideal:         h.ideal,
-        saturation:    h.saturation,
-        ros:           h.ros,
-        delegRewards:  h.delegRewards,
-        memberRewards: h.memberRewards,
-        leader:        null,   // assignment unknown for past epochs (forward-only)
-        lost:          null,
-        source:        'koios_history',
-      });
-    }
-    await cacheMetaSet('backfill_done', '1');
+    // INSERT-OR-REPLACE overwrites existing rows in place — no wipe needed.
+    // Ideal stays null for epochs Koios didn't compute a pct for; the filler
+    // backfills those from epoch_info so this pass stays fast (one Koios call).
+    for (const h of hist) await cachePutEpoch(h.epoch, historyRow(h));
+
+    await cacheMetaSet('backfill_version', BACKFILL_VERSION);
     await cacheMetaSet('backfill_high_epoch', String(Math.max(...hist.map((h) => h.epoch))));
     _backfillDone = true;
-    console.log(`[read-model] backfilled ${hist.length} epochs from Koios`);
+    console.log(`[read-model] backfilled ${hist.length} epochs (ideal fills in next)`);
   } catch (err) {
     console.warn('[read-model] backfill failed:', err.message ?? err);
   } finally {
     _backfillInFlight = false;
+  }
+}
+
+// ---- Enrich filler ---------------------------------------------------------
+// Fills two per-epoch fields pool_history can't give directly:
+//   • ideal       — from epoch_info (active_stake_pct is null for old epochs).
+//   • leaderReward — operator reward from account_rewards (for the SPO split).
+// Both are finalised facts for closed epochs, computed once each. leaderReward
+// is only sought for epochs old enough to have published rewards (≤ max-2);
+// recent ones get it via refreshRecent. Small batches per tick — never stalls.
+const IDEAL_FILL_MS = 4000;
+const IDEAL_FILL_BATCH = 8;
+let _idealFillAt = 0;
+let _idealFillInFlight = false;
+let _idealFillDone = false;
+
+export async function refreshIdealFiller() {
+  if (!KOIOS_ENABLED) return;
+  if (!_backfillDone || _idealFillDone || _idealFillInFlight) return;
+  const now = Date.now();
+  if (_idealFillAt && now - _idealFillAt < IDEAL_FILL_MS) return;
+  _idealFillInFlight = true;
+  _idealFillAt = now;
+  try {
+    const rows = await cacheGetEpochsRaw(0, 9_999_999);
+    const maxEpoch = rows.reduce((m, r) => Math.max(m, r.epoch), 0);
+    const rewardCutoff = maxEpoch - 2;   // rewards published for epochs at/below this
+
+    const needIdeal = (r) => r.data && r.data.ideal == null && r.data.activeStakeLovelace;
+    const needLeader = (r) =>
+      r.data && r.data.source === 'koios_history' &&
+      r.data.leaderReward === undefined && r.epoch <= rewardCutoff;
+
+    const need = rows.filter((r) => needIdeal(r) || needLeader(r));
+    if (!need.length) {
+      _idealFillDone = true;
+      console.log('[read-model] enrich fill complete (ideal + leader rewards)');
+      return;
+    }
+
+    const addr = await ensureRewardAddr();
+    for (const r of need.slice(0, IDEAL_FILL_BATCH)) {
+      const d = { ...r.data };
+      let changed = false;
+      if (needIdeal(r)) {
+        const ideal = await computeIdeal(d);
+        if (ideal != null) { d.ideal = ideal; changed = true; }
+      }
+      if (needLeader(r) && addr) {
+        const lr = await koios.getLeaderReward(addr, r.epoch);
+        if (lr != null) { d.leaderReward = lr; changed = true; }   // 0 is valid (zero-block epoch)
+      }
+      if (changed) await cachePutEpoch(r.epoch, d);
+    }
+    console.log(`[read-model] enrich fill: ~${Math.max(0, need.length - IDEAL_FILL_BATCH)} epochs remaining`);
+  } catch (err) {
+    console.warn('[read-model] enrich fill failed:', err.message ?? err);
+  } finally {
+    _idealFillInFlight = false;
+  }
+}
+
+// ---- Recent refresh --------------------------------------------------------
+// pool_history LAGS (it omits the last epoch or two), but pool_blocks is
+// near-real-time. So for recent CLOSED epochs we take the block count from
+// pool_blocks (finalised on-chain immediately) and, where pool_history hasn't
+// aggregated the epoch yet, show ONLY what's finalised (blocks) — every other
+// field stays null → '—' in the UI until pool_history publishes it. The current
+// (in-progress) epoch is owned by refreshBlockProduction, so it's excluded here.
+const RECENT_MS = 5 * 60 * 1000;
+let _recentAt = 0;
+let _recentInFlight = false;
+
+export async function refreshRecent(currentEpoch) {
+  if (!KOIOS_ENABLED) return;
+  if (!_backfillDone || _recentInFlight || !currentEpoch) return;
+  const now = Date.now();
+  if (_recentAt && now - _recentAt < RECENT_MS) return;
+  _recentInFlight = true;
+  _recentAt = now;
+  try {
+    const bech32 = ensurePoolBech32();
+    if (!bech32) return;
+
+    const hist = await koios.getPoolHistory(bech32, { limit: 8 });
+    const byEpoch = new Map(hist.map((h) => [h.epoch, h]));
+
+    for (let e = currentEpoch - 1; e >= currentEpoch - 6; e--) {
+      const blocks = await koios.getEpochBlockCount(bech32, e);   // finalised on-chain
+      const h = byEpoch.get(e);
+      if (h) {
+        // pool_history has aggregated this epoch — full row, freshest block count.
+        const row = historyRow(h);
+        row.adopted = blocks;
+        row.confirmed = blocks;
+        if (row.ideal == null) row.ideal = await computeIdeal(row);
+        const addr = await ensureRewardAddr();
+        if (addr) {
+          const lr = await koios.getLeaderReward(addr, e);   // null if not published yet
+          if (lr != null) row.leaderReward = lr;
+        }
+        await cachePutEpoch(e, row);
+      } else {
+        // Closed epoch Koios hasn't aggregated yet: show ONLY finalised facts
+        // (blocks). Ideal needs the pool's active stake (only in pool_history),
+        // so it stays null too — no placeholders, fills in when published.
+        await cachePutEpoch(e, {
+          epoch: e,
+          adopted: blocks, confirmed: blocks,
+          ideal: null, leader: null, lost: null,
+          delegators: null, activeStake: null, activeStakeLovelace: null,
+          saturation: null, ros: null, delegRewards: null, memberRewards: null,
+          source: 'blocks_only',
+        });
+      }
+    }
+    console.log(`[read-model] recent refresh: epochs ${currentEpoch - 6}–${currentEpoch - 1} (pool_blocks overlay)`);
+  } catch (err) {
+    console.warn('[read-model] recent refresh failed:', err.message ?? err);
+  } finally {
+    _recentInFlight = false;
   }
 }
 
@@ -218,6 +384,7 @@ let _sampleInFlight = false;
 let _lastInfo = null;
 
 export async function refreshSemiLive() {
+  if (!KOIOS_ENABLED) return;
   if (_sampleInFlight) return;
   const now = Date.now();
   if (_sampleAt !== 0 && now - _sampleAt < SAMPLE_MS) return;
@@ -255,6 +422,7 @@ let _bpScheduleEpoch = null;   // epoch the leadership-schedule last ran for
 let _bpAssigned = null;        // array of assigned slots, or null if unknown
 let _bpProducedAt = 0;
 let _bpProduced = 0;
+let _bpInfoWritten = false;
 
 /** Run leadership-schedule --current, paths derived from the node probe. */
 async function leadershipScheduleCurrent() {
@@ -305,18 +473,23 @@ export async function refreshBlockProduction(epoch, ideal) {
   if (_bpInFlight) return;
   _bpInFlight = true;
   try {
+    let dirty = false;
     // Assignment: once per epoch (leadership-schedule is heavy).
     if (_bpScheduleEpoch !== epoch) {
       _bpScheduleEpoch = epoch;
       _bpAssigned = await leadershipScheduleCurrent();
+      dirty = true;
     }
     // Produced: refresh periodically (blocks can appear mid-epoch).
     const now = Date.now();
-    if (_bpProducedAt === 0 || now - _bpProducedAt > PRODUCED_REFRESH_MS) {
+    if (KOIOS_ENABLED && (_bpProducedAt === 0 || now - _bpProducedAt > PRODUCED_REFRESH_MS)) {
       _bpProducedAt = now;
       const bech32 = ensurePoolBech32();
       _bpProduced = bech32 ? await koios.getEpochBlockCount(bech32, epoch) : 0;
+      dirty = true;
     }
+    // Rewrite the live row once delegators/stake become available too.
+    if (dirty === false && !_bpInfoWritten && liveInfo()) dirty = true;
 
     const leaderKnown = _bpAssigned != null;
     const leader = leaderKnown ? _bpAssigned.length : 0;
@@ -326,11 +499,23 @@ export async function refreshBlockProduction(epoch, ideal) {
 
     _bp = { leader, ideal: ideal ?? 0, adopted, confirmed: adopted, lost, luckPercent, leaderKnown };
 
-    await cachePutEpoch(epoch, {
-      epoch, leader: leaderKnown ? leader : null, ideal: ideal ?? null,
-      adopted, confirmed: adopted, lost: leaderKnown ? lost : null,
-      luck: luckPercent, source: 'live',
-    });
+    if (dirty) {
+      const info = liveInfo();
+      await cachePutEpoch(epoch, {
+        epoch,
+        leader: leaderKnown ? leader : null,
+        ideal: ideal ?? null,
+        adopted, confirmed: adopted,
+        lost: leaderKnown ? lost : null,
+        luck: luckPercent,
+        delegators:          info ? info.liveDelegators : null,
+        activeStake:         info ? info.activeStake : null,            // Set snapshot ≈ live epoch
+        activeStakeLovelace: info && info.raw ? info.raw.active_stake : null,
+        ros: null,
+        source: 'live',
+      });
+      if (info) _bpInfoWritten = true;
+    }
   } catch (err) {
     console.warn('[read-model] block-production refresh failed:', err.message ?? err);
   } finally {
@@ -364,8 +549,11 @@ export async function getSamples(metric, sinceTs) {
 /** Reset all module state — call on connect / mode switch / reconnect. */
 export function resetReadModel() {
   _bech32 = null;
+  _rewardAddr = null;
   _backfillInFlight = false; _backfillDone = false;
+  _idealFillAt = 0; _idealFillInFlight = false; _idealFillDone = false;
+  _recentAt = 0; _recentInFlight = false;
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;
-  _bpProducedAt = 0; _bpProduced = 0;
+  _bpProducedAt = 0; _bpProduced = 0; _bpInfoWritten = false;
 }

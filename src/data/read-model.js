@@ -543,6 +543,44 @@ export async function getSamples(metric, sinceTs) {
 }
 
 // ============================================================
+// NODE HEALTH sampler (always-on — node-direct, never Koios-gated)
+// ============================================================
+// Persists host + node-process metrics to the samples table so NODE HEALTH can
+// draw historical trends that fill richer over time. Throttled to ~30s — fine
+// granularity for trends without bloating the table. Called from the live loop
+// with the latest host scrape (host-query) and node metrics (metrics-query).
+const HEALTH_SAMPLE_MS = 30_000;
+let _healthAt = 0;
+
+export async function sampleHealth(host, metrics) {
+  const now = Date.now();
+  if (_healthAt && now - _healthAt < HEALTH_SAMPLE_MS) return;
+  if (!host && !metrics) return;
+  _healthAt = now;
+  const put = (m, v) => (v != null && Number.isFinite(v)) ? cachePutSample(m, v) : null;
+  if (host) {
+    await put('cpu_pct',         host.cpuPct);
+    await put('mem_used_pct',    host.memUsedPct);
+    await put('swap_used_pct',   host.swapUsedPct);
+    await put('disk_used_pct',   host.diskUsedPct);
+    await put('disk_free_bytes', host.diskFree);
+    await put('net_rx_bps',      host.netRxBps);
+    await put('net_tx_bps',      host.netTxBps);
+    await put('load1',           host.load1);
+  }
+  if (metrics) {
+    await put('rss_bytes',     metrics.rssBytes);
+    await put('gc_live_bytes', metrics.gcLiveBytes);
+    await put('mempool_bytes', metrics.mempoolBytes);
+    await put('mempool_txs',   metrics.mempoolTxs);
+    await put('peers_hot',     metrics.peersHot);
+    await put('peers_warm',    metrics.peersWarm);
+    await put('peers_cold',    metrics.peersCold);
+    await put('density',       metrics.density);
+  }
+}
+
+// ============================================================
 // Lifecycle
 // ============================================================
 
@@ -556,4 +594,5 @@ export function resetReadModel() {
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;
   _bpProducedAt = 0; _bpProduced = 0; _bpInfoWritten = false;
+  _healthAt = 0;
 }

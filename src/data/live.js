@@ -23,10 +23,12 @@ import { invoke } from './tauri.js';
 import { getSession } from './session.js';
 import { getNodeProbe } from './session.js';
 import { getLastMetrics } from './metrics-query.js';
+import { queryHost, getLastHost } from './host-query.js';
 import * as readModel from './read-model.js';
 
 const BYRON_SLOT_LEN_S = 20;
 const KES_REFRESH_S    = 60;
+const HOST_SCRAPE_S    = 5;     // host /proc + df scrape cadence (rate deltas)
 
 function envOf() { return getSession().envVars || {}; }
 
@@ -139,6 +141,8 @@ export class LiveDataSource {
     this._ideal = null;
     this._idealEpoch = null;
     this._idealInFlight = false;
+    this._hostAt = 0;
+    this._healthInFlight = false;
 
     // Fresh read-model state per connection (backfill flag, throttles, caches).
     readModel.resetReadModel();
@@ -201,6 +205,26 @@ export class LiveDataSource {
       this._idealEpoch = epoch;   // mark attempted; wait for next epoch, no retry-storm
     } finally {
       this._idealInFlight = false;
+    }
+  }
+
+  async _maybeSampleHealth() {
+    const now = Date.now();
+    if (this._healthInFlight) return;
+    if (this._hostAt && now - this._hostAt < HOST_SCRAPE_S * 1000) {
+      // Between host scrapes: still let the sampler persist (it self-throttles).
+      readModel.sampleHealth(getLastHost(), getLastMetrics());
+      return;
+    }
+    this._healthInFlight = true;
+    this._hostAt = now;
+    try {
+      const host = await queryHost();                 // CPU%, RAM, disk, net rate, load
+      readModel.sampleHealth(host, getLastMetrics()); // persist (throttled ~30s)
+    } catch (err) {
+      console.warn('[live.health] scrape failed:', err.message);
+    } finally {
+      this._healthInFlight = false;
     }
   }
 
@@ -271,8 +295,15 @@ export class LiveDataSource {
     // Read-model collectors — all fire-and-forget, internally throttled:
     //   backfill (once), semi-live samples (~3 min), block production (per epoch).
     readModel.backfillIfNeeded();
+    readModel.refreshIdealFiller();
+    readModel.refreshRecent(tip.epoch);
     readModel.refreshSemiLive();
     readModel.refreshBlockProduction(tip.epoch, this._ideal);
+
+    // NODE HEALTH — node-direct, never Koios. Host scrape on a slow cadence
+    // (~5s; rate deltas computed there), then persist host + node metrics to the
+    // samples table (sampler self-throttles to ~30s). Fire-and-forget.
+    this._maybeSampleHealth();
 
     // Build snap with KES + everything else needed for Pulse
     const snap = {

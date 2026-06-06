@@ -26,6 +26,8 @@ import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
 } from './views/now.js';
+import { mountHistory } from './views/history.js';
+import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { showConnectModal } from './views/connect.js';
 import { getSession, setNodeProbe } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
@@ -56,10 +58,16 @@ function labelFor(view) {
 }
 
 function mountView(view) {
+  const isHealth = view === 'health' || view === 'node-health';
   if (activeView === 'now' && view !== 'now') unmountNow();
+  if ((activeView === 'health' || activeView === 'node-health') && !isHealth) unmountNodeHealth();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
+  } else if (view === 'history') {
+    mountHistory(canvasEl);
+  } else if (isHealth) {
+    mountNodeHealth(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">
@@ -219,6 +227,26 @@ window.addEventListener('DOMContentLoaded', () => {
       mountView(tab.dataset.view);
     });
   });
+
+  // Branding link → open in the system browser. A bare <a target="_blank"> is
+  // swallowed by the Tauri webview, so route through whichever opener is present.
+  const brand = document.querySelector('.pt-ticker-brand');
+  if (brand) {
+    brand.style.cursor = 'pointer';
+    brand.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const url = brand.getAttribute('href');
+      const T = window.__TAURI__ || {};
+      try {
+        if (T.opener?.openUrl) return await T.opener.openUrl(url);
+        if (T.shell?.open) return await T.shell.open(url);
+        if (T.core?.invoke) return await T.core.invoke('plugin:opener|open_url', { url });
+      } catch (err) {
+        console.warn('[brand] opener failed, falling back:', err.message ?? err);
+      }
+      window.open(url, '_blank');   // last resort
+    });
+  }
 
   const modeBadge = document.getElementById('ttape-mode');
   modeBadge.addEventListener('click', () => {

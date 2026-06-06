@@ -67,6 +67,20 @@ export async function queryMetrics() {
     // Used by the mempool panel for throughput (delta between successive reads).
     // cardano-node 11.0.1 renamed this from _int to _counter (it's cumulative).
     txsProcessed:         readMetric(out, 'cardano_node_metrics_txsProcessedNum_counter'),
+
+    // --- NODE HEALTH fields (same scrape, no extra cost) ---
+    rssBytes:             readMetric(out, 'cardano_node_metrics_Mem_resident_int'),     // process RSS
+    gcLiveBytes:          readMetric(out, 'cardano_node_metrics_RTS_gcLiveBytes_int'),  // live heap
+    gcHeapBytes:          readMetric(out, 'cardano_node_metrics_RTS_gcHeapBytes_int'),  // heap reserved
+    cpuTicks:             readMetric(out, 'cardano_node_metrics_Stat_cputicks_int'),    // cumulative; rate in-code
+    density:              readMetric(out, 'cardano_node_metrics_density_real'),         // chain density
+    slotNum:              readMetric(out, 'cardano_node_metrics_slotNum_int'),
+    blockNum:             readMetric(out, 'cardano_node_metrics_blockNum_int'),
+    mempoolBytes:         readMetric(out, 'cardano_node_metrics_mempoolBytes_int'),
+    mempoolTxs:           readMetric(out, 'cardano_node_metrics_txsInMempool_int'),
+    blocksForged:         readMetric(out, 'cardano_node_metrics_blocksForged_int'),     // BP: blocks made
+    cannotForge:          readMetric(out, 'cardano_node_metrics_nodeCannotForge_int'),  // BP: forge failures
+    slotsMissed:          readMetric(out, 'cardano_node_metrics_slotsMissed_int'),      // BP: missed leader slots
   };
 
   lastMetrics = result;

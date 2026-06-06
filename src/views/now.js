@@ -85,8 +85,47 @@ const NOW_HTML = `
       background: var(--pt-status-good);
       transition: width 0.3s linear, background 0.3s linear;
     }
+    .pt-now { position: relative; }
+    .pt-loading {
+      position: absolute; inset: 0; z-index: 50;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+      background: var(--pt-bg, #0b0f17);
+      transition: opacity 0.4s ease;
+    }
+    .pt-loading.pt-hidden { opacity: 0; pointer-events: none; visibility: hidden; }
+    .pt-loading-spinner {
+      width: 44px; height: 44px; border: 3px solid var(--pt-border);
+      border-top-color: var(--pt-accent-blue); border-radius: 50%;
+      animation: pt-spin 0.9s linear infinite;
+    }
+    @keyframes pt-spin { to { transform: rotate(360deg); } }
+    .pt-loading-text { font: 600 15px ui-monospace, monospace; color: #ffffff; letter-spacing: 0.04em; }
+    .pt-loading-sub { font: 400 12px ui-monospace, monospace; color: var(--pt-text-secondary, #c9d1d9); max-width: 460px; text-align: center; line-height: 1.5; }
+    .pt-loading-steps {
+      display: flex; flex-direction: column; gap: 7px; margin-top: 6px;
+      font: 400 12px ui-monospace, monospace; min-width: 260px;
+    }
+    .pt-loading-step { display: flex; align-items: center; gap: 10px; color: var(--pt-text-secondary, #c9d1d9); }
+    .pt-loading-step .ico { width: 16px; text-align: center; flex: 0 0 16px; }
+    .pt-loading-step.pending .ico { color: var(--pt-accent-blue); }
+    .pt-loading-step.done { color: #ffffff; }
+    .pt-loading-step.done .ico { color: var(--pt-status-good, #4ade80); }
+    .pt-loading-step.waiting { color: var(--pt-text-muted); }
+    .pt-loading-step .elapsed { color: var(--pt-text-muted); font-size: 11px; }
+    .pt-mini-spin {
+      display: inline-block; width: 11px; height: 11px; border: 2px solid var(--pt-border);
+      border-top-color: var(--pt-accent-blue); border-radius: 50%;
+      animation: pt-spin 0.8s linear infinite; vertical-align: -1px;
+    }
+    @keyframes pt-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
   </style>
   <div class="pt-now">
+    <div class="pt-loading" id="pt-loading">
+      <div class="pt-loading-spinner"></div>
+      <div class="pt-loading-text">PoolTerminal is gathering live data from your node…</div>
+      <div class="pt-loading-sub" id="pt-loading-sub">Connecting over SSH and querying the node — first connect can take up to 2 minutes.</div>
+      <div class="pt-loading-steps" id="pt-loading-steps"></div>
+    </div>
     <div class="pt-hero-row pt-hero-row-8">
       <div class="pt-hero-card" id="hero-epoch">
         <div class="pt-hero-label">Epoch</div>
@@ -225,6 +264,73 @@ const NOW_HTML = `
 
   </div>`;
 
+// Loading overlay: a live checklist so the user sees what's loading and what's
+// still pending, not just a spinner. Each step is "done" when its rendered value
+// actually appears (reads the DOM, so it stays honest). The overlay clears when
+// the last step (Ideal) lands, with a 2-min fallback so it can never stick.
+const LOADING_FALLBACK_MS = 120_000;
+let _loadingDone = false;
+let _loadingTimer = null;
+let _loadingTick = null;
+let _loadingStart = 0;
+
+// Ordered as they realistically arrive; `ready` proves the data is in the DOM.
+const LOADING_STEPS = [
+  { label: 'Connecting to node',  ready: () => true },
+  { label: 'Chain tip & sync',    ready: () => hasDigit('ttape-sync') || hasDigit('cp-tipblock') },
+  { label: 'Peers',               ready: () => hasDigit('pp-out') || hasDigit('ttape-peers') },
+  { label: 'Mempool',             ready: () => { const e = document.getElementById('mp-count'); return !!e && (e.textContent || '').trim() !== '' && (e.textContent || '').trim() !== '—'; } },
+  { label: 'Chain pulse history', ready: () => hasDigit('cp-avg') || hasDigit('cp-d-m1') },
+  { label: 'KES expiry',          ready: () => hasDigit('hero-kes-val') },
+  { label: 'Ideal & leader',      ready: () => hasDigit('hero-ideal-val') },
+];
+
+function hasDigit(id) { const el = document.getElementById(id); return !!el && /\d/.test(el.textContent || ''); }
+
+function renderLoadingSteps() {
+  const box = document.getElementById('pt-loading-steps');
+  if (!box) return;
+  const elapsed = _loadingStart ? Math.floor((Date.now() - _loadingStart) / 1000) : 0;
+  let firstPending = true;
+  box.innerHTML = LOADING_STEPS.map((s) => {
+    const done = s.ready();
+    if (done) return `<div class="pt-loading-step done"><span class="ico">✓</span><span>${s.label}</span></div>`;
+    if (firstPending) {
+      firstPending = false;
+      return `<div class="pt-loading-step pending"><span class="ico"><span class="pt-mini-spin"></span></span><span>${s.label}</span><span class="elapsed">${elapsed}s</span></div>`;
+    }
+    return `<div class="pt-loading-step waiting"><span class="ico">·</span><span>${s.label}</span></div>`;
+  }).join('');
+}
+
+function hideLoading() {
+  _loadingDone = true;
+  const el = document.getElementById('pt-loading');
+  if (el) el.classList.add('pt-hidden');
+  if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
+  if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
+}
+
+function maybeHideLoading() {
+  if (_loadingDone) return;
+  renderLoadingSteps();
+  if (hasDigit('hero-kes-val') && hasDigit('hero-ideal-val')) {
+    // Everything's in — mark done so we stop re-checking, render the final
+    // all-green checklist, then hold ~1s so the completed state is visible
+    // before fading out. Confirms to the user it actually finished.
+    _loadingDone = true;
+    if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
+    if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
+    renderLoadingSteps();
+    setTimeout(fadeOutLoading, 1000);
+  }
+}
+
+function fadeOutLoading() {
+  const el = document.getElementById('pt-loading');
+  if (el) el.classList.add('pt-hidden');
+}
+
 export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
@@ -233,11 +339,19 @@ export function mountNow(canvas) {
   renderRelayMap();
   initRelayMap();
   resetPeersPanel();
+  _loadingDone = false;
+  _loadingStart = Date.now();
+  renderLoadingSteps();
+  if (_loadingTimer) clearTimeout(_loadingTimer);
+  if (_loadingTick) clearInterval(_loadingTick);
+  _loadingTick = setInterval(maybeHideLoading, 1000);   // live independent of the SSH-blocked loop
+  _loadingTimer = setTimeout(hideLoading, LOADING_FALLBACK_MS);
 }
 
 export function updateNowFast(snap) {
   renderHero(snap);
   setChainPulseStatus(snap.atTip, snap.tipBlock, snap.slot, snap.slotInEpoch, snap.epochLength);
+  maybeHideLoading();
 }
 
 export async function bootstrapNow(src) {
@@ -262,4 +376,6 @@ export async function refreshUpcomingBlocks(src) {
 export function unmountNow() {
   stopChainPulse();
   stopUpcomingBlocks();
+  if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
+  if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
 }

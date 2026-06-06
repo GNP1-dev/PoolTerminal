@@ -7,6 +7,7 @@
 //!   - cache_put_epoch / cache_get_epochs
 //!   - cache_put_sample / cache_get_samples
 //!   - cache_meta_set / cache_meta_get
+//!   - pg_query                      (db-sync over local socket or remote TCP)
 //!
 //! Future phases will register:
 //!   - cncli SQLite query commands
@@ -16,6 +17,7 @@
 //! HARDFORK: era-aware code paths will be added here as fork support lands.
 
 mod cache;
+mod pg;
 mod ssh;
 
 use ssh::SshState;
@@ -46,6 +48,7 @@ pub fn run() {
             cache::cache_get_samples,
             cache::cache_meta_set,
             cache::cache_meta_get,
+            pg::pg_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

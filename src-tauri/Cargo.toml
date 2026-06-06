@@ -25,5 +25,9 @@ anyhow = "1"
 # Local cache
 rusqlite = { version = "0.39", features = ["bundled"] }
 
+# db-sync (Postgres) — local Unix socket or remote TCP. NoTls for now
+# (local/trusted-network db-sync); TLS support is a later addition.
+tokio-postgres = "0.7"
+
 # Future phases will add:
 #   tracing       — structured logging

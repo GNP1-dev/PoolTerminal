@@ -274,18 +274,26 @@ let _loadingTimer = null;
 let _loadingTick = null;
 let _loadingStart = 0;
 
-// Ordered as they realistically arrive; `ready` proves the data is in the DOM.
+// Ordered by REAL arrival (from startup logs): the cli pass (KES, ideal, tip)
+// lands first within seconds; the chain-pulse bootstrap is the slow tail (~50s).
+// Dismissal gates on chain pulse — the genuinely-last thing — so the overlay
+// doesn't clear while panels are still filling.
 const LOADING_STEPS = [
   { label: 'Connecting to node',  ready: () => true },
+  { label: 'KES expiry',          ready: () => hasDigit('hero-kes-val') },
+  { label: 'Ideal & leader',      ready: () => hasDigit('hero-ideal-val') },
   { label: 'Chain tip & sync',    ready: () => hasDigit('ttape-sync') || hasDigit('cp-tipblock') },
   { label: 'Peers',               ready: () => hasDigit('pp-out') || hasDigit('ttape-peers') },
   { label: 'Mempool',             ready: () => { const e = document.getElementById('mp-count'); return !!e && (e.textContent || '').trim() !== '' && (e.textContent || '').trim() !== '—'; } },
-  { label: 'Chain pulse history', ready: () => hasDigit('cp-avg') || hasDigit('cp-d-m1') },
-  { label: 'KES expiry',          ready: () => hasDigit('hero-kes-val') },
-  { label: 'Ideal & leader',      ready: () => hasDigit('hero-ideal-val') },
+  { label: 'Chain pulse',         ready: () => hasDigit('cp-avg') || hasDigit('cp-d-m1') || hasDigit('cp-tipblock') },
 ];
 
 function hasDigit(id) { const el = document.getElementById(id); return !!el && /\d/.test(el.textContent || ''); }
+
+// The overlay is done when every step is ready (chain pulse last). Reading the
+// steps directly means we never clear early just because the fast cli fields
+// (KES/ideal) arrived ahead of the slow bootstrap.
+function allStepsReady() { return LOADING_STEPS.every((s) => { try { return s.ready(); } catch { return false; } }); }
 
 function renderLoadingSteps() {
   const box = document.getElementById('pt-loading-steps');
@@ -314,8 +322,8 @@ function hideLoading() {
 function maybeHideLoading() {
   if (_loadingDone) return;
   renderLoadingSteps();
-  if (hasDigit('hero-kes-val') && hasDigit('hero-ideal-val')) {
-    // Everything's in — mark done so we stop re-checking, render the final
+  if (allStepsReady()) {
+    // Everything's in (chain pulse was the slow tail) — render the final
     // all-green checklist, then hold ~1s so the completed state is visible
     // before fading out. Confirms to the user it actually finished.
     _loadingDone = true;

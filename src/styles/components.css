@@ -357,7 +357,7 @@
 
 .pt-ub-row {
   display: grid;
-  grid-template-columns: 44px 1fr auto;
+  grid-template-columns: 34px auto auto auto minmax(0, 1fr) 60px;
   align-items: center;
   padding: 7px 12px;
   border-bottom: var(--pt-border-line);
@@ -376,7 +376,9 @@
 
 .pt-ub-idx { color: var(--pt-text-muted); }
 .pt-ub-slot { color: var(--pt-text-primary); }
-.pt-ub-eta { color: var(--pt-text-primary); text-align: right; }
+.pt-ub-eta { color: var(--pt-text-primary); text-align: right; white-space: nowrap; }
+.pt-ub-when { white-space: nowrap; }
+.pt-ub-slot { white-space: nowrap; }
 
 .pt-ub-empty {
   padding: 16px 12px;
@@ -560,7 +562,7 @@
 }
 
 /* Upcoming blocks: progress-bar column + tighter grid (5 cols incl. when) */
-.pt-ub-row { grid-template-columns: 32px 110px auto 1fr 64px; gap: 12px; }
+.pt-ub-row { grid-template-columns: 32px 96px auto auto minmax(40px, 1fr) 60px; gap: 10px; }
 .pt-ub-when {
   color: var(--pt-text-primary);
   font-variant-numeric: tabular-nums;

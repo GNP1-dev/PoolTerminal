@@ -28,6 +28,7 @@ import {
 } from './views/now.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
+import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
 import { showConnectModal } from './views/connect.js';
 import { nodeExec } from './data/tauri.js';
 import { getSession, setNodeProbe } from './data/session.js';
@@ -62,6 +63,7 @@ function mountView(view) {
   const isHealth = view === 'health' || view === 'node-health';
   if (activeView === 'now' && view !== 'now') unmountNow();
   if ((activeView === 'health' || activeView === 'node-health') && !isHealth) unmountNodeHealth();
+  if (activeView === "map" && view !== "map") unmountMap();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
@@ -69,6 +71,8 @@ function mountView(view) {
     mountHistory(canvasEl);
   } else if (isHealth) {
     mountNodeHealth(canvasEl);
+  } else if (view === 'map') {
+    mountMap(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">
@@ -160,6 +164,7 @@ async function fastPollTick() {
         }
         renderPeersPanel(r);
         renderRelayMap(r.peers);
+        if (isMapMounted()) updateMapPeers(r.peers);
       }).catch((e) =>
         console.warn('[peers refresh] FAIL:', e.message)
       );

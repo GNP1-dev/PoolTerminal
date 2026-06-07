@@ -366,7 +366,13 @@ export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
   initChainPulse();
-  renderUpcomingBlocks([]);
+  // Show a "calculating" placeholder rather than the empty state — the leader
+  // schedule query is slow first-time-per-epoch (cached after), so make it clear
+  // the panel is working, not that there are no blocks.
+  const ubBody = canvas.querySelector('#ub-body');
+  const ubCount = canvas.querySelector('#ub-count');
+  if (ubBody) ubBody.innerHTML = '<div class="pt-ub-empty">Calculating leader schedule…</div>';
+  if (ubCount) ubCount.textContent = 'calculating…';
   renderRelayMap();
   initRelayMap();
   resetPeersPanel();

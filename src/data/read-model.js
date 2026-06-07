@@ -437,8 +437,11 @@ let _bpProducedAt = 0;
 let _bpProduced = 0;
 let _bpInfoWritten = false;
 
-/** Run leadership-schedule --current, paths derived from the node probe. */
-async function leadershipScheduleCurrent() {
+/** Run leadership-schedule for 'current' or 'next', paths from the node probe.
+ *  '--next' only works once inside the next-epoch window (~36h before boundary,
+ *  after the stake snapshot stabilises); before that the node errors, which we
+ *  treat as "not available yet" (null), distinct from "window open, no slots" ([]). */
+async function leadershipSchedule(which) {
   let probe = getNodeProbe();
   if (!probe?.vrfSkeyPath || !probe?.configPath) probe = await probeNode();
   const vrf = probe?.vrfSkeyPath;
@@ -447,19 +450,30 @@ async function leadershipScheduleCurrent() {
     console.warn('[read-model] leadership-schedule: probe missing vrf/config', { vrf, config });
     return null;
   }
+  const flag = which === 'next' ? '--next' : '--current';
   const genesis = config.replace(/\/[^/]*$/, '') + '/shelley-genesis.json';
   const cmd = cliCmd(
     `query leadership-schedule --genesis '${genesis}' ` +
-    `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' --current`
+    `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' ${flag}`
   );
   let out;
   try {
     out = await runCmd(cmd);
   } catch (err) {
-    console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    // For --next, an error usually means the window isn't open yet — expected.
+    if (which !== 'next') console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    return null;
+  }
+  // The node prints a friendly error to stdout when --next isn't available yet.
+  if (which === 'next' && /not.*stabilis|expected.*current|TooEarly|StakeSnapshot/i.test(out || '')) {
     return null;
   }
   return parseLeadershipSchedule(out);
+}
+
+/** Back-compat shim — current-epoch schedule (used by refreshBlockProduction). */
+async function leadershipScheduleCurrent() {
+  return leadershipSchedule('current');
 }
 
 /** Parse leadership-schedule output: JSON array first, text table fallback. */
@@ -538,6 +552,104 @@ export async function refreshBlockProduction(epoch, ideal) {
 
 /** Last computed block-production card values, or null until first refresh. */
 export function currentBlockProduction() { return _bp; }
+
+// ============================================================
+// Upcoming blocks (leader slots still to come)
+// ============================================================
+// Shows the operator's assigned leader slots that haven't happened yet — for
+// the CURRENT epoch (remaining slots) and the NEXT epoch (once the ~36h
+// leadership-schedule window opens). The authority is `cardano-cli query
+// leadership-schedule` (not cncli, which can carry restore-artifact phantoms).
+
+let _ubCurEpoch = null;     // epoch the cached --current schedule is for
+let _ubCurSlots = null;     // cached --current slots (array) or null
+let _ubNextEpoch = null;    // epoch the cached --next schedule is for
+let _ubNextSlots = null;    // cached --next slots, or null if window not open
+let _ubNextCheckedAt = 0;   // last time we probed --next (retry until window opens)
+
+const UB_NEXT_RETRY_MS = 10 * 60 * 1000;   // re-probe --next every 10 min until it opens
+
+// Persisted schedule cache (poolterminal.db). The leadership-schedule query is
+// heavy AND its result is fixed for an epoch once the snapshot stabilises, so
+// we compute it at most once per epoch and persist it — subsequent loads are
+// instant from cache, no slow cli call. Key: leaderlog:<epoch>:<current|next>.
+async function loadCachedSchedule(epoch, which) {
+  try {
+    const raw = await cacheMetaGet(`leaderlog:${epoch}:${which}`);
+    if (!raw) return undefined;            // not cached
+    return JSON.parse(raw);                // array (possibly empty)
+  } catch { return undefined; }
+}
+async function saveCachedSchedule(epoch, which, slots) {
+  try { await cacheMetaSet(`leaderlog:${epoch}:${which}`, JSON.stringify(slots)); } catch { /* non-fatal */ }
+}
+
+/**
+ * Upcoming leader slots, current + next epoch, future-only, sorted by time.
+ * Each: { slot, time, epoch, when }. Cached per epoch in poolterminal.db so the
+ * slow cli leadership-schedule runs at most once per epoch (current), and once
+ * when the ~36h next-epoch window opens (next).
+ */
+export async function getUpcomingBlocks(currentEpoch) {
+  const nowMs = Date.now();
+
+  // CURRENT epoch — use persisted cache if present; else compute once + persist.
+  if (currentEpoch != null && _ubCurEpoch !== currentEpoch) {
+    _ubCurEpoch = currentEpoch;
+    const cached = await loadCachedSchedule(currentEpoch, 'current');
+    if (cached !== undefined) {
+      _ubCurSlots = cached;
+    } else {
+      const slots = await leadershipSchedule('current');
+      _ubCurSlots = slots;
+      if (Array.isArray(slots)) await saveCachedSchedule(currentEpoch, 'current', slots);
+    }
+  }
+
+  // NEXT epoch — persisted once the window opens; until then, retry periodically.
+  const nextEpoch = currentEpoch != null ? currentEpoch + 1 : null;
+  if (nextEpoch != null && _ubNextEpoch !== nextEpoch) {
+    // New boundary: adopt any persisted next-epoch schedule immediately.
+    _ubNextEpoch = nextEpoch;
+    _ubNextSlots = undefined;
+    const cached = await loadCachedSchedule(nextEpoch, 'next');
+    if (cached !== undefined) _ubNextSlots = cached;
+  }
+  // If still not known (window not yet open / not cached), retry the cli probe.
+  if (nextEpoch != null && (_ubNextSlots === undefined || _ubNextSlots === null)
+      && nowMs - _ubNextCheckedAt > UB_NEXT_RETRY_MS) {
+    _ubNextCheckedAt = nowMs;
+    const slots = await leadershipSchedule('next');   // null if window not open yet
+    if (Array.isArray(slots)) {
+      _ubNextSlots = slots;
+      await saveCachedSchedule(nextEpoch, 'next', slots);   // persist — window is open now
+    } else {
+      _ubNextSlots = null;   // still waiting
+    }
+  }
+
+  const out = [];
+  const pushFuture = (slots, epoch) => {
+    if (!Array.isArray(slots)) return;
+    for (const s of slots) {
+      const when = s.time ? Date.parse(s.time) : null;
+      if (when != null && when > nowMs) out.push({ slot: s.slot, time: s.time, epoch, when });
+    }
+  };
+  pushFuture(_ubCurSlots, _ubCurEpoch);
+  pushFuture(_ubNextSlots, _ubNextEpoch);
+  out.sort((a, b) => a.when - b.when);
+  return out;
+}
+
+/** True once we have the next-epoch schedule (window open). For loading/UI. */
+export function isNextEpochWindowOpen() { return Array.isArray(_ubNextSlots); }
+
+/** Whether the upcoming-blocks data is ready (schedule fetched or cached). For
+ *  the loading screen — current-epoch schedule resolved is enough to proceed. */
+export function isUpcomingReady() { return _ubCurSlots !== null && _ubCurSlots !== undefined; }
+
+
 
 // ============================================================
 // View read helpers (HISTORY / DELEGATORS / charts)
@@ -721,6 +833,7 @@ export function resetReadModel() {
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;
   _bpProducedAt = 0; _bpProduced = 0; _bpInfoWritten = false;
+  _ubCurEpoch = null; _ubCurSlots = null; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
   _healthAt = 0;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _dbsyncIdealAt = 0; _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;

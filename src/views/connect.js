@@ -28,6 +28,35 @@ const MODAL_HTML = `
       <div class="pt-modal-title">Connect to your node</div>
       <div class="pt-modal-sub">SSH password and OTP are never stored. Host and paths are remembered for next launch.</div>
     </div>
+    <style>
+.pt-modal input,
+.pt-modal select {
+  background-color: #0e1620 !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  border: 1px solid rgba(120,150,190,0.5) !important;
+  border-radius: 4px !important;
+  padding: 7px 9px !important;
+  font: 600 13px ui-monospace, monospace !important;
+}
+.pt-modal select {
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+  background-color: #16202e !important;
+  background-image: linear-gradient(45deg, transparent 50%, #9fb4cc 50%), linear-gradient(135deg, #9fb4cc 50%, transparent 50%) !important;
+  background-position: right 14px center, right 9px center !important;
+  background-size: 5px 5px, 5px 5px !important;
+  background-repeat: no-repeat, no-repeat !important;
+  padding-right: 28px !important;
+  cursor: pointer !important;
+}
+.pt-modal select option {
+  background-color: #0e1620 !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+</style>
     <div class="pt-modal-body">
 
       <div class="pt-field">

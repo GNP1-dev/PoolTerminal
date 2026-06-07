@@ -337,7 +337,17 @@ export class LiveDataSource {
   }
 
   async getUpcomingBlocks() {
-    return [];
+    const epoch = this._lastTip?.epoch ?? null;
+    const slots = await readModel.getUpcomingBlocks(epoch);   // [{slot,time,epoch,when}]
+    const nowSec = Math.floor(Date.now() / 1000);
+    return slots.map((s, i) => ({
+      index:       i + 1,
+      slot:        s.slot,
+      epoch:       s.epoch,
+      nextEpoch:   epoch != null && s.epoch === epoch + 1,
+      atTimestamp: Math.floor(s.when / 1000),
+      etaSeconds:  Math.max(0, Math.floor(s.when / 1000) - nowSec),
+    }));
   }
 
   async getChainPulse() {

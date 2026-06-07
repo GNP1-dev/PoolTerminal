@@ -14,6 +14,7 @@ const CONFIG_KEY = 'poolterminal.connection.v1';
 
 const STATE = {
   connected: false,
+  transport: 'ssh',   // 'ssh' (remote node) | 'local' (PT runs on the node)
   host: null,
   port: null,
   user: null,
@@ -25,6 +26,8 @@ const STATE = {
 
 export function getSession() { return STATE; }
 export function isConnected() { return STATE.connected; }
+export function getTransport() { return STATE.transport || 'ssh'; }
+export function setTransport(mode) { STATE.transport = (mode === 'local') ? 'local' : 'ssh'; }
 
 export function setNodeProbe(probe) { STATE.nodeProbe = probe; }
 export function getNodeProbe() { return STATE.nodeProbe; }
@@ -41,11 +44,14 @@ export function loadConfig() {
 export function saveConfig(conn) {
   // Sanitised — no creds
   const safe = {
+    transport: conn.transport || 'ssh',
     host: conn.host,
     port: conn.port,
     user: conn.user,
     envFile: conn.envFile,
     authOrder: conn.authOrder,
+    authMethod: conn.authMethod,
+    keyPath: conn.keyPath,
   };
   try {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(safe));
@@ -56,6 +62,7 @@ export function saveConfig(conn) {
 
 export function markConnected(conn, envVars) {
   STATE.connected = true;
+  STATE.transport = conn.transport || 'ssh';
   STATE.host = conn.host;
   STATE.port = conn.port;
   STATE.user = conn.user;
@@ -66,6 +73,7 @@ export function markConnected(conn, envVars) {
 
 export function markDisconnected() {
   STATE.connected = false;
+  STATE.transport = 'ssh';
   STATE.envVars = {};
   STATE.nodeProbe = null;
 }

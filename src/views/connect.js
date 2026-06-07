@@ -17,7 +17,7 @@
  */
 
 import { invoke } from '../data/tauri.js';
-import { loadConfig, saveConfig, markConnected } from '../data/session.js';
+import { loadConfig, saveConfig, markConnected, setTransport } from '../data/session.js';
 import { setMode } from '../data/index.js';
 import { resetNowLoading } from './now.js';
 
@@ -30,6 +30,16 @@ const MODAL_HTML = `
     </div>
     <div class="pt-modal-body">
 
+      <div class="pt-field">
+        <label>Connection type</label>
+        <select id="cn-conn-type">
+          <option value="ssh">Remote node (connect over SSH)</option>
+          <option value="local">This machine (PoolTerminal runs on the node)</option>
+        </select>
+        <div class="pt-field-hint">Choose "This machine" if PoolTerminal is installed on the same box as your node — no SSH or password needed.</div>
+      </div>
+
+      <div id="cn-remote-group">
       <div class="pt-field-row">
         <div class="pt-field" style="flex: 2">
           <label>Host</label>
@@ -44,6 +54,7 @@ const MODAL_HTML = `
           <input id="cn-user" type="text" placeholder="russell" autocomplete="off">
         </div>
       </div>
+      </div>
 
       <div class="pt-field">
         <label>Env file path (on the node)</label>
@@ -51,6 +62,7 @@ const MODAL_HTML = `
         <div class="pt-field-hint">Your Guild Operators env file. Sourced once with "offline" flag so all paths come from one canonical source.</div>
       </div>
 
+      <div id="cn-auth-section">
       <div class="pt-field">
         <label>Authentication method</label>
         <select id="cn-auth-method">
@@ -103,6 +115,7 @@ const MODAL_HTML = `
           Uses your running SSH agent — the same keys <code>ssh</code> uses in a terminal. Make sure your key is loaded (<code>ssh-add</code>). No path or passphrase needed here.
         </div>
       </div>
+      </div>
 
       <div class="pt-modal-error" id="cn-error" style="display:none"></div>
       <div class="pt-modal-status" id="cn-status" style="display:none"></div>
@@ -152,12 +165,14 @@ function gatherFormValues() {
   const keySel = byId('cn-key');
   const keyDropdownVal = keySel ? keySel.value : '';
   const isCustom = keyDropdownVal === '__custom__';
+  const connType = byId('cn-conn-type').value;   // 'ssh' | 'local'
   return {
-    host: byId('cn-host').value.trim(),
+    transport: connType,
+    host: connType === 'local' ? 'localhost' : byId('cn-host').value.trim(),
     port: parseInt(byId('cn-port').value, 10) || 22,
     user: byId('cn-user').value.trim(),
     envFile: byId('cn-env').value.trim(),
-    authMethod: byId('cn-auth-method').value,        // 'password' | 'key' | 'agent'
+    authMethod: byId('cn-auth-method').value,
     authOrder: byId('cn-auth-order').value,
     password: byId('cn-password').value,
     code: byId('cn-code').value.trim(),
@@ -167,10 +182,14 @@ function gatherFormValues() {
 }
 
 function validate(conn) {
+  if (conn.transport === 'local') {
+    if (!conn.envFile) return 'Env file path is required';
+    return null;   // local mode needs nothing else
+  }
   if (!conn.host) return 'Host is required';
   if (!conn.user) return 'Username is required';
   if (!conn.envFile) return 'Env file path is required';
-  if (conn.authMethod === 'agent') return null;     // agent needs no extra input
+  if (conn.authMethod === 'agent') return null;
   if (conn.authMethod === 'key') {
     if (!conn.keyPath) return 'Select an SSH key, or enter a key file path';
     return null;
@@ -181,6 +200,15 @@ function validate(conn) {
 }
 
 function updateAuthUI() {
+  const connType = byId('cn-conn-type').value;
+  const isLocal = connType === 'local';
+  // Local mode needs no host/port/user or auth at all — just the env path.
+  const remote = byId('cn-remote-group');
+  const authSec = byId('cn-auth-section');
+  if (remote) remote.style.display = isLocal ? 'none' : '';
+  if (authSec) authSec.style.display = isLocal ? 'none' : '';
+  if (isLocal) return;
+
   const method = byId('cn-auth-method').value;
   byId('cn-pw-group').style.display = method === 'password' ? '' : 'none';
   byId('cn-key-group').style.display = method === 'key' ? '' : 'none';
@@ -230,10 +258,12 @@ export function showConnectModal(onDone) {
   byId('cn-env').value = cfg.envFile || '/opt/cardano/cnode_bp/scripts/env';
   byId('cn-auth-order').value = cfg.authOrder || 'code_then_password';
   byId('cn-auth-method').value = cfg.authMethod || 'password';
+  byId('cn-conn-type').value = cfg.transport || 'ssh';
   populateKeys(cfg.keyPath);
   updateAuthUI();
   byId('cn-auth-order').addEventListener('change', updateAuthUI);
   byId('cn-auth-method').addEventListener('change', updateAuthUI);
+  byId('cn-conn-type').addEventListener('change', updateAuthUI);
 
   byId('cn-skip').addEventListener('click', () => {
     setMode('demo');
@@ -250,32 +280,44 @@ export function showConnectModal(onDone) {
     const skipBtn = byId('cn-skip');
     connectBtn.disabled = true;
     skipBtn.disabled = true;
-    setStatus('Opening SSH connection…');
 
     try {
-      // Pick the SSH auth method. Agent uses the running ssh-agent (cloud
-      // default); key uses a chosen/typed key file (encrypted keys decrypt with
-      // the passphrase); password-only uses the plain SSH password method; the
-      // 2FA orders use keyboard-interactive.
-      let auth;
-      if (conn.authMethod === 'agent') {
-        auth = { type: 'agent' };
-      } else if (conn.authMethod === 'key') {
-        auth = { type: 'key', path: conn.keyPath, passphrase: conn.keyPass || null };
-      } else if (conn.authOrder === 'password_only') {
-        auth = { type: 'password', password: conn.password };
-      } else {
-        auth = { type: 'keyboard_interactive', password: conn.password, code: conn.code || '', order: conn.authOrder };
-      }
+      // Set the transport up front so the env probe below (which calls
+      // invoke('ssh_run')) routes to local_run automatically in local mode.
+      setTransport(conn.transport);
 
-      await invoke('ssh_connect', {
-        params: {
-          host: conn.host,
-          port: conn.port,
-          username: conn.user,
-          auth,
-        },
-      });
+      if (conn.transport === 'local') {
+        // PoolTerminal runs ON the node — no SSH, no credentials. Just verify we
+        // can run commands locally, then go straight to the env probe.
+        setStatus('Checking local node access…');
+        const ok = await invoke('local_probe');
+        if (!ok) throw new Error('Could not run commands locally on this machine.');
+      } else {
+        setStatus('Opening SSH connection…');
+        // Pick the SSH auth method. Agent uses the running ssh-agent (cloud
+        // default); key uses a chosen/typed key file (encrypted keys decrypt
+        // with the passphrase); password-only uses the plain SSH password
+        // method; the 2FA orders use keyboard-interactive.
+        let auth;
+        if (conn.authMethod === 'agent') {
+          auth = { type: 'agent' };
+        } else if (conn.authMethod === 'key') {
+          auth = { type: 'key', path: conn.keyPath, passphrase: conn.keyPass || null };
+        } else if (conn.authOrder === 'password_only') {
+          auth = { type: 'password', password: conn.password };
+        } else {
+          auth = { type: 'keyboard_interactive', password: conn.password, code: conn.code || '', order: conn.authOrder };
+        }
+
+        await invoke('ssh_connect', {
+          params: {
+            host: conn.host,
+            port: conn.port,
+            username: conn.user,
+            auth,
+          },
+        });
+      }
 
       setStatus('Sourcing env file and probing paths…');
 

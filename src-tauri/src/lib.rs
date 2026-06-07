@@ -17,6 +17,7 @@
 //! HARDFORK: era-aware code paths will be added here as fork support lands.
 
 mod cache;
+mod localrun;
 mod pg;
 mod ssh;
 mod sshkeys;
@@ -51,6 +52,8 @@ pub fn run() {
             cache::cache_meta_get,
             pg::pg_query,
             sshkeys::list_ssh_keys,
+            localrun::local_run,
+            localrun::local_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

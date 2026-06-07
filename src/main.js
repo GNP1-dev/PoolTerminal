@@ -29,6 +29,7 @@ import {
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { showConnectModal } from './views/connect.js';
+import { nodeExec } from './data/tauri.js';
 import { getSession, setNodeProbe } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
@@ -215,7 +216,7 @@ window.addEventListener('DOMContentLoaded', () => {
   canvasEl = document.getElementById('pt-canvas');
 
   window.__pt_ssh = async (cmd) => {
-    const r = await window.__TAURI__.core.invoke('ssh_run', { command: cmd });
+    const r = await nodeExec(cmd);
     return typeof r === 'string' ? r : r.stdout;
   };
 

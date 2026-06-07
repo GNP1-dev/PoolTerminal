@@ -19,6 +19,7 @@
 mod cache;
 mod pg;
 mod ssh;
+mod sshkeys;
 
 use ssh::SshState;
 use tauri::Manager;
@@ -49,6 +50,7 @@ pub fn run() {
             cache::cache_meta_set,
             cache::cache_meta_get,
             pg::pg_query,
+            sshkeys::list_ssh_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

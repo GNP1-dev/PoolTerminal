@@ -115,6 +115,13 @@ export async function getNetBlocks(from, to) {
   return m;
 }
 
+/** The pool's first epoch with active stake — bounds backfill to its lifetime. */
+export async function getPoolFirstEpoch() {
+  const rows = await pgQuery(_cfg,
+    `SELECT MIN(epoch_no)::text AS e FROM epoch_stake WHERE pool_id = ${_poolId}`);
+  return rows.length && rows[0].e ? Number(rows[0].e) : null;
+}
+
 /**
  * Network active stake for ONE epoch (the ideal denominator). ~270ms — heavy
  * because it sums all delegation. The read-model caches each result once in

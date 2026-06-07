@@ -203,8 +203,10 @@ export async function mountHistory(canvas) {
   canvas.innerHTML = HISTORY_HTML;
 
   let rows = [];
+  let meta = null;
   try {
     rows = await readModel.getEpochHistory(0, 9_999_999);
+    meta = await readModel.getHistoryMeta();
   } catch (err) {
     console.warn('[history] load failed:', err.message ?? err);
   }
@@ -212,7 +214,7 @@ export async function mountHistory(canvas) {
 
   if (!rows.length) {
     const root = canvas.querySelector('#pt-history');
-    if (root) root.innerHTML = '<div class="pt-hist-empty">No cached history yet. Connect in LIVE mode and let the read-model backfill from Koios, then return here.</div>';
+    if (root) root.innerHTML = '<div class="pt-hist-empty">No cached history yet. Connect in LIVE mode with a history source (db-sync or Koios) enabled and let it backfill, then return here.</div>';
     return;
   }
 
@@ -260,7 +262,15 @@ export async function mountHistory(canvas) {
   // --- table (newest first) ---
   const tbl = canvas.querySelector('#hist-table');
   if (tbl) tbl.innerHTML = renderTable([...rows].reverse(), maxEpoch);
-  set('hist-tbl-meta', `${rows.length} epochs`);
+  let metaText = `${rows.length} epochs`;
+  if (meta && meta.source) {
+    metaText += ` · Data: ${meta.source}`;
+    if (meta.source === 'dbsync' && meta.schema) {
+      metaText += ` v${meta.schema}`;
+      if (meta.stale) metaText += ` ⚠ tested ${meta.tested} — verify after db-sync upgrade`;
+    }
+  }
+  set('hist-tbl-meta', metaText);
 }
 
 export function unmountHistory() { /* static view — nothing to tear down */ }

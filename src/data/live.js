@@ -299,6 +299,7 @@ export class LiveDataSource {
     readModel.refreshRecent(tip.epoch);
     readModel.refreshSemiLive();
     readModel.refreshBlockProduction(tip.epoch, this._ideal);
+    readModel.refreshHistory(tip.epoch);   // db-sync (or Koios) history population
 
     // NODE HEALTH — node-direct, never Koios. Host scrape on a slow cadence
     // (~5s; rate deltas computed there), then persist host + node metrics to the

@@ -20,6 +20,7 @@ import { renderUpcomingBlocks, stopUpcomingBlocks } from '../ui/upcoming-blocks.
 import { renderMempool } from '../ui/mempool.js';
 import { renderRelayMap, initRelayMap } from '../ui/relay-map.js';
 import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
+import { getNodeProbe } from '../data/session.js';
 
 const NOW_HTML = `
   <style>
@@ -273,34 +274,54 @@ let _loadingDone = false;
 let _loadingTimer = null;
 let _loadingTick = null;
 let _loadingStart = 0;
-
-// Ordered by REAL arrival (from startup logs): the cli pass (KES, ideal, tip)
-// lands first within seconds; the chain-pulse bootstrap is the slow tail (~50s).
-// Dismissal gates on chain pulse — the genuinely-last thing — so the overlay
-// doesn't clear while panels are still filling.
-const LOADING_STEPS = [
-  { label: 'Connecting to node',  ready: () => true },
-  { label: 'KES expiry',          ready: () => hasDigit('hero-kes-val') },
-  { label: 'Ideal & leader',      ready: () => hasDigit('hero-ideal-val') },
-  { label: 'Chain tip & sync',    ready: () => hasDigit('ttape-sync') || hasDigit('cp-tipblock') },
-  { label: 'Peers',               ready: () => hasDigit('pp-out') || hasDigit('ttape-peers') },
-  { label: 'Mempool',             ready: () => { const e = document.getElementById('mp-count'); return !!e && (e.textContent || '').trim() !== '' && (e.textContent || '').trim() !== '—'; } },
-  { label: 'Chain pulse',         ready: () => hasDigit('cp-avg') || hasDigit('cp-d-m1') || hasDigit('cp-tipblock') },
-];
+let _steps = [];
+// Once the first full load completes this session, returning to the NOW tab
+// must NOT re-run the loader (it would wait again, and on a relay that's the
+// full 2-min fallback). Reset only on a fresh connection (resetNowLoading).
+let _initialLoadComplete = false;
 
 function hasDigit(id) { const el = document.getElementById(id); return !!el && /\d/.test(el.textContent || ''); }
 
-// The overlay is done when every step is ready (chain pulse last). Reading the
-// steps directly means we never clear early just because the fast cli fields
-// (KES/ideal) arrived ahead of the slow bootstrap.
-function allStepsReady() { return LOADING_STEPS.every((s) => { try { return s.ready(); } catch { return false; } }); }
+// Is the connected node a block producer? Relays have no pool keys, so KES and
+// leader/ideal NEVER arrive — they must not be required loading steps, or the
+// loader hangs to the 2-min fallback on every relay connect.
+function isBPNode() {
+  try {
+    const p = getNodeProbe && getNodeProbe();
+    return !!(p && typeof p.role === 'string' && p.role.toLowerCase() === 'bp');
+  } catch { return false; }
+}
+
+// Build the checklist for the connected node. Universal steps (tip, peers,
+// mempool, chain pulse) apply to BP and relay alike; KES + Ideal are BP-only.
+// Dismissal gates on chain pulse — the genuinely-last thing — for both.
+function buildSteps() {
+  const head = [{ label: 'Connecting to node', ready: () => true }];
+  const bpOnly = isBPNode() ? [
+    { label: 'KES expiry',     ready: () => hasDigit('hero-kes-val') },
+    { label: 'Ideal & leader', ready: () => hasDigit('hero-ideal-val') },
+  ] : [];
+  const universal = [
+    { label: 'Chain tip & sync', ready: () => hasDigit('ttape-sync') || hasDigit('cp-tipblock') },
+    { label: 'Peers',            ready: () => hasDigit('pp-out') || hasDigit('ttape-peers') },
+    { label: 'Mempool',          ready: () => { const e = document.getElementById('mp-count'); return !!e && (e.textContent || '').trim() !== '' && (e.textContent || '').trim() !== '—'; } },
+    { label: 'Chain pulse',      ready: () => hasDigit('cp-avg') || hasDigit('cp-d-m1') || hasDigit('cp-tipblock') },
+  ];
+  return [...head, ...bpOnly, ...universal];
+}
+
+/** Reset the load-once gate — call on a fresh connection so the loader shows. */
+export function resetNowLoading() { _initialLoadComplete = false; }
+
+// The overlay is done when every (role-appropriate) step is ready.
+function allStepsReady() { return _steps.every((s) => { try { return s.ready(); } catch { return false; } }); }
 
 function renderLoadingSteps() {
   const box = document.getElementById('pt-loading-steps');
   if (!box) return;
   const elapsed = _loadingStart ? Math.floor((Date.now() - _loadingStart) / 1000) : 0;
   let firstPending = true;
-  box.innerHTML = LOADING_STEPS.map((s) => {
+  box.innerHTML = _steps.map((s) => {
     const done = s.ready();
     if (done) return `<div class="pt-loading-step done"><span class="ico">✓</span><span>${s.label}</span></div>`;
     if (firstPending) {
@@ -313,6 +334,7 @@ function renderLoadingSteps() {
 
 function hideLoading() {
   _loadingDone = true;
+  _initialLoadComplete = true;
   const el = document.getElementById('pt-loading');
   if (el) el.classList.add('pt-hidden');
   if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
@@ -327,6 +349,7 @@ function maybeHideLoading() {
     // all-green checklist, then hold ~1s so the completed state is visible
     // before fading out. Confirms to the user it actually finished.
     _loadingDone = true;
+    _initialLoadComplete = true;
     if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
     if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
     renderLoadingSteps();
@@ -347,6 +370,19 @@ export function mountNow(canvas) {
   renderRelayMap();
   initRelayMap();
   resetPeersPanel();
+
+  _steps = buildSteps();   // role-aware: relays drop KES/Ideal
+
+  // Returning to NOW after the first full load — don't re-run the loader (it
+  // would wait again, up to the 2-min fallback). The live loop refills panels
+  // on its next tick. Only a fresh connection (resetNowLoading) shows it again.
+  if (_initialLoadComplete) {
+    _loadingDone = true;
+    const el = document.getElementById('pt-loading');
+    if (el) el.classList.add('pt-hidden');
+    return;
+  }
+
   _loadingDone = false;
   _loadingStart = Date.now();
   renderLoadingSteps();

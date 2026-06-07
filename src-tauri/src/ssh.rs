@@ -104,6 +104,52 @@ impl SshSession {
         Ok(Self { handle })
     }
 
+    /// Connect using the local ssh-agent (keys loaded via `ssh-add`).
+    ///
+    /// This is how most cloud SPOs authenticate: the private key lives in the
+    /// agent (often passphrase-protected and unlocked once per session), not as
+    /// a readable file. We ask the agent for its identities and try each against
+    /// the server until one is accepted — exactly what OpenSSH does.
+    pub async fn connect_agent(host: &str, port: u16, username: &str) -> anyhow::Result<Self> {
+        let mut handle = Self::open(host, port).await?;
+
+        let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+            .await
+            .map_err(|e| anyhow::anyhow!(
+                "could not reach the SSH agent ({e}). Is ssh-agent running and SSH_AUTH_SOCK set?"
+            ))?;
+
+        let identities = agent
+            .request_identities()
+            .await
+            .map_err(|e| anyhow::anyhow!("could not list agent identities: {e}"))?;
+
+        if identities.is_empty() {
+            anyhow::bail!("the SSH agent has no keys loaded (run `ssh-add` to add your key)");
+        }
+
+        // Try each identity; the server accepts the one that's authorised.
+        // AgentClient implements Signer, so we pass &mut agent as the signer —
+        // the private key never leaves the agent (it signs the challenge). The
+        // identity wraps a key or cert; public_key() gives us the PublicKey.
+        for id in identities {
+            let pubkey = id.public_key().into_owned();
+            match handle
+                .authenticate_publickey_with(username, pubkey, None, &mut agent)
+                .await
+            {
+                Ok(r) if r.success() => return Ok(Self { handle }),
+                Ok(_) => continue,                 // this key not accepted; try next
+                Err(e) => {
+                    // Signer/agent error — surface it but keep trying others.
+                    eprintln!("[ssh] agent auth attempt error: {e}");
+                    continue;
+                }
+            }
+        }
+        anyhow::bail!("ssh-agent authentication failed — no key in the agent was accepted by the server");
+    }
+
     /// Connect using keyboard-interactive authentication (password + 2FA code).
     ///
     /// Credentials are fed in the declared `order` as the server's prompts
@@ -221,6 +267,7 @@ pub struct ConnectParams {
 ///   { type: "key", path, passphrase }
 ///   { type: "password", password }
 ///   { type: "keyboard_interactive", password, code, order }
+///   { type: "agent" }
 /// where order is "code_then_password" | "password_then_code" | "password_only".
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -237,6 +284,7 @@ pub enum AuthMethod {
         code: String,
         order: AuthOrder,
     },
+    Agent,
 }
 
 #[derive(serde::Serialize)]
@@ -280,6 +328,9 @@ pub async fn ssh_connect(
                 order,
             )
             .await
+        }
+        AuthMethod::Agent => {
+            SshSession::connect_agent(&params.host, params.port, &params.username).await
         }
     }
     .map_err(|e| e.to_string())?;

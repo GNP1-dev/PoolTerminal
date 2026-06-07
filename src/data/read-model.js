@@ -28,6 +28,7 @@ import { getSession, getNodeProbe } from './session.js';
 import { probeNode } from './node-probe.js';
 import * as koios from './koios-query.js';
 import * as dbsync from './dbsync-query.js';
+import * as koiosHist from './koios-history.js';
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -760,9 +761,42 @@ export async function refreshHistory(currentEpoch) {
   if (DATA_SOURCE === 'dbsync') {
     await backfillFromDbsync(currentEpoch);
     dbsyncIdealFiller(currentEpoch);   // fire-and-forget; self-throttled
+  } else if (DATA_SOURCE === 'koios') {
+    await backfillFromKoios(currentEpoch);
   }
-  // 'koios' path runs via backfillIfNeeded/refreshIdealFiller/refreshRecent
-  // (gated by KOIOS_ENABLED); 'off' does nothing.
+  // 'off' does nothing.
+}
+
+// ---- Koios history source (portable fallback for no-db-sync operators) ----
+// The entire backfill is ONE /pool_history call (all epochs), with ideal
+// derived locally from active_stake_pct — no per-epoch loop, no ban risk.
+let _koiosInit = false;
+let _koiosBackfillDone = false;
+let _koiosBackfillInFlight = false;
+
+async function ensureKoios() {
+  if (_koiosInit) return koiosHist.koiosSource.reachable();
+  _koiosInit = true;
+  const ok = await koiosHist.initKoios(ensurePoolBech32());
+  if (ok) await cacheMetaSet('history_source', 'koios');
+  return ok;
+}
+
+async function backfillFromKoios(currentEpoch) {
+  if (_koiosBackfillDone || _koiosBackfillInFlight || !currentEpoch) return;
+  _koiosBackfillInFlight = true;
+  try {
+    if (!(await ensureKoios())) { console.warn('[koios] backfill skipped — not reachable'); return; }
+    const t0 = performance.now();
+    const rows = await koiosHist.fetchHistory(null, currentEpoch);   // ONE call
+    for (const r of rows) await cachePutEpoch(r.epoch, r);
+    _koiosBackfillDone = true;
+    console.log(`[koios] backfill: ${rows.length} epochs (1 API call) in ${Math.round(performance.now() - t0)}ms`);
+  } catch (e) {
+    console.warn('[koios] backfill failed:', e.message ?? e);
+  } finally {
+    _koiosBackfillInFlight = false;
+  }
 }
 
 /** Active history source + version, for the HISTORY header. */
@@ -836,6 +870,8 @@ export function resetReadModel() {
   _ubCurEpoch = null; _ubCurSlots = null; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
   _healthAt = 0;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
+  _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
+  koiosHist.resetKoios();
   _dbsyncIdealAt = 0; _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
   dbsync.resetDbsync();
 }

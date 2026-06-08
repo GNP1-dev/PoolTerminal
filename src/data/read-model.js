@@ -29,6 +29,7 @@ import { probeNode } from './node-probe.js';
 import * as koios from './koios-query.js';
 import * as dbsync from './dbsync-query.js';
 import * as koiosHist from './koios-history.js';
+import * as blockfrost from './blockfrost-query.js';
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -803,6 +804,16 @@ async function ensureKoios() {
   return ok;
 }
 
+// Optional Blockfrost enrichment (DELEGATORS view). Idempotent; no-op without a
+// key. Safe to call on connect and from the DELEGATORS view.
+let _blockfrostInit = false;
+export async function ensureBlockfrost() {
+  if (_blockfrostInit) return blockfrost.blockfrostSource.reachable();
+  if (!blockfrost.hasBlockfrostKey()) return false;   // optional — silent without a key
+  _blockfrostInit = true;
+  return blockfrost.initBlockfrost(ensurePoolBech32());
+}
+
 async function backfillFromKoios(currentEpoch) {
   if (_koiosBackfillDone || _koiosBackfillInFlight || !currentEpoch) return;
   _koiosBackfillInFlight = true;
@@ -892,6 +903,7 @@ export function resetReadModel() {
   _healthAt = 0;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
+  _blockfrostInit = false; blockfrost.resetBlockfrost();
   koiosHist.resetKoios();
   _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
   dbsync.resetDbsync();

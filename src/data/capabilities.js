@@ -35,6 +35,10 @@ export const DataKind = Object.freeze({
   // Identity / params
   POOL_PARAMS: 'POOL_PARAMS',
   REWARD_ADDRESS: 'REWARD_ADDRESS',
+  POOL_LIVE: 'POOL_LIVE',
+  DELEGATOR_LIST: 'DELEGATOR_LIST',
+  DELEGATOR_DETAIL: 'DELEGATOR_DETAIL',
+  POOL_LIFECYCLE: 'POOL_LIFECYCLE',
 });
 
 export const ALL_DATAKINDS = Object.freeze(Object.values(DataKind));

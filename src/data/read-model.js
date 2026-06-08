@@ -537,7 +537,14 @@ export async function refreshBlockProduction(epoch, ideal) {
     const leaderKnown = _bpAssigned != null;
     const leader = leaderKnown ? _bpAssigned.length : 0;
     const adopted = _bpProduced;
-    const lost = leaderKnown ? Math.max(0, leader - adopted) : 0;
+    // Lost = leader slots that were DUE (their time has already passed) but were
+    // not produced. Future scheduled slots are "upcoming", NOT lost — counting
+    // them as lost made a fresh epoch show every assigned block as lost.
+    const nowMs = Date.now();
+    const passed = leaderKnown
+      ? _bpAssigned.filter((s) => { const w = s && s.time ? Date.parse(s.time) : null; return w != null && w <= nowMs; }).length
+      : 0;
+    const lost = leaderKnown ? Math.max(0, passed - adopted) : 0;
     const luckPercent = ideal && ideal > 0 ? Math.round((adopted / ideal) * 100) : 0;
 
     _bp = { leader, ideal: ideal ?? 0, adopted, confirmed: adopted, lost, luckPercent, leaderKnown };

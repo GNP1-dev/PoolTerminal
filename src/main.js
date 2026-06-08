@@ -29,6 +29,7 @@ import {
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
+import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal } from './views/connect.js';
 import { nodeExec } from './data/tauri.js';
 import { getSession, setNodeProbe } from './data/session.js';
@@ -74,6 +75,8 @@ function mountView(view) {
     mountNodeHealth(canvasEl);
   } else if (view === 'map') {
     mountMap(canvasEl);
+  } else if (view === 'delegators') {
+    mountDelegators(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">
@@ -281,6 +284,7 @@ window.addEventListener('DOMContentLoaded', () => {
   mountView('now');
 
   showConnectModal((result) => {
+    mountView('now');
     paintMode();
     runProbeAndPaintRole();
     startPolling();

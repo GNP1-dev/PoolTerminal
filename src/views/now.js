@@ -271,6 +271,7 @@ const NOW_HTML = `
 // the last step (Ideal) lands, with a 2-min fallback so it can never stick.
 const LOADING_FALLBACK_MS = 120_000;
 let _loadingDone = false;
+let _firstSnapshotRendered = false;
 let _loadingTimer = null;
 let _loadingTick = null;
 let _loadingStart = 0;
@@ -290,6 +291,36 @@ function isBPNode() {
     const p = getNodeProbe && getNodeProbe();
     return !!(p && typeof p.role === 'string' && p.role.toLowerCase() === 'bp');
   } catch { return false; }
+}
+
+// Positively confirmed relay: probe resolved AND role is a known non-BP role.
+// Unknown/unresolved role → false (so we DON'T label until we're sure).
+function isRelayConfirmed() {
+  try {
+    const p = getNodeProbe && getNodeProbe();
+    if (!p || typeof p.role !== 'string') return false;
+    const r = p.role.trim().toLowerCase();
+    return r !== '' && r !== 'bp' && r !== 'unknown';
+  } catch { return false; }
+}
+
+// Idempotent: set the BP-only hero card labels to "(relay)" iff a relay is
+// confirmed, else restore the plain label. Safe to call every tick — it only
+// writes when the text needs changing, and self-corrects once the probe lands.
+const BP_CARD_LABELS = {
+  'hero-kes': 'KES', 'hero-ideal': 'Ideal', 'hero-leader': 'Leader',
+  'hero-adopt': 'Adopt', 'hero-conf': 'Confirmed', 'hero-lost': 'Lost',
+};
+function applyRelayLabels(canvas) {
+  const root = canvas || document;
+  const relay = isRelayConfirmed();
+  for (const [cardId, base] of Object.entries(BP_CARD_LABELS)) {
+    const card = root.querySelector ? root.querySelector('#' + cardId) : document.getElementById(cardId);
+    const lbl = card && card.querySelector('.pt-hero-label');
+    if (!lbl) continue;
+    const want = relay ? `${base} (relay)` : base;
+    if (lbl.textContent !== want) lbl.textContent = want;
+  }
 }
 
 // Build the checklist for the connected node. Universal steps (tip, peers,
@@ -313,12 +344,21 @@ function buildSteps() {
 /** Reset the load-once gate — call on a fresh connection so the loader shows. */
 export function resetNowLoading() { _initialLoadComplete = false; }
 
-// The overlay is done when every (role-appropriate) step is ready.
-function allStepsReady() { return _steps.every((s) => { try { return s.ready(); } catch { return false; } }); }
+// The overlay is done when every (role-appropriate) step is ready AND the first
+// real fast-loop snapshot has rendered. Steps are REBUILT each check: the node
+// role isn't resolved at mount time, so a BP would otherwise get a relay-style
+// checklist (no KES/Ideal gating) and the loader would dismiss before those
+// BP-only cards load. Rebuilding here picks up the role once the probe lands.
+function allStepsReady() {
+  if (!_firstSnapshotRendered) return false;
+  _steps = buildSteps();
+  return _steps.every((s) => { try { return s.ready(); } catch { return false; } });
+}
 
 function renderLoadingSteps() {
   const box = document.getElementById('pt-loading-steps');
   if (!box) return;
+  _steps = buildSteps();   // reflect the role once the probe resolves
   const elapsed = _loadingStart ? Math.floor((Date.now() - _loadingStart) / 1000) : 0;
   let firstPending = true;
   box.innerHTML = _steps.map((s) => {
@@ -381,18 +421,12 @@ export function mountNow(canvas) {
 
   // On a relay, the block-production hero cards (KES/Ideal/Leader/Adopt/
   // Confirmed/Lost) can never fill — they need pool keys. Mark their labels
-  // "(relay)" so it's obvious why they're blank rather than looking broken.
-  if (!isBPNode()) {
-    const bpCards = {
-      'hero-kes': 'KES', 'hero-ideal': 'Ideal', 'hero-leader': 'Leader',
-      'hero-adopt': 'Adopt', 'hero-conf': 'Confirmed', 'hero-lost': 'Lost',
-    };
-    for (const [cardId, base] of Object.entries(bpCards)) {
-      const card = canvas.querySelector('#' + cardId);
-      const lbl = card && card.querySelector('.pt-hero-label');
-      if (lbl) lbl.textContent = `${base} (relay)`;
-    }
-  }
+  // "(relay)" so it's obvious why they're blank. This is applied idempotently
+  // by applyRelayLabels() (called here AND every fast tick) so it reflects the
+  // CONFIRMED probe role — at mount the role may not be resolved yet, and
+  // labeling once at mount wrongly stamped "(relay)" on a BP whose probe hadn't
+  // landed. The per-tick pass self-corrects once the role is known.
+  applyRelayLabels(canvas);
 
   // Returning to NOW after the first full load — don't re-run the loader (it
   // would wait again, up to the 2-min fallback). The live loop refills panels
@@ -406,6 +440,7 @@ export function mountNow(canvas) {
 
   _loadingDone = false;
   _loadingStart = Date.now();
+  _firstSnapshotRendered = false;
   renderLoadingSteps();
   if (_loadingTimer) clearTimeout(_loadingTimer);
   if (_loadingTick) clearInterval(_loadingTick);
@@ -415,7 +450,9 @@ export function mountNow(canvas) {
 
 export function updateNowFast(snap) {
   renderHero(snap);
+  applyRelayLabels(document);   // idempotent; self-corrects once probe role is known
   setChainPulseStatus(snap.atTip, snap.tipBlock, snap.slot, snap.slotInEpoch, snap.epochLength);
+  if (snap && (snap.tipBlock != null || snap.slot != null)) _firstSnapshotRendered = true;
   maybeHideLoading();
 }
 
@@ -435,7 +472,7 @@ export async function refreshMempool(src, tipBlock) {
 
 export async function refreshUpcomingBlocks(src) {
   const list = await src.getUpcomingBlocks();
-  renderUpcomingBlocks(list, { isRelay: !isBPNode() });
+  renderUpcomingBlocks(list, { isRelay: isRelayConfirmed() });
 }
 
 export function unmountNow() {

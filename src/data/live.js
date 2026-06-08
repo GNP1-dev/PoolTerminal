@@ -337,6 +337,13 @@ export class LiveDataSource {
   }
 
   async getUpcomingBlocks() {
+    // Leader schedule is a BP-only concept — relays never produce blocks and
+    // have no pool keys. Return empty immediately so a relay never shows the
+    // BP's slots (the per-epoch poolterminal.db cache is node-agnostic, so we
+    // must gate here rather than rely on the cache being clear).
+    const role = getNodeProbe()?.role;
+    const isBP = typeof role === 'string' && role.toLowerCase() === 'bp';
+    if (!isBP) return [];
     const epoch = this._lastTip?.epoch ?? null;
     const slots = await readModel.getUpcomingBlocks(epoch);   // [{slot,time,epoch,when}]
     const nowSec = Math.floor(Date.now() / 1000);

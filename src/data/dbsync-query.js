@@ -134,6 +134,23 @@ export async function getNetActiveStake(epoch) {
   return rows.length ? numOrNull(rows[0].net) : null;
 }
 
+/**
+ * Network active stake for ALL epochs in ONE pass (GROUP BY). One query over
+ * epoch_stake instead of ~400 per-epoch sums — turns ~108s of trickle into a
+ * single grouped scan. Returns { epoch_no: netStakeLovelace }. Used to fill the
+ * ideal denominator for the whole history at once.
+ */
+export async function getNetActiveStakeAll(from, to) {
+  const f = safeEpoch(from), t = safeEpoch(to);
+  const rows = await pgQuery(_cfg,
+    `SELECT epoch_no::text AS epoch, SUM(amount)::text AS net
+       FROM epoch_stake WHERE epoch_no BETWEEN ${f} AND ${t}
+       GROUP BY epoch_no`);
+  const m = {};
+  for (const r of rows) m[Number(r.epoch)] = numOrNull(r.net);
+  return m;
+}
+
 // ---- assembly: canonical epoch rows ----------------------------------------
 
 /** Pick the pool params active at `epoch` from the ordered updates list. */

@@ -60,7 +60,15 @@ const HISTORY_HTML = `
     </div>
 
     <div class="pt-panel">
-      <div class="pt-panel-header"><span class="pt-panel-title">Epoch history</span><span class="pt-panel-meta v-muted" id="hist-tbl-meta">—</span></div>
+      <div class="pt-panel-header">
+        <span class="pt-panel-title">Epoch history</span>
+        <span class="pt-panel-meta v-muted" id="hist-tbl-meta">—</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px;font:400 11px ui-monospace,monospace;">
+          <span class="v-muted">Source:</span>
+          <span id="hist-src-label" style="color:var(--pt-accent-blue);font-weight:600;">—</span>
+          <button id="hist-src-toggle" style="cursor:pointer;background:#16202e;color:#e8f0f8;border:1px solid rgba(120,150,190,0.5);border-radius:4px;padding:3px 9px;font:inherit;">Switch source</button>
+        </span>
+      </div>
       <div class="pt-tbl-wrap" id="hist-table"></div>
     </div>
   </div>`;
@@ -201,6 +209,21 @@ function renderTable(rows, currentEpoch) {
 
 export async function mountHistory(canvas) {
   canvas.innerHTML = HISTORY_HTML;
+
+  // Source label + temporary toggle (dbsync ↔ koios). Persists across restart;
+  // switching reloads so the chosen source backfills fresh.
+  const srcLabel = canvas.querySelector('#hist-src-label');
+  const srcToggle = canvas.querySelector('#hist-src-toggle');
+  const curSrc = readModel.getDataSource();
+  if (srcLabel) srcLabel.textContent = curSrc;
+  if (srcToggle) {
+    const other = curSrc === 'dbsync' ? 'koios' : 'dbsync';
+    srcToggle.textContent = `Switch to ${other}`;
+    srcToggle.addEventListener('click', () => {
+      readModel.setDataSource(other);
+      location.reload();   // restart so the new source backfills from scratch
+    });
+  }
 
   let rows = [];
   let meta = null;

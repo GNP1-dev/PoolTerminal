@@ -36,8 +36,22 @@ import * as koiosHist from './koios-history.js';
 // Which source populates the HISTORY cache: 'dbsync' | 'koios' | 'off'.
 // db-sync = local/remote Postgres, no rate limits, full reward split. Koios is
 // kept (kill-switched) as the fallback for operators without db-sync. Eventually
-// set by the wizard/settings; for now db-sync (validated, working).
-const DATA_SOURCE = 'dbsync';
+// set by the wizard/settings; for now a persisted toggle (HISTORY view) lets us
+// switch dbsync↔koios for testing. Restored from localStorage on load.
+let DATA_SOURCE = 'dbsync';
+try {
+  const saved = localStorage.getItem('pt.data_source');
+  if (saved === 'dbsync' || saved === 'koios' || saved === 'off') DATA_SOURCE = saved;
+} catch { /* ignore */ }
+
+/** Current history data source ('dbsync' | 'koios' | 'off'). */
+export function getDataSource() { return DATA_SOURCE; }
+/** Set + persist the history data source. Caller should reload to apply. */
+export function setDataSource(src) {
+  if (src !== 'dbsync' && src !== 'koios' && src !== 'off') return;
+  DATA_SOURCE = src;
+  try { localStorage.setItem('pt.data_source', src); } catch { /* ignore */ }
+}
 // db-sync connection — peer auth on the local box needs only the DB name; the
 // wizard/settings will populate host/port/user/password for remote setups.
 const DBSYNC_CONFIG = { database: 'cexplorer' };
@@ -707,8 +721,9 @@ async function backfillFromDbsync(currentEpoch) {
   }
 }
 
-// Network active stake per epoch — the expensive ideal denominator. Computed
-// once per epoch and cached in meta forever (history never changes).
+// Network active stake per epoch — cached forever in meta (history never
+// changes). Kept for any single-epoch callers; the bulk path below is used for
+// the history ideal fill.
 async function getNetStakeCached(epoch) {
   const key = `netstake:${epoch}`;
   const cached = await cacheMetaGet(key);
@@ -718,37 +733,43 @@ async function getNetStakeCached(epoch) {
   return v;
 }
 
-const DBSYNC_IDEAL_BATCH = 4;
-const DBSYNC_IDEAL_MS = 2500;
-let _dbsyncIdealAt = 0;
 let _dbsyncIdealDone = false;
 let _dbsyncIdealInFlight = false;
 
+// Fill the ideal column for the WHOLE history in two bulk queries (net stake
+// per epoch via GROUP BY + net blocks per epoch), instead of trickling one
+// epoch at a time. Runs once after backfill. Ideal is computed for every closed
+// epoch that had pool stake — including zero-block epochs (luck 0% is real).
 async function dbsyncIdealFiller(currentEpoch) {
   if (_dbsyncIdealDone || _dbsyncIdealInFlight || !_dbsyncBackfillDone) return;
-  const now = Date.now();
-  if (_dbsyncIdealAt && now - _dbsyncIdealAt < DBSYNC_IDEAL_MS) return;
   _dbsyncIdealInFlight = true;
-  _dbsyncIdealAt = now;
   try {
     const rows = await cacheGetEpochsRaw(0, 9_999_999);
-    // Ideal needed for closed epochs that produced blocks and have pool stake.
     const need = rows.filter((r) => r.data && r.data.source === 'dbsync'
       && r.data.ideal == null && r.data.activeStakeLovelace
-      && (r.data.adopted || 0) > 0 && r.epoch < currentEpoch);
+      && r.epoch < currentEpoch);
     if (!need.length) { _dbsyncIdealDone = true; console.log('[dbsync] ideal fill complete'); return; }
     const lo = need[0].epoch, hi = need[need.length - 1].epoch;
-    const netBlocks = await dbsync.getNetBlocks(lo, hi);
-    for (const r of need.slice(0, DBSYNC_IDEAL_BATCH)) {
-      const netStake = await getNetStakeCached(r.epoch);
+    const t0 = performance.now();
+    // Two bulk queries cover every epoch at once.
+    const [netStakeAll, netBlocks] = await Promise.all([
+      dbsync.getNetActiveStakeAll(lo, hi),
+      dbsync.getNetBlocks(lo, hi),
+    ]);
+    let filled = 0;
+    for (const r of need) {
+      const netStake = netStakeAll[r.epoch];
       const nb = netBlocks[r.epoch];
       if (netStake && nb != null) {
         const sigma = Number(r.data.activeStakeLovelace) / netStake;
         const ideal = Math.round(sigma * nb * 100) / 100;
         await cachePutEpoch(r.epoch, { ...r.data, ideal });
+        await cacheMetaSet(`netstake:${r.epoch}`, String(netStake));   // cache for any single-epoch use
+        filled++;
       }
     }
-    console.log(`[dbsync] ideal fill: ~${Math.max(0, need.length - DBSYNC_IDEAL_BATCH)} epochs remaining`);
+    _dbsyncIdealDone = true;
+    console.log(`[dbsync] ideal fill: ${filled} epochs in ${Math.round(performance.now() - t0)}ms (2 bulk queries)`);
   } catch (e) {
     console.warn('[dbsync] ideal fill failed:', e.message ?? e);
   } finally {
@@ -872,6 +893,6 @@ export function resetReadModel() {
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
   koiosHist.resetKoios();
-  _dbsyncIdealAt = 0; _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
+  _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
   dbsync.resetDbsync();
 }

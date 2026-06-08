@@ -379,6 +379,21 @@ export function mountNow(canvas) {
 
   _steps = buildSteps();   // role-aware: relays drop KES/Ideal
 
+  // On a relay, the block-production hero cards (KES/Ideal/Leader/Adopt/
+  // Confirmed/Lost) can never fill — they need pool keys. Mark their labels
+  // "(relay)" so it's obvious why they're blank rather than looking broken.
+  if (!isBPNode()) {
+    const bpCards = {
+      'hero-kes': 'KES', 'hero-ideal': 'Ideal', 'hero-leader': 'Leader',
+      'hero-adopt': 'Adopt', 'hero-conf': 'Confirmed', 'hero-lost': 'Lost',
+    };
+    for (const [cardId, base] of Object.entries(bpCards)) {
+      const card = canvas.querySelector('#' + cardId);
+      const lbl = card && card.querySelector('.pt-hero-label');
+      if (lbl) lbl.textContent = `${base} (relay)`;
+    }
+  }
+
   // Returning to NOW after the first full load — don't re-run the loader (it
   // would wait again, up to the 2-min fallback). The live loop refills panels
   // on its next tick. Only a fresh connection (resetNowLoading) shows it again.
@@ -420,7 +435,7 @@ export async function refreshMempool(src, tipBlock) {
 
 export async function refreshUpcomingBlocks(src) {
   const list = await src.getUpcomingBlocks();
-  renderUpcomingBlocks(list);
+  renderUpcomingBlocks(list, { isRelay: !isBPNode() });
 }
 
 export function unmountNow() {

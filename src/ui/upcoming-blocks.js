@@ -40,7 +40,7 @@ function formatWhen(ts) {
   const dateStr = when.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
   return `${time} ${dateStr}`;
 }
-export function renderUpcomingBlocks(list) {
+export function renderUpcomingBlocks(list, opts = {}) {
   polledAt = Date.now() / 1000;
   blocks = list.map((b) => ({
     index:       b.index,
@@ -56,8 +56,13 @@ export function renderUpcomingBlocks(list) {
   if (!body || !count) return;
 
   if (blocks.length === 0) {
-    count.textContent = 'none upcoming';
-    body.innerHTML = '<div class="pt-ub-empty">No upcoming assigned slots.</div>';
+    if (opts.isRelay) {
+      count.textContent = 'relay';
+      body.innerHTML = '<div class="pt-ub-empty">Operating in relay mode only</div>';
+    } else {
+      count.textContent = 'none upcoming';
+      body.innerHTML = '<div class="pt-ub-empty">No upcoming assigned slots.</div>';
+    }
   } else {
     const nextCount = blocks.filter((b) => b.nextEpoch).length;
     const curCount = blocks.length - nextCount;

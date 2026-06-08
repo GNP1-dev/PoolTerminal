@@ -67,6 +67,7 @@ function mountView(view) {
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
+    refreshUpcomingBlocks(dataSource()).catch(() => {});
   } else if (view === 'history') {
     mountHistory(canvasEl);
   } else if (isHealth) {
@@ -268,6 +269,7 @@ window.addEventListener('DOMContentLoaded', () => {
       setPeerCounts(null, null);
       resetPeersPanel();
       resetRelayMap();
+      if (activeView === 'now') mountNow(canvasEl);
       runProbeAndPaintRole();
       fastPollTick();
     });

@@ -62,7 +62,7 @@ function numOrNull(v) { return v == null ? null : Number(v); }
 
 /**
  * ONE call: full per-epoch pool history. Returns the raw Koios array (desc),
- * or [] on failure. This is the only network request the source makes.
+ * or [] on failure.
  */
 async function fetchPoolHistory() {
   const url = `${KOIOS_BASE}/pool_history?_pool_bech32=${_bech32}&order=epoch_no.desc`;
@@ -75,28 +75,64 @@ async function fetchPoolHistory() {
   return arr;
 }
 
-/** Map one Koios pool_history row → canonical EpochRow (db-sync-compatible). */
-function toEpochRow(h) {
+/**
+ * ONE call: network active stake + block count for EVERY epoch. Used to compute
+ * the ideal denominator for epochs where pool_history's active_stake_pct is null
+ * (older epochs). Returns { epoch_no: { netStake, netBlocks } }.
+ */
+async function fetchEpochInfoAll() {
+  const url = `${KOIOS_BASE}/epoch_info?select=epoch_no,active_stake,blk_count`;
+  const out = await runCmd(`curl -sf --max-time ${CURL_MAX_TIME} '${url}'`);
+  const arr = parseJson(out, null);
+  const m = {};
+  if (Array.isArray(arr)) {
+    for (const e of arr) {
+      m[Number(e.epoch_no)] = {
+        netStake: e.active_stake != null ? Number(e.active_stake) : null,
+        netBlocks: e.blk_count != null ? Number(e.blk_count) : null,
+      };
+    }
+  } else {
+    console.warn('[koios-hist] epoch_info returned no array');
+  }
+  return m;
+}
+
+/** Map one Koios pool_history row → canonical EpochRow (db-sync-compatible).
+ *  `netInfo` is the epoch_info entry { netStake, netBlocks } for this epoch. */
+function toEpochRow(h, netInfo) {
   const epoch = Number(h.epoch_no);
   const activeStakeLovelace = h.active_stake != null ? Number(h.active_stake) : null;
   const blocks = h.block_cnt != null ? Number(h.block_cnt) : null;
 
-  // Net stake derived locally from our pct share — no extra API call.
-  // active_stake_pct is a PERCENTAGE (validated: 0.00472 = 0.00472% of network,
-  // i.e. your_stake/net_stake = pct/100), NOT a bare fraction.
+  // Ideal = your stake fraction × network blocks that epoch (σ × netBlocks),
+  // matching how db-sync computes it. Preferred path uses epoch_info's real
+  // network active_stake + blk_count (works for ALL epochs, incl. those where
+  // pool_history's active_stake_pct is null). Falls back to active_stake_pct ×
+  // 21600 only if epoch_info is missing for that epoch.
   let ideal = null;
-  const pct = h.active_stake_pct != null ? Number(h.active_stake_pct) : null;
-  // Ideal blocks ≈ epoch block slots * your stake fraction. Mainnet epoch has
-  // ~21600 expected block slots (432000 slots * 0.05 active-slot coefficient).
-  const EPOCH_IDEAL_BLOCKS = 21600;
-  if (pct != null && pct > 0) ideal = +(EPOCH_IDEAL_BLOCKS * (pct / 100)).toFixed(2);
+  if (netInfo && netInfo.netStake && netInfo.netBlocks != null && activeStakeLovelace) {
+    const sigma = activeStakeLovelace / netInfo.netStake;
+    ideal = +(sigma * netInfo.netBlocks).toFixed(2);
+  } else {
+    const pct = h.active_stake_pct != null ? Number(h.active_stake_pct) : null;
+    if (pct != null && pct > 0) ideal = +(21600 * (pct / 100)).toFixed(2);
+  }
 
-  // Rewards: member = delegators' share; pool_fees = operator take.
+  // Rewards. member_rewards = delegators only (excludes pledge). deleg_rewards =
+  // all delegated-stake rewards INCLUDING the operator's pledge. So the pledge
+  // reward = deleg_rewards - member_rewards. The HISTORY table derives the SPO
+  // pledge from leaderReward (operator's TOTAL take), so leaderReward must be
+  // pool_fees (fixed cost + margin) PLUS the pledge reward — otherwise pledge
+  // shows 0 and totals fall short of PoolTool by the pledge amount.
   const member = h.member_rewards != null ? lovelaceToAda(h.member_rewards) : null;
-  const leader = h.pool_fees != null ? lovelaceToAda(h.pool_fees) : null;
+  const poolFees = h.pool_fees != null ? Number(h.pool_fees) : null;
+  const delegAll = h.deleg_rewards != null ? Number(h.deleg_rewards) : null;
+  const memberLov = h.member_rewards != null ? Number(h.member_rewards) : null;
+  const pledgeRewardLov = (delegAll != null && memberLov != null)
+    ? Math.max(0, delegAll - memberLov) : 0;
+  const leader = poolFees != null ? lovelaceToAda(poolFees + pledgeRewardLov) : null;
 
-  // Reward state: Koios pool_history only has finalised epochs, so if the row
-  // exists rewards are complete; block_cnt 0 with 0 rewards is a genuine zero.
   let rewardsState = 'complete';
   if (blocks === 0 && (h.member_rewards === '0' || h.member_rewards == null)) rewardsState = 'zero';
 
@@ -120,13 +156,14 @@ function toEpochRow(h) {
 }
 
 /**
- * fetchHistory(from, to) — same signature as db-sync. One pool_history call,
- * filtered to the requested epoch range, mapped to canonical rows ascending.
+ * fetchHistory(from, to) — TWO bulk calls (pool_history + epoch_info), run in
+ * parallel, mapped to canonical rows ascending. Ideal is computed for every
+ * epoch from real network stake/blocks. Rate-safe: 2 requests total.
  */
 export async function fetchHistory(from, to) {
-  const hist = await fetchPoolHistory();
+  const [hist, netInfo] = await Promise.all([fetchPoolHistory(), fetchEpochInfoAll()]);
   const rows = hist
-    .map(toEpochRow)
+    .map((h) => toEpochRow(h, netInfo[Number(h.epoch_no)]))
     .filter((r) => Number.isInteger(r.epoch) && (from == null || r.epoch >= from) && (to == null || r.epoch <= to))
     .sort((a, b) => a.epoch - b.epoch);
   return rows;

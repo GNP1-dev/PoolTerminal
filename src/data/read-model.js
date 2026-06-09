@@ -523,12 +523,20 @@ export async function refreshBlockProduction(epoch, ideal) {
       _bpAssigned = await leadershipScheduleCurrent();
       dirty = true;
     }
-    // Produced: refresh periodically (blocks can appear mid-epoch).
+    // Produced count (the live "adopted" figure) — refresh periodically (blocks
+    // appear mid-epoch). ARCHITECTURE: live block production ALWAYS uses Koios
+    // (works for every operator, no db-sync needed). db-sync is for HISTORY only;
+    // Blockfrost is for DELEGATORS only. So this is Koios regardless of the
+    // history-source toggle.
     const now = Date.now();
-    if (KOIOS_ENABLED && (_bpProducedAt === 0 || now - _bpProducedAt > PRODUCED_REFRESH_MS)) {
+    if (_bpProducedAt === 0 || now - _bpProducedAt > PRODUCED_REFRESH_MS) {
       _bpProducedAt = now;
-      const bech32 = ensurePoolBech32();
-      _bpProduced = bech32 ? await koios.getEpochBlockCount(bech32, epoch) : 0;
+      try {
+        const bech32 = ensurePoolBech32();
+        if (bech32) _bpProduced = await koios.getEpochBlockCount(bech32, epoch);
+      } catch (e) {
+        console.warn('[bp] produced count fetch failed:', e.message ?? e);
+      }
       dirty = true;
     }
     // Rewrite the live row once delegators/stake become available too.
@@ -537,14 +545,22 @@ export async function refreshBlockProduction(epoch, ideal) {
     const leaderKnown = _bpAssigned != null;
     const leader = leaderKnown ? _bpAssigned.length : 0;
     const adopted = _bpProduced;
-    // Lost = leader slots that were DUE (their time has already passed) but were
-    // not produced. Future scheduled slots are "upcoming", NOT lost — counting
-    // them as lost made a fresh epoch show every assigned block as lost.
+    // Lost vs pending: a leader slot whose time has passed is only LOST if it has
+    // been long enough that the produced-block source (Koios/cncli) should have
+    // reported it — otherwise a freshly-minted block flashes "Lost 1" during the
+    // lag between the slot passing and our source catching up. So we only count a
+    // slot as "settled-passed" once it's older than LOST_GRACE_MS; slots that
+    // passed more recently sit in limbo (not adopted yet, not lost yet). Future
+    // slots are "upcoming". lost = settledPassed − adopted (never negative).
+    const LOST_GRACE_MS = 10 * 60 * 1000;   // 10 min — ample for Koios/cncli to report
     const nowMs = Date.now();
-    const passed = leaderKnown
-      ? _bpAssigned.filter((s) => { const w = s && s.time ? Date.parse(s.time) : null; return w != null && w <= nowMs; }).length
+    const settledPassed = leaderKnown
+      ? _bpAssigned.filter((s) => {
+          const w = s && s.time ? Date.parse(s.time) : null;
+          return w != null && (nowMs - w) > LOST_GRACE_MS;
+        }).length
       : 0;
-    const lost = leaderKnown ? Math.max(0, passed - adopted) : 0;
+    const lost = leaderKnown ? Math.max(0, settledPassed - adopted) : 0;
     const luckPercent = ideal && ideal > 0 ? Math.round((adopted / ideal) * 100) : 0;
 
     _bp = { leader, ideal: ideal ?? 0, adopted, confirmed: adopted, lost, luckPercent, leaderKnown };

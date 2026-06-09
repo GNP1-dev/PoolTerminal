@@ -124,23 +124,53 @@ async function getDelegatorList() {
  *  Account summary + full pool-movement trail (the migration history). */
 async function getDelegatorDetail(stake) {
   if (!stake) return null;
-  const [acct, dels] = await Promise.all([
-    bfGet(`/accounts/${stake}`, null),
-    bfGet(`/accounts/${stake}/delegations`, []),
-  ]);
+  const acct = await bfGet(`/accounts/${stake}`, null);
 
-  // Movement trail: each entry is a pool the delegator delegated to, in order.
-  const trail = (Array.isArray(dels) ? dels : []).map((d) => ({
-    epoch: d.active_epoch != null ? Number(d.active_epoch) : null,
-    poolId: d.pool_id,
-    amount: lovelaceToAda(d.amount),
-    when: d.block_time != null ? Number(d.block_time) * 1000 : null,
-    txHash: d.tx_hash,
-  }));
-  // Origin = the pool they were on immediately BEFORE first joining us (if any).
+  // Per-epoch active stake + pool, oldest→newest. `amount` is the REAL active
+  // stake at each epoch (matches db-sync epoch_stake, verified) — not a cert
+  // transaction value. We page through the whole history.
+  const hist = [];
+  for (let page = 1; page <= 12; page++) {        // up to 1200 epochs
+    const rows = await bfGet(`/accounts/${stake}/history?count=100&page=${page}&order=asc`, []);
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    for (const h of rows) {
+      if (h.active_epoch != null) {
+        hist.push({ epoch: Number(h.active_epoch), stake: Number(h.amount), poolId: h.pool_id });
+      }
+    }
+    if (rows.length < 100) break;
+  }
+
+  // Group contiguous same-pool epochs into RUNS. Each run = one pool the
+  // delegator was in, with entry (first epoch + stake of the run) and exit
+  // (last epoch + stake of the run). The final run is their CURRENT pool —
+  // marked isCurrent (shown "still here", no exit). Each run's exit epoch
+  // equals the next run's entry epoch, so the chain is self-verifying.
+  const runs = [];
+  for (const row of hist) {
+    const last = runs[runs.length - 1];
+    if (last && last.poolId === row.poolId) {
+      last.exitEpoch = row.epoch;
+      last.exitStake = lovelaceToAda(row.stake);
+    } else {
+      runs.push({
+        poolId: row.poolId,
+        entryEpoch: row.epoch,
+        entryStake: lovelaceToAda(row.stake),
+        exitEpoch: row.epoch,
+        exitStake: lovelaceToAda(row.stake),
+      });
+    }
+  }
+  if (runs.length) {
+    const lastRun = runs[runs.length - 1];
+    if (lastRun.poolId === (acct ? acct.pool_id : null)) lastRun.isCurrent = true;
+  }
+
+  // Origin = the pool they were in immediately before first joining us.
   let cameFrom = null;
-  const firstUsIdx = trail.findIndex((t) => t.poolId === _poolBech32);
-  if (firstUsIdx > 0) cameFrom = trail[firstUsIdx - 1].poolId;
+  const firstUsIdx = runs.findIndex((r) => r.poolId === _poolBech32);
+  if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
   return {
     stake,
@@ -148,11 +178,11 @@ async function getDelegatorDetail(stake) {
     rewardsSum: acct ? lovelaceToAda(acct.rewards_sum) : null,
     withdrawalsSum: acct ? lovelaceToAda(acct.withdrawals_sum) : null,
     withdrawable: acct ? lovelaceToAda(acct.withdrawable_amount) : null,
-    sinceEpoch: acct && acct.active_epoch != null ? Number(acct.active_epoch) : null,  // tenure / age
-    drepId: acct ? acct.drep_id : null,        // DRep if delegator is also a DRep
+    sinceEpoch: acct && acct.active_epoch != null ? Number(acct.active_epoch) : null,
+    drepId: acct ? acct.drep_id : null,
     currentPool: acct ? acct.pool_id : null,
-    cameFrom,                                  // pool they switched from to join us
-    trail,                                     // full movement history
+    cameFrom,
+    runs,                                       // pool-runs with entry/exit per pool
   };
 }
 
@@ -168,6 +198,22 @@ async function getPoolLifecycle() {
     updates: Array.isArray(updates) ? updates : [],
     retirements: Array.isArray(retires) ? retires : [],
   };
+}
+
+// Pool ticker/name cache — a pool's metadata is effectively static, so resolve
+// once and reuse. Used to label the migration-trail graphic with readable names
+// ("BLOOM") instead of bech32 hashes. Returns { ticker, name } or null.
+const _poolMetaCache = new Map();
+export async function getPoolMeta(poolId) {
+  if (!poolId) return null;
+  if (_poolMetaCache.has(poolId)) return _poolMetaCache.get(poolId);
+  let meta = null;
+  try {
+    const m = await bfGet(`/pools/${poolId}/metadata`, null);
+    if (m && (m.ticker || m.name)) meta = { ticker: m.ticker || null, name: m.name || null };
+  } catch { /* leave null */ }
+  _poolMetaCache.set(poolId, meta);
+  return meta;
 }
 
 // ============================================================

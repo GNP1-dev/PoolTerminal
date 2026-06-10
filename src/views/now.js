@@ -21,6 +21,7 @@ import { renderMempool } from '../ui/mempool.js';
 import { renderRelayMap, initRelayMap } from '../ui/relay-map.js';
 import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
 import { getNodeProbe } from '../data/session.js';
+import * as readModel from '../data/read-model.js';
 
 const NOW_HTML = `
   <style>
@@ -127,11 +128,17 @@ const NOW_HTML = `
       <div class="pt-loading-sub" id="pt-loading-sub">Connecting over SSH and querying the node — first connect can take up to 2 minutes.</div>
       <div class="pt-loading-steps" id="pt-loading-steps"></div>
     </div>
-    <div class="pt-hero-row pt-hero-row-8">
+    <div class="pt-hero-row pt-hero-row-9">
+      <div class="pt-hero-card" id="hero-blocks">
+        <div class="pt-hero-label">Blocks minted</div>
+        <div class="pt-hero-value" id="hero-blocks-val">—</div>
+        <div class="pt-hero-sub" id="hero-blocks-sub">lifetime</div>
+      </div>
       <div class="pt-hero-card" id="hero-epoch">
         <div class="pt-hero-label">Epoch</div>
         <div class="pt-hero-value" id="hero-epoch-val">—<span class="pt-hero-unit">%</span></div>
         <div class="pt-hero-bar"><div class="pt-hero-bar-fill" id="hero-epoch-bar"></div></div>
+        <div class="pt-hero-sub" id="hero-epoch-eta">—</div>
       </div>
       <div class="pt-hero-card" id="hero-pulse">
         <div class="pt-hero-label">Pulse</div>
@@ -178,8 +185,6 @@ const NOW_HTML = `
           <span class="pt-muted">slot</span>&nbsp;<span id="cp-slot">—</span>
           <span class="pt-sep">│</span>
           <span class="pt-muted">ep-slot</span>&nbsp;<span id="cp-epslot">—</span>
-          <span class="pt-sep">│</span>
-          <span id="cp-blockcount" class="pt-muted">—</span>
         </span>
       </div>
       <div class="pt-chainpulse-body">
@@ -205,6 +210,7 @@ const NOW_HTML = `
             <span class="pt-cp-tab" data-window="3600">1h</span>
           </span>
           <span class="pt-cp-stats-inline">
+            <span id="cp-blockcount" class="pt-muted">—</span>
             <span><span class="pt-muted">AVG</span>&nbsp;<span id="cp-avg">—</span></span>
             <span><span class="pt-muted">MAX</span>&nbsp;<span id="cp-max">—</span></span>
             <span><span class="pt-muted">MIN</span>&nbsp;<span id="cp-min">—</span></span>
@@ -231,7 +237,7 @@ const NOW_HTML = `
       <div class="pt-panel pt-panel-flex pt-grid-peers">
         <div class="pt-panel-header">
           <span class="pt-panel-title">Peers</span>
-          <span class="pt-panel-meta">
+          <span class="pt-panel-meta" style="margin-left:10px;gap:5px;">
             <span class="pt-muted">OUT</span>&nbsp;<span id="pp-out">—</span>
             <span class="pt-sep">·</span>
             <span class="pt-muted">IN</span>&nbsp;<span id="pp-in">—</span>
@@ -275,6 +281,10 @@ let _firstSnapshotRendered = false;
 let _loadingTimer = null;
 let _loadingTick = null;
 let _loadingStart = 0;
+// Epoch countdown: store the absolute end time (ms) derived from each snapshot,
+// then a local 1s timer counts down to it — no API calls, ticks every second.
+let _epochEndMs = null;
+let _epochTimer = null;
 let _steps = [];
 // Once the first full load completes this session, returning to the NOW tab
 // must NOT re-run the loader (it would wait again, and on a relay that's the
@@ -402,6 +412,21 @@ function fadeOutLoading() {
   if (el) el.classList.add('pt-hidden');
 }
 
+// Lifetime blocks = sum of adopted blocks across all tracked epochs (incl. the
+// current one). Read from the read-model history cache — portable (db-sync or
+// Koios), no extra API call. Updates the hero card when ready.
+async function refreshLifetimeBlocks() {
+  try {
+    const rows = await readModel.getEpochHistory(0, 9_999_999);
+    if (!Array.isArray(rows) || !rows.length) return;
+    const total = rows.reduce((s, r) => s + (r && r.adopted ? Number(r.adopted) : 0), 0);
+    const el = document.getElementById('hero-blocks-val');
+    if (el) el.textContent = total.toLocaleString();
+    const sub = document.getElementById('hero-blocks-sub');
+    if (sub) sub.textContent = `${rows.filter((r) => (r.adopted || 0) > 0).length} producing epochs`;
+  } catch { /* leave placeholder */ }
+}
+
 export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
@@ -415,6 +440,9 @@ export function mountNow(canvas) {
   if (ubCount) ubCount.textContent = 'calculating…';
   renderRelayMap();
   initRelayMap();
+  // Lifetime blocks (sum of adopted across all epochs incl. current) — portable,
+  // from the read-model history cache (no extra API). Fills async.
+  refreshLifetimeBlocks();
   resetPeersPanel();
 
   _steps = buildSteps();   // role-aware: relays drop KES/Ideal
@@ -446,10 +474,34 @@ export function mountNow(canvas) {
   if (_loadingTick) clearInterval(_loadingTick);
   _loadingTick = setInterval(maybeHideLoading, 1000);   // live independent of the SSH-blocked loop
   _loadingTimer = setTimeout(hideLoading, LOADING_FALLBACK_MS);
+  // Local epoch countdown — ticks every second with no API calls.
+  if (_epochTimer) clearInterval(_epochTimer);
+  _epochTimer = setInterval(tickEpochCountdown, 1000);
+}
+
+// Render the epoch-end countdown from the stored absolute end time. Called by a
+// local 1s timer (smooth tick) and re-synced on each snapshot. No API calls.
+function tickEpochCountdown() {
+  const el = document.getElementById('hero-epoch-eta');
+  if (!el) return;
+  if (_epochEndMs == null) { el.textContent = '—'; return; }
+  let secsLeft = Math.max(0, Math.round((_epochEndMs - Date.now()) / 1000));
+  const d = Math.floor(secsLeft / 86400);
+  const h = Math.floor((secsLeft % 86400) / 3600);
+  const m = Math.floor((secsLeft % 3600) / 60);
+  const s = secsLeft % 60;
+  el.textContent = `${d}d ${h}h ${m}m ${s}s to end`;
 }
 
 export function updateNowFast(snap) {
   renderHero(snap);
+  // Re-sync the epoch-end time from the snapshot (1 slot = 1 second). The local
+  // timer counts down to this between snapshots, so it stays accurate.
+  if (snap && snap.epochLength != null && snap.slotInEpoch != null) {
+    const secsLeft = Math.max(0, snap.epochLength - snap.slotInEpoch);
+    _epochEndMs = Date.now() + secsLeft * 1000;
+    tickEpochCountdown();
+  }
   applyRelayLabels(document);   // idempotent; self-corrects once probe role is known
   setChainPulseStatus(snap.atTip, snap.tipBlock, snap.slot, snap.slotInEpoch, snap.epochLength);
   if (snap && (snap.tipBlock != null || snap.slot != null)) _firstSnapshotRendered = true;
@@ -480,4 +532,6 @@ export function unmountNow() {
   stopUpcomingBlocks();
   if (_loadingTimer) { clearTimeout(_loadingTimer); _loadingTimer = null; }
   if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
+  if (_epochTimer) { clearInterval(_epochTimer); _epochTimer = null; }
+  _epochEndMs = null;
 }

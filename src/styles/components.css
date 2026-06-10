@@ -34,6 +34,18 @@
   font-size: var(--pt-text-data-mid);
 }
 
+/* Nine-card variant — adds the lifetime "Blocks minted" card before the eight. */
+.pt-hero-row-9 {
+  grid-template-columns: repeat(9, 1fr);
+}
+.pt-hero-row-9 .pt-hero-card {
+  padding: 10px 12px;
+  border: 1px solid var(--pt-text-disabled);
+}
+.pt-hero-row-9 .pt-hero-value {
+  font-size: var(--pt-text-data-mid);
+}
+
 .pt-hero-card {
   background: var(--pt-bg-panel);
   border: var(--pt-border-line);
@@ -126,6 +138,9 @@
 .pt-muted { color: var(--pt-text-muted); }
 .pt-accent { color: var(--pt-accent-blue); }
 .pt-sep { color: var(--pt-text-disabled); }
+
+/* Status dot (e.g. green AT TIP indicator) — gap before the following label. */
+.pt-dot { margin-right: 6px; }
 
 /* ---- Chain pulse ---- */
 .pt-chainpulse-body { padding: 14px; }

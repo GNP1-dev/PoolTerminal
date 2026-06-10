@@ -60,7 +60,7 @@ export function renderUpcomingBlocks(list, opts = {}) {
       count.textContent = 'relay';
       body.innerHTML = '<div class="pt-ub-empty">Operating in relay mode only</div>';
     } else {
-      count.textContent = 'none upcoming';
+      count.textContent = 'none upcoming · next epoch shows ~36h before end';
       body.innerHTML = '<div class="pt-ub-empty">No upcoming assigned slots.</div>';
     }
   } else {

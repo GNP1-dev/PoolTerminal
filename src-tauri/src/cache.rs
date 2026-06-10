@@ -6,6 +6,8 @@
 //! Schema is deliberately generic so it doesn't churn as metrics are added:
 //!   - epoch_snapshots : one JSON payload per (pool_id, epoch)
 //!   - samples         : generic time-series (metric, value) for fine graphs
+//!   - delegator_stake : per-delegator, per-epoch active stake + pool (immutable
+//!                       once an epoch closes) — backs loyalty / migration views
 //!   - meta            : schema version + app state
 //!
 //! Concurrency: SQLite calls are synchronous, so we use std::sync::Mutex and
@@ -17,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub struct CacheState(pub Mutex<Connection>);
 
@@ -53,11 +55,21 @@ impl CacheState {
             );
             CREATE INDEX IF NOT EXISTS idx_samples_metric_time
                 ON samples (pool_id, metric, captured_at);
+            CREATE TABLE IF NOT EXISTS delegator_stake (
+                pool_id    TEXT    NOT NULL,
+                stake_addr TEXT    NOT NULL,
+                epoch      INTEGER NOT NULL,
+                deleg_pool TEXT    NOT NULL,
+                amount     INTEGER NOT NULL,
+                PRIMARY KEY (pool_id, stake_addr, epoch)
+            );
+            CREATE INDEX IF NOT EXISTS idx_delegstake_addr
+                ON delegator_stake (pool_id, stake_addr);
             ",
         )?;
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
-             ON CONFLICT(key) DO NOTHING",
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [SCHEMA_VERSION.to_string()],
         )?;
         Ok(())
@@ -82,6 +94,22 @@ pub struct EpochSnapshot {
 pub struct Sample {
     pub captured_at: i64,
     pub value: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatorStakeRow {
+    pub epoch: i64,
+    pub deleg_pool: String,
+    pub amount: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatorStakeInput {
+    pub epoch: i64,
+    pub deleg_pool: String,
+    pub amount: i64,
 }
 
 // ============================================================
@@ -191,6 +219,99 @@ pub fn cache_get_samples(
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+// ------------------------------------------------------------
+// delegator_stake — per-delegator, per-epoch active stake + pool.
+// Past epochs are immutable on-chain, so once stored they never need
+// re-fetching; only the current epoch's row is overwritten. Backs the
+// loyalty leaderboard and aggregate migration views. Writes are batched
+// in a single transaction for speed during the initial bulk populate.
+// ------------------------------------------------------------
+
+#[tauri::command]
+pub fn cache_put_delegator_stake(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    stake_addr: String,
+    rows: Vec<DelegatorStakeInput>,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO delegator_stake (pool_id, stake_addr, epoch, deleg_pool, amount)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(pool_id, stake_addr, epoch) DO UPDATE SET
+                    deleg_pool = excluded.deleg_pool,
+                    amount     = excluded.amount",
+            )
+            .map_err(|e| e.to_string())?;
+        for r in &rows {
+            stmt.execute(rusqlite::params![
+                pool_id,
+                stake_addr,
+                r.epoch,
+                r.deleg_pool,
+                r.amount
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cache_get_delegator_stake(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    stake_addr: String,
+) -> Result<Vec<DelegatorStakeRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT epoch, deleg_pool, amount FROM delegator_stake
+             WHERE pool_id = ?1 AND stake_addr = ?2
+             ORDER BY epoch ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![pool_id, stake_addr], |row| {
+            Ok(DelegatorStakeRow {
+                epoch: row.get(0)?,
+                deleg_pool: row.get(1)?,
+                amount: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Highest epoch already stored for a delegator (or null if none) — lets the JS
+/// side fetch ONLY epochs newer than this, so after the first populate we make
+/// near-zero calls.
+#[tauri::command]
+pub fn cache_delegator_max_epoch(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    stake_addr: String,
+) -> Result<Option<i64>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let val = conn
+        .query_row(
+            "SELECT MAX(epoch) FROM delegator_stake
+             WHERE pool_id = ?1 AND stake_addr = ?2",
+            rusqlite::params![pool_id, stake_addr],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(val)
 }
 
 #[tauri::command]

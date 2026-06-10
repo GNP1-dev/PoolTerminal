@@ -21,6 +21,9 @@ import * as blockfrost from '../data/blockfrost-query.js';
 
 // Our own pool — to highlight the destination node in the journey.
 const OUR_POOL = 'pool1fv9f8phzn7hp623ypw6ctf73a98hd7nrh8wm7glpcuhf64856g2';
+// Latest epoch, captured on mount — passed to the deep-dive so the stake-history
+// cache knows which epoch is still mutable (re-fetch) vs immutable (use cache).
+let _currentEpoch = null;
 // Deterministic colour per pool id, so each pool keeps a consistent hue.
 function poolColor(id, isUs) {
   if (isUs) return '#b8860b';
@@ -41,8 +44,12 @@ const DELEGATORS_HTML = `
     .pt-delegators thead th:first-child, .pt-delegators thead th.left { text-align: left; }
     .pt-delegators tbody td { text-align: right; padding: 5px 10px; border-bottom: 0.5px solid var(--pt-border); color: var(--pt-text-primary); }
     .pt-delegators tbody td:first-child, .pt-delegators tbody td.left { text-align: left; color: var(--pt-text-secondary); }
-    .pt-delegators tbody tr:hover { background: var(--pt-bg-strip); }
-    .pt-delegators .addr { font-size: 10px; color: var(--pt-text-secondary); }
+    .pt-delegators tbody tr:hover { background: rgba(90,140,220,0.14); }
+    .pt-delegators tbody tr:hover .addr { color: var(--pt-accent-blue); text-decoration: underline; }
+    .pt-delegators tbody tr:hover .click-hint { opacity: 1; }
+    .pt-delegators .click-hint { opacity: 0; transition: opacity 0.12s; font-size: 9px; color: var(--pt-accent-blue);
+      margin-left: 8px; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+    .pt-delegators .addr { font-size: 10px; color: var(--pt-text-secondary); transition: color 0.12s; }
     .pt-delegators .badge { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px; margin-left: 6px;
       text-transform: uppercase; letter-spacing: 0.4px; vertical-align: middle; }
     .pt-delegators .badge-pledge { background: rgba(214,178,70,0.18); color: var(--pt-accent-gold, #d6b246); border: 0.5px solid rgba(214,178,70,0.5); }
@@ -88,13 +95,13 @@ const DELEGATORS_HTML = `
     .dd-node .nm { font: 400 10px ui-monospace, monospace; opacity: 0.85; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dd-node .amt { font: 600 11px ui-monospace, monospace; margin-top: 8px; }
     .dd-node .amt .amt-lbl { display: block; font: 400 8px ui-monospace, monospace; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 1px; }
+    .dd-node .ep { font: 400 9px ui-monospace, monospace; opacity: 0.8; margin-top: 2px; }
     .dd-node .dd-flow { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 7px;
       padding-top: 6px; border-top: 0.5px solid rgba(255,255,255,0.18); }
     .dd-node .dd-flow:first-of-type { border-top: none; padding-top: 0; }
     .dd-node .dd-flow-l { font: 400 8px ui-monospace, monospace; opacity: 0.75; text-transform: uppercase; letter-spacing: 0.4px; }
     .dd-node .dd-flow-v { font: 600 11px ui-monospace, monospace; }
     .dd-node .dd-flow.dd-here .dd-flow-l { color: #ffe9a8; opacity: 0.95; }
-    .dd-node .ep { font: 400 9px ui-monospace, monospace; opacity: 0.8; margin-top: 2px; }
     .dd-node.dest { outline: 2px solid var(--pt-accent-gold, #d6b246); outline-offset: 2px; }
     .dd-node .you { position: absolute; top: -9px; right: -8px; background: var(--pt-accent-gold, #d6b246); color: #1a1205;
       font: 700 8px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; }
@@ -117,6 +124,10 @@ const DELEGATORS_HTML = `
       <div class="pt-panel-header">
         <span class="pt-panel-title">Delegators</span>
         <span class="pt-panel-meta v-muted" id="d-meta">—</span>
+        <label class="d-filter" style="margin-left:auto;display:flex;align-items:center;gap:6px;cursor:pointer;font:400 11px ui-monospace,monospace;color:var(--pt-text-secondary);">
+          <input type="checkbox" id="d-dust" checked style="cursor:pointer;">
+          Hide &lt; 5 ₳
+        </label>
       </div>
       <div class="pt-tbl-wrap" id="d-table"></div>
     </div>
@@ -194,7 +205,7 @@ async function openDeepDive(stake) {
   ddShell(stake);
   let detail = null;
   try {
-    detail = await registry.get(DataKind.DELEGATOR_DETAIL, { stake });
+    detail = await registry.get(DataKind.DELEGATOR_DETAIL, { stake, currentEpoch: _currentEpoch });
   } catch (e) {
     console.warn('[delegators] detail failed:', e.message ?? e);
   }
@@ -202,7 +213,7 @@ async function openDeepDive(stake) {
   if (!body) return;   // modal closed while loading
   if (!detail) { body.innerHTML = '<div class="dd-loading">Could not load delegator detail.</div>'; return; }
 
- // Resolve pool tickers/names for each run (cached; usually 1–3 distinct pools).
+  // Resolve pool tickers/names for each run (cached; usually 1–3 distinct pools).
   const runs = Array.isArray(detail.runs) ? detail.runs.slice() : [];
   await Promise.all(runs.map(async (r) => {
     if (!r.poolId) return;
@@ -254,9 +265,9 @@ function renderTable(el, list, totalStake) {
     const pct = totalStake ? (d.liveStakeLovelace / totalStake) * 100 : 0;
     const barW = Math.max(2, Math.round(pct * 1.6));   // visual scale
     const badge = d.isOwner ? '<span class="badge badge-pledge">pledge</span>' : '';
-    return `<tr data-stake="${d.stake}" title="Click for delegator detail">
+    return `<tr data-stake="${d.stake}" title="Click to view full stake history">
       <td class="left">${i + 1}</td>
-      <td class="left addr">${shortStake(d.stake)}${badge}</td>
+      <td class="left addr">${shortStake(d.stake)}${badge}<span class="click-hint">Click to view full stake history →</span></td>
       <td>${fmtAda(d.liveStake)}</td>
       <td>${pct.toFixed(2)}%</td>
       <td class="left"><span class="bar" style="width:${barW}px"></span></td>
@@ -300,7 +311,7 @@ export async function mountDelegators(canvas) {
   }
   if (!Array.isArray(list)) list = [];
 
-  // Hero stats
+  // Hero stats (computed on the FULL list — totals are always whole-pool).
   const totalStakeLov = list.reduce((s, d) => s + (d.liveStakeLovelace || 0), 0);
   const top = list[0];
   setText('d-count', live?.liveDelegators != null ? String(live.liveDelegators) : String(list.length));
@@ -320,6 +331,10 @@ export async function mountDelegators(canvas) {
   try {
     const hist = await readModel.getEpochHistory(0, 9_999_999);
     const withDeleg = (hist || []).filter((r) => r && r.delegators != null).sort((a, b) => a.epoch - b.epoch);
+    // Track the latest epoch for the deep-dive stake-history cache.
+    if (Array.isArray(hist) && hist.length) {
+      _currentEpoch = hist.reduce((mx, r) => Math.max(mx, r.epoch || 0), 0) || null;
+    }
     if (withDeleg.length >= 2) {
       const cur = withDeleg[withDeleg.length - 1].delegators;
       const prev = withDeleg[withDeleg.length - 2].delegators;
@@ -329,10 +344,20 @@ export async function mountDelegators(canvas) {
   } catch { /* ignore */ }
   setText('d-count-sub', `live${churnNote}`);
 
-  // Source credit + table
+  // Dust filter (default ON): hide delegators under 5 ₳. Totals/hero stay
+  // whole-pool; only the table list is filtered. Re-renders on toggle.
   const who = registry.describe(DataKind.DELEGATOR_LIST);
-  setText('d-meta', `${list.length} shown · source: ${who?.name ?? '—'}`);
-  renderTable(canvas.querySelector('#d-table'), list, totalStakeLov);
+  const DUST_ADA = 5;
+  function renderList() {
+    const dustOn = !!document.getElementById('d-dust')?.checked;
+    const shown = dustOn ? list.filter((d) => (d.liveStake || 0) >= DUST_ADA) : list;
+    const hidden = list.length - shown.length;
+    setText('d-meta', `${shown.length} shown${hidden ? ` · ${hidden} dust hidden` : ''} · source: ${who?.name ?? '—'}`);
+    renderTable(canvas.querySelector('#d-table'), shown, totalStakeLov);
+  }
+  const dustEl = document.getElementById('d-dust');
+  if (dustEl) dustEl.addEventListener('change', renderList);
+  renderList();
 }
 
 export function unmountDelegators() { closeDeepDive(); }

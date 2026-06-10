@@ -122,43 +122,101 @@ async function getDelegatorList() {
 
 /** DELEGATOR_DETAIL — one delegator deep-dive (~2 calls, ON DEMAND).
  *  Account summary + full pool-movement trail (the migration history). */
-async function getDelegatorDetail(stake) {
+// Read cached per-epoch stake for a delegator from poolterminal.db.
+// Returns [{ epoch, poolId, amount(lovelace) }] ascending (may be empty).
+async function cacheGetDelegatorStake(stake) {
+  try {
+    const rows = await invoke('cache_get_delegator_stake', { poolId: _poolBech32, stakeAddr: stake });
+    return (rows || []).map((r) => ({ epoch: Number(r.epoch), poolId: r.delegPool, amount: Number(r.amount) }));
+  } catch (e) { console.warn('[bf] cache_get_delegator_stake:', e.message ?? e); return []; }
+}
+// Highest epoch already cached for a delegator (or null).
+async function cacheDelegatorMaxEpoch(stake) {
+  try { return await invoke('cache_delegator_max_epoch', { poolId: _poolBech32, stakeAddr: stake }); }
+  catch (e) { console.warn('[bf] cache_delegator_max_epoch:', e.message ?? e); return null; }
+}
+// Persist new per-epoch rows for a delegator (batched in one tx on the Rust side).
+async function cachePutDelegatorStake(stake, rows) {
+  if (!rows.length) return;
+  try {
+    await invoke('cache_put_delegator_stake', {
+      poolId: _poolBech32,
+      stakeAddr: stake,
+      rows: rows.map((r) => ({ epoch: r.epoch, delegPool: r.poolId, amount: r.amount })),
+    });
+  } catch (e) { console.warn('[bf] cache_put_delegator_stake:', e.message ?? e); }
+}
+
+// Fetch a delegator's full per-epoch active-stake history, using the local cache
+// as the source of truth for past epochs and fetching from Blockfrost ONLY the
+// epochs newer than what's cached. Past epochs are immutable on-chain, so after
+// the first populate this makes at most one page of calls (usually zero). The
+// CURRENT epoch is always re-fetched (it's still changing) and overwritten.
+async function getDelegatorStakeHistory(stake, currentEpoch) {
+  const cached = await cacheGetDelegatorStake(stake);
+  const maxCached = await cacheDelegatorMaxEpoch(stake);
+
+  // We must (re)fetch if: nothing cached, OR the newest cached epoch is the
+  // current (still-mutable) epoch, OR the current epoch is beyond what we have.
+  const needFetch = maxCached == null || currentEpoch == null || maxCached <= currentEpoch;
+  let merged = cached.slice();
+
+  if (needFetch) {
+    // Pull history newest-first and stop once we're at/below the cached max-1
+    // (so we capture the current epoch refresh + any gap, without re-pulling all).
+    const fetched = [];
+    const stopBelow = (maxCached == null) ? -1 : (maxCached - 1);  // re-take current too
+    for (let page = 1; page <= 12; page++) {
+      const rows = await bfGet(`/accounts/${stake}/history?count=100&page=${page}&order=desc`, []);
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      let reachedKnown = false;
+      for (const h of rows) {
+        if (h.active_epoch == null) continue;
+        const ep = Number(h.active_epoch);
+        if (ep <= stopBelow) { reachedKnown = true; continue; }
+        fetched.push({ epoch: ep, poolId: h.pool_id, amount: Number(h.amount) });
+      }
+      if (reachedKnown || rows.length < 100) break;
+    }
+    if (fetched.length) {
+      await cachePutDelegatorStake(stake, fetched);
+      // Merge fetched into cached (fetched wins on epoch collisions e.g. current).
+      const byEpoch = new Map(merged.map((r) => [r.epoch, r]));
+      for (const r of fetched) byEpoch.set(r.epoch, r);
+      merged = [...byEpoch.values()];
+    }
+  }
+  merged.sort((a, b) => a.epoch - b.epoch);
+  return merged;
+}
+
+async function getDelegatorDetail(stake, currentEpoch) {
   if (!stake) return null;
   const acct = await bfGet(`/accounts/${stake}`, null);
 
-  // Per-epoch active stake + pool, oldest→newest. `amount` is the REAL active
-  // stake at each epoch (matches db-sync epoch_stake, verified) — not a cert
-  // transaction value. We page through the whole history.
-  const hist = [];
-  for (let page = 1; page <= 12; page++) {        // up to 1200 epochs
-    const rows = await bfGet(`/accounts/${stake}/history?count=100&page=${page}&order=asc`, []);
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    for (const h of rows) {
-      if (h.active_epoch != null) {
-        hist.push({ epoch: Number(h.active_epoch), stake: Number(h.amount), poolId: h.pool_id });
-      }
-    }
-    if (rows.length < 100) break;
-  }
+  // Per-epoch active stake + pool, oldest→newest — from cache + only-new fetch.
+  // `amount` is the REAL active stake at each epoch (matches db-sync epoch_stake,
+  // verified), not a cert transaction value.
+  const hist = await getDelegatorStakeHistory(stake, currentEpoch);
 
   // Group contiguous same-pool epochs into RUNS. Each run = one pool the
-  // delegator was in, with entry (first epoch + stake of the run) and exit
-  // (last epoch + stake of the run). The final run is their CURRENT pool —
-  // marked isCurrent (shown "still here", no exit). Each run's exit epoch
-  // equals the next run's entry epoch, so the chain is self-verifying.
+  // delegator was in, with entry (first epoch + stake) and exit (last epoch +
+  // stake). The final run is their CURRENT pool — marked isCurrent ("still
+  // here", no exit). Each run's exit epoch equals the next run's entry epoch,
+  // so the chain is self-verifying.
   const runs = [];
   for (const row of hist) {
     const last = runs[runs.length - 1];
     if (last && last.poolId === row.poolId) {
       last.exitEpoch = row.epoch;
-      last.exitStake = lovelaceToAda(row.stake);
+      last.exitStake = lovelaceToAda(row.amount);
     } else {
       runs.push({
         poolId: row.poolId,
         entryEpoch: row.epoch,
-        entryStake: lovelaceToAda(row.stake),
+        entryStake: lovelaceToAda(row.amount),
         exitEpoch: row.epoch,
-        exitStake: lovelaceToAda(row.stake),
+        exitStake: lovelaceToAda(row.amount),
       });
     }
   }
@@ -238,7 +296,7 @@ export const blockfrostSource = {
     switch (kind) {
       case DataKind.POOL_LIVE:         return getPoolLive();
       case DataKind.DELEGATOR_LIST:    return getDelegatorList();
-      case DataKind.DELEGATOR_DETAIL:  return getDelegatorDetail(params.stake);
+      case DataKind.DELEGATOR_DETAIL:  return getDelegatorDetail(params.stake, params.currentEpoch);
       case DataKind.POOL_LIFECYCLE:    return getPoolLifecycle();
       default: throw new Error(`blockfrost source can't provide ${kind}`);
     }

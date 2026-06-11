@@ -35,10 +35,12 @@ export const DataKind = Object.freeze({
   // Identity / params
   POOL_PARAMS: 'POOL_PARAMS',
   REWARD_ADDRESS: 'REWARD_ADDRESS',
-  POOL_LIVE: 'POOL_LIVE',
-  DELEGATOR_LIST: 'DELEGATOR_LIST',
-  DELEGATOR_DETAIL: 'DELEGATOR_DETAIL',
-  POOL_LIFECYCLE: 'POOL_LIFECYCLE',
+  // Live pool & delegators (DELEGATORS view — own pool)
+  POOL_LIVE: 'POOL_LIVE',               // rich live summary: live/active stake, saturation, pledge, counts
+  DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators: [{ stake, liveStake }]
+  DELEGATOR_DETAIL: 'DELEGATOR_DETAIL', // one delegator: balance, rewards, tenure, drep, pool trail
+  DELEGATOR_LOYALTY: 'DELEGATOR_LOYALTY', // tenure leaderboard: [{ stake, tenure, sinceEpoch }]
+  POOL_LIFECYCLE: 'POOL_LIFECYCLE',     // registration / metadata / retirement history
 });
 
 export const ALL_DATAKINDS = Object.freeze(Object.values(DataKind));

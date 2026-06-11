@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct CacheState(pub Mutex<Connection>);
 
@@ -65,6 +65,22 @@ impl CacheState {
             );
             CREATE INDEX IF NOT EXISTS idx_delegstake_addr
                 ON delegator_stake (pool_id, stake_addr);
+            CREATE TABLE IF NOT EXISTS delegator_loyalty (
+                pool_id          TEXT    NOT NULL,
+                stake_addr       TEXT    NOT NULL,
+                tenure           INTEGER NOT NULL,
+                since_epoch      INTEGER NOT NULL,
+                cur_stake        INTEGER NOT NULL,
+                reduction_factor REAL    NOT NULL DEFAULT 0,
+                defected         INTEGER NOT NULL DEFAULT 0,
+                defect_to_pool   TEXT,
+                defect_epoch     INTEGER,
+                defect_to_ada    INTEGER,
+                computed_epoch   INTEGER NOT NULL,
+                PRIMARY KEY (pool_id, stake_addr)
+            );
+            CREATE INDEX IF NOT EXISTS idx_deloyalty_pool
+                ON delegator_loyalty (pool_id, computed_epoch);
             ",
         )?;
         conn.execute(
@@ -110,6 +126,20 @@ pub struct DelegatorStakeInput {
     pub epoch: i64,
     pub deleg_pool: String,
     pub amount: i64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoyaltyRow {
+    pub stake: String,
+    pub tenure: i64,
+    pub since_epoch: i64,
+    pub cur_stake: i64,
+    pub reduction_factor: f64,
+    pub defected: bool,
+    pub defect_to_pool: Option<String>,
+    pub defect_epoch: Option<i64>,
+    pub defect_to_ada: Option<i64>,
 }
 
 // ============================================================
@@ -308,6 +338,106 @@ pub fn cache_delegator_max_epoch(
             "SELECT MAX(epoch) FROM delegator_stake
              WHERE pool_id = ?1 AND stake_addr = ?2",
             rusqlite::params![pool_id, stake_addr],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(val)
+}
+
+/// Replace the whole loyalty snapshot for a pool (computed once per epoch). We
+/// wipe the pool's prior rows and insert the fresh set in one transaction, then
+/// the JS side reads it back instantly on subsequent opens.
+#[tauri::command]
+pub fn cache_put_loyalty(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    computed_epoch: i64,
+    rows: Vec<LoyaltyRow>,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        tx.execute("DELETE FROM delegator_loyalty WHERE pool_id = ?1", rusqlite::params![pool_id])
+            .map_err(|e| e.to_string())?;
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO delegator_loyalty
+                   (pool_id, stake_addr, tenure, since_epoch, cur_stake,
+                    reduction_factor, defected, defect_to_pool, defect_epoch,
+                    defect_to_ada, computed_epoch)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )
+            .map_err(|e| e.to_string())?;
+        for r in &rows {
+            stmt.execute(rusqlite::params![
+                pool_id,
+                r.stake,
+                r.tenure,
+                r.since_epoch,
+                r.cur_stake,
+                r.reduction_factor,
+                if r.defected { 1 } else { 0 },
+                r.defect_to_pool,
+                r.defect_epoch,
+                r.defect_to_ada,
+                computed_epoch,
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the cached loyalty snapshot for a pool (empty if none).
+#[tauri::command]
+pub fn cache_get_loyalty(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+) -> Result<Vec<LoyaltyRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT stake_addr, tenure, since_epoch, cur_stake, reduction_factor,
+                    defected, defect_to_pool, defect_epoch, defect_to_ada
+             FROM delegator_loyalty WHERE pool_id = ?1
+             ORDER BY tenure DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![pool_id], |row| {
+            Ok(LoyaltyRow {
+                stake: row.get(0)?,
+                tenure: row.get(1)?,
+                since_epoch: row.get(2)?,
+                cur_stake: row.get(3)?,
+                reduction_factor: row.get(4)?,
+                defected: row.get::<_, i64>(5)? != 0,
+                defect_to_pool: row.get(6)?,
+                defect_epoch: row.get(7)?,
+                defect_to_ada: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Which epoch the cached loyalty was computed for (null if none) — lets JS
+/// decide whether to recompute (new epoch) or read the cache.
+#[tauri::command]
+pub fn cache_loyalty_epoch(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+) -> Result<Option<i64>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let val = conn
+        .query_row(
+            "SELECT MAX(computed_epoch) FROM delegator_loyalty WHERE pool_id = ?1",
+            rusqlite::params![pool_id],
             |row| row.get::<_, Option<i64>>(0),
         )
         .map_err(|e| e.to_string())?;

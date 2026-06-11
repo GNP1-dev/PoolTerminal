@@ -123,6 +123,120 @@ export async function getPoolFirstEpoch() {
 }
 
 /**
+ * Current delegator list (all delegators with their active stake this epoch),
+ * sorted by stake desc, owner/pledge addresses flagged. One indexed query —
+ * ~50ms even for a 4000-delegator pool. Note: this is active stake (epoch
+ * boundary), not live; the deep-dive uses Blockfrost for live/movement detail.
+ */
+export async function getDelegatorList() {
+  // Owner (pledge) stake addresses from the latest pool registration cert.
+  const owners = new Set();
+  try {
+    const orows = await pgQuery(_cfg, `
+      SELECT sa.view AS stake
+      FROM pool_owner po
+      JOIN pool_update pu ON pu.id = po.pool_update_id
+      JOIN stake_address sa ON sa.id = po.addr_id
+      WHERE pu.hash_id = ${_poolId}
+      ORDER BY pu.registered_tx_id DESC`);
+    (orows || []).forEach((r) => owners.add(r.stake));
+  } catch { /* owners are a nice-to-have flag */ }
+
+  const rows = await pgQuery(_cfg, `
+    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake)
+    SELECT sa.view AS stake, es.amount::text AS lovelace
+    FROM epoch_stake es
+    JOIN stake_address sa ON sa.id = es.addr_id
+    WHERE es.epoch_no = (SELECT e FROM cur) AND es.pool_id = ${_poolId}
+    ORDER BY es.amount DESC`);
+  return (rows || []).map((r) => {
+    const lov = Number(r.lovelace);
+    return {
+      stake: r.stake,
+      liveStake: lov / 1_000_000,
+      liveStakeLovelace: lov,
+      isOwner: owners.has(r.stake),
+    };
+  });
+}
+
+/**
+ * Loyalty / tenure for every CURRENT delegator: the length (in epochs) of their
+ * current unbroken run with us, plus the epoch that run began. Uses the classic
+ * gaps-and-islands technique (epoch_no − ROW_NUMBER() groups consecutive epochs;
+ * the group containing the latest epoch is the current run). Whole-pool, one
+ * indexed pass — ~130ms here, scales to large pools. Returns rows ordered by
+ * tenure desc: { stake, tenure, sinceEpoch }.
+ */
+export async function getLoyalty() {
+  console.log('[dbsync.getLoyalty] issuing query for pool_id', _poolId);
+  const _t = Date.now();
+  const rows = await pgQuery(_cfg, `
+    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake),
+    delegs AS (SELECT addr_id FROM epoch_stake WHERE epoch_no=(SELECT e FROM cur) AND pool_id=${_poolId}),
+    mine AS (
+      SELECT es.addr_id, es.epoch_no, es.amount,
+             LAG(es.amount) OVER (PARTITION BY es.addr_id ORDER BY es.epoch_no) AS prev_amt
+      FROM epoch_stake es WHERE es.pool_id=${_poolId} AND es.addr_id IN (SELECT addr_id FROM delegs)
+    ),
+    grouped AS (
+      SELECT addr_id, epoch_no, amount, prev_amt,
+             epoch_no - ROW_NUMBER() OVER (PARTITION BY addr_id ORDER BY epoch_no) AS grp FROM mine
+    ),
+    latest_grp AS (SELECT addr_id, grp FROM grouped WHERE epoch_no=(SELECT e FROM cur)),
+    run AS (
+      SELECT g.addr_id, COUNT(*)::int AS tenure, MIN(g.epoch_no)::int AS since_epoch
+      FROM grouped g JOIN latest_grp lg ON lg.addr_id=g.addr_id AND lg.grp=g.grp GROUP BY g.addr_id
+    ),
+    curstake AS (SELECT addr_id, (amount/1000000)::bigint AS cur_ada FROM mine WHERE epoch_no=(SELECT e FROM cur)),
+    -- >=50% drops with us (candidates for both reduction & defection)
+    big_drops AS (
+      SELECT addr_id, epoch_no AS drop_epoch, amount AS new_amt, prev_amt
+      FROM mine WHERE prev_amt IS NOT NULL AND amount < prev_amt*0.5
+    ),
+    -- reduction factor: worst (fraction pulled × recency), halflife ~36 epochs
+    reductions AS (
+      SELECT addr_id,
+             MAX( (1.0 - new_amt::float/NULLIF(prev_amt,0)) * (36.0/(36.0+((SELECT e FROM cur)-drop_epoch))) ) AS worst
+      FROM big_drops GROUP BY addr_id
+    ),
+    -- defection: a >=50% drop where >=50% of the lost stake appeared at another pool within 1 epoch
+    defections AS (
+      SELECT DISTINCT ON (bd.addr_id) bd.addr_id, bd.drop_epoch, o.pool_id AS to_pool_id,
+             (o.amount/1000000)::bigint AS to_ada
+      FROM big_drops bd
+      JOIN epoch_stake o ON o.addr_id=bd.addr_id AND o.pool_id<>${_poolId}
+           AND o.epoch_no BETWEEN bd.drop_epoch AND bd.drop_epoch+1
+           AND o.amount >= (bd.prev_amt - bd.new_amt)*0.5
+      ORDER BY bd.addr_id, bd.drop_epoch
+    )
+    SELECT sa.view AS stake, r.tenure, r.since_epoch, c.cur_ada,
+           COALESCE(red.worst,0) AS reduction_factor,
+           def.drop_epoch AS defect_epoch,
+           dph.view AS defect_to_pool,
+           def.to_ada AS defect_to_ada
+    FROM run r
+    JOIN curstake c ON c.addr_id=r.addr_id
+    JOIN stake_address sa ON sa.id=r.addr_id
+    LEFT JOIN reductions red ON red.addr_id=r.addr_id
+    LEFT JOIN defections def ON def.addr_id=r.addr_id
+    LEFT JOIN pool_hash dph ON dph.id=def.to_pool_id
+    ORDER BY r.tenure DESC`);
+  console.log(`[dbsync.getLoyalty] query done: ${(rows||[]).length} rows in ${Date.now()-_t}ms`);
+  return (rows || []).map((r) => ({
+    stake: r.stake,
+    tenure: Number(r.tenure),
+    sinceEpoch: Number(r.since_epoch),
+    curStake: Number(r.cur_ada),
+    reductionFactor: Number(r.reduction_factor) || 0,   // 0..1 (worst recency-weighted pull)
+    defected: r.defect_to_pool != null,
+    defectToPool: r.defect_to_pool || null,
+    defectEpoch: r.defect_epoch != null ? Number(r.defect_epoch) : null,
+    defectToAda: r.defect_to_ada != null ? Number(r.defect_to_ada) : null,
+  }));
+}
+
+/**
  * Network active stake for ONE epoch (the ideal denominator). ~270ms — heavy
  * because it sums all delegation. The read-model caches each result once in
  * poolterminal.db and never recomputes history (architecture §10/§12).
@@ -227,6 +341,7 @@ export async function fetchHistory(from, to) {
 const PROVIDES = [
   DataKind.EPOCH_BLOCKS, DataKind.EPOCH_STAKE, DataKind.EPOCH_DELEGATORS,
   DataKind.EPOCH_REWARDS, DataKind.EPOCH_IDEAL, DataKind.POOL_PARAMS,
+  DataKind.DELEGATOR_LOYALTY, DataKind.DELEGATOR_LIST,
 ];
 
 export const dbsyncSource = {
@@ -244,6 +359,10 @@ export const dbsyncSource = {
       case DataKind.EPOCH_REWARDS:
       case DataKind.POOL_PARAMS:
         return fetchHistory(params.from, params.to);
+      case DataKind.DELEGATOR_LOYALTY:
+        return getLoyalty();
+      case DataKind.DELEGATOR_LIST:
+        return getDelegatorList();
       default:
         throw new Error(`db-sync source can't provide ${kind}`);
     }

@@ -184,6 +184,19 @@ async function cacheMetaSet(key, value) {
   try { await invoke('cache_meta_set', { key, value }); }
   catch (e) { console.warn('[read-model] cache_meta_set:', e.message ?? e); }
 }
+// --- Loyalty snapshot cache (computed once per epoch; see delegators view) ---
+export async function cacheGetLoyalty() {
+  try { return (await invoke('cache_get_loyalty', { poolId: poolHex() })) || []; }
+  catch (e) { console.warn('[read-model] cache_get_loyalty:', e.message ?? e); return []; }
+}
+export async function cacheLoyaltyEpoch() {
+  try { return await invoke('cache_loyalty_epoch', { poolId: poolHex() }); }
+  catch (e) { console.warn('[read-model] cache_loyalty_epoch:', e.message ?? e); return null; }
+}
+export async function cachePutLoyalty(computedEpoch, rows) {
+  try { await invoke('cache_put_loyalty', { poolId: poolHex(), computedEpoch, rows }); }
+  catch (e) { console.warn('[read-model] cache_put_loyalty:', e.message ?? e); }
+}
 
 // ============================================================
 // pool identity

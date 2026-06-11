@@ -36,7 +36,13 @@ const HISTORY_HTML = `
       color: var(--pt-text-primary); }
     .pt-history tbody td:first-child { text-align: left; color: var(--pt-text-secondary); }
     .pt-history tbody td.grp { border-left: 0.5px solid var(--pt-border); }
-    .pt-history tbody td.total { color: var(--pt-accent-blue); font-weight: 500; }
+    .pt-history tbody td.total { color: var(--pt-accent-blue); font-weight: 700; }
+    /* Reward colour coding: SPO/pool rewards green, delegator + total-payout blue */
+    .pt-history td.rwd-deleg { color: var(--pt-accent-blue); }
+    .pt-history thead th.rwd-deleg { color: var(--pt-accent-blue); font-weight: 700; }
+    .pt-history td.rwd-spo, .pt-history th.rwd-spo { color: var(--pt-status-good); }
+    .pt-history td.rwd-spo-total { color: var(--pt-status-good); font-weight: 700; }
+    .pt-history thead th.rwd-spo-total { color: var(--pt-status-good) !important; font-weight: 700; }
     .pt-history tbody tr:hover { background: var(--pt-bg-strip); }
     .pt-history .pt-hist-empty { padding: 40px; text-align: center; color: var(--pt-text-muted); }
     .pt-history .v-good { color: var(--pt-status-good); }
@@ -164,7 +170,7 @@ function fmtAdaCell(v) {
  *   marginEarn = margin × max(0,R−minFee); pledge = leader − minFee − marginEarn.
  */
 function rewardSplit(r, isCurrent) {
-  const blank = ['—', '—', '—', '—', '—'];
+  const blank = ['—', '—', '—', '—', '—', '—'];
   if (isCurrent) return blank;
   const member = r.memberRewards;
   const leader = r.leaderReward;                        // undefined = not fetched/published
@@ -174,20 +180,21 @@ function rewardSplit(r, isCurrent) {
   const minFee = Math.min(fixed, R);
   const marginEarn = (r.margin || 0) * Math.max(0, R - minFee);
   const pledge = Math.max(0, leader - minFee - marginEarn);
-  return [member, pledge, minFee, marginEarn, member + leader].map(fmtAdaCell);
+  const spoEarnings = pledge + minFee + marginEarn;     // operator's own take (= leader reward)
+  return [member, pledge, minFee, marginEarn, spoEarnings, member + leader].map(fmtAdaCell);
 }
 
 function renderTable(rows, currentEpoch) {
   const head = `<table><thead><tr>
     <th>Epoch</th><th>Blocks</th><th>Ideal</th><th>Luck</th><th>Delegators</th><th>Active stake</th>
-    <th class="grp">Deleg rwd</th><th>SPO pledge</th><th>SPO fee</th><th>SPO margin</th><th>Total payout</th>
+    <th class="grp rwd-deleg">Deleg Rwd</th><th class="rwd-spo">Pledge Rwd</th><th class="rwd-spo">Min Fee Rwd</th><th class="rwd-spo">Margin Rwd</th><th class="grp rwd-spo-total">SPO Earnings</th><th class="rwd-deleg">Total Payout</th>
   </tr></thead><tbody>`;
   const body = rows.map((r) => {
     const isCurrent = r.epoch === currentEpoch;
     // Current (in-progress) epoch: blocks-so-far is fine, but luck is not yet
     // meaningful (the epoch can still produce), so show '—', not 0%.
     const luck = isCurrent ? null : luckOf(r);
-    const [del, pledge, fee, margin, total] = rewardSplit(r, isCurrent);
+    const [del, pledge, fee, margin, spoEarn, total] = rewardSplit(r, isCurrent);
     return `<tr>
       <td>${r.epoch}</td>
       <td>${r.adopted ?? '—'}</td>
@@ -195,10 +202,11 @@ function renderTable(rows, currentEpoch) {
       <td class="${luckClass(luck)}">${luck != null ? Math.round(luck) + '%' : '—'}</td>
       <td>${fmtNum(r.delegators)}</td>
       <td>${fmtAdaShort(r.activeStake)}</td>
-      <td class="grp">${del}</td>
-      <td>${pledge}</td>
-      <td>${fee}</td>
-      <td>${margin}</td>
+      <td class="grp rwd-deleg">${del}</td>
+      <td class="rwd-spo">${pledge}</td>
+      <td class="rwd-spo">${fee}</td>
+      <td class="rwd-spo">${margin}</td>
+      <td class="grp rwd-spo-total">${spoEarn}</td>
       <td class="total">${total}</td>
     </tr>`;
   }).join('');

@@ -8,6 +8,8 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
+> _Last updated: 11 June 2026_
+
 ## What it is
 
 PoolTerminal is a desktop application for SPOs running their own Cardano block producer. It connects to your node — over SSH, or directly when run on the node itself — and presents a rich, real-time operational dashboard that goes far beyond what gLiveView or generic chain explorers offer.
@@ -23,12 +25,13 @@ Running a Cardano stake pool produces a torrent of operational data that's locke
 Working today:
 
 - **NOW** — Live current-epoch dashboard: chain pulse, tip/sync, KES expiry, ideal/leader, era badge, mempool, peer counts, and a compact relay map. **Upcoming blocks** lists your assigned leader slots for the current *and* next epoch (once the ~36 h leadership-schedule window opens), each with a live countdown — sourced from the authoritative `cardano-cli` leadership schedule and cached per epoch.
-- **HISTORY** — Full per-epoch table back to your pool's first epoch: blocks, ideal, luck, delegators, active stake, and a five-way reward split (delegator reward · SPO pledge · SPO fee · SPO margin · total payout). Charts for blocks-per-epoch and luck. Two interchangeable data sources (see below).
+- **HISTORY** — Full per-epoch table back to your pool's first epoch: blocks, ideal, luck, delegators, active stake, and a colour-coded six-way reward split (delegator reward · pledge · min-fee · margin · **SPO earnings** · total payout), where SPO earnings is the operator's own take per epoch. Charts for blocks-per-epoch and luck. Two interchangeable data sources (see below).
+- **DELEGATORS** — One data-rich, sortable table of every delegator, merging live stake with a computed **loyalty** ranking (tenure × stake-weight × penalties for defection/withdrawal). Sort by loyalty or stake, dust filter, paginated. Click any delegator for a deep-dive: balance, rewards, withdrawals, DRep flag, and a colourful **pool-movement journey** showing every pool they've delegated to with entry/exit epochs and active stake at each. db-sync powered (no rate limits); loyalty cached per epoch.
 - **NODE HEALTH** — Host and node-process metrics (CPU, memory, peers, resources) with historical samples.
 - **MAP** — Full-size D3 world map (Natural Earth, cached offline after first load) plotting your node and its live peers, geo-located, with RTT-coloured connections and a side panel of latency bands and geographic distribution.
 - **DEMO MODE** — Built-in synthetic pool data so you can try the full UI without connecting to a real node.
 
-Placeholder tabs, planned next: **DELEGATORS**, **REWARDS**, **GOVERNANCE** (DRep).
+Placeholder tabs, planned next: **NOTIFICATIONS** (live stake-change feed), **REWARDS**, **GOVERNANCE** (DRep).
 
 ## Data sources
 
@@ -104,7 +107,7 @@ PoolTerminal is built with Cardano's regular hard fork cycle in mind. See `HARDF
 
 ## Status
 
-Active development. Core data layer (both sources), connection (SSH + local), and the NOW / HISTORY / NODE HEALTH / MAP views are working. Next: setup wizard, DELEGATORS / REWARDS / GOVERNANCE views.
+Active development. Core data layer (both sources), connection (SSH + local), and the NOW / HISTORY / DELEGATORS / NODE HEALTH / MAP views are working. Next: NOTIFICATIONS (live stake-change feed), setup wizard, REWARDS / GOVERNANCE views.
 
 ## Contributing
 

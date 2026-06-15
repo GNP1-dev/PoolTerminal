@@ -32,9 +32,12 @@ import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.
 import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal } from './views/connect.js';
 import { nodeExec } from './data/tauri.js';
-import { getSession, setNodeProbe } from './data/session.js';
+import { getSession, setNodeProbe, getNodeProbe } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
+import { initToasts } from './ui/toast.js';
+import { initNotifications, mountNotifications, unmountNotifications } from './views/notifications.js';
+import { setOwnPoolTicker } from './ui/notif-format.js';
 
 const FAST_INTERVAL_MS = 1000;
 const MEMPOOL_REFRESH_EVERY_S = 5;
@@ -65,6 +68,7 @@ function mountView(view) {
   if (activeView === 'now' && view !== 'now') unmountNow();
   if ((activeView === 'health' || activeView === 'node-health') && !isHealth) unmountNodeHealth();
   if (activeView === "map" && view !== "map") unmountMap();
+  if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
@@ -77,6 +81,8 @@ function mountView(view) {
     mountMap(canvasEl);
   } else if (view === 'delegators') {
     mountDelegators(canvasEl);
+  } else if (view === 'notifications') {
+    mountNotifications(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">
@@ -110,6 +116,7 @@ async function fastPollTick() {
     const src = dataSource();
     const snap = await src.getNowSnapshot();
     renderTickertape(snap);
+    if (snap.poolTicker) setOwnPoolTicker(snap.poolTicker);
     markTickertapeStale(false);
     const firstSnap = !latestSnap;
     latestSnap = snap;
@@ -205,9 +212,57 @@ function paintMode() {
   }
 }
 
+/** Read the connected node's cardano-node version once per connect.
+ *  cardano-node and cardano-cli now version separately, so we must run the
+ *  node binary itself — and it isn't on PATH in a non-interactive SSH shell.
+ *  Most reliable source: the actual running process via /proc/<pid>/exe (the
+ *  probe already found the node's PID). Falls back to the Guild env CCLI path
+ *  and finally a bare PATH lookup. */
+async function execOut(cmd) {
+  const r = await nodeExec(cmd);
+  return (typeof r === 'string' ? r : (r && r.stdout) || '').trim();
+}
+
+async function fetchNodeVersion() {
+  const probe = getNodeProbe && getNodeProbe();
+  const s = getSession();
+  const ccli = s.envVars && s.envVars.CCLI;
+
+  const candidates = [];
+  // 1) The running node binary, located by process match — proven to work and
+  //    independent of PATH (binary isn't on PATH in non-interactive SSH).
+  candidates.push(`"$(readlink -f /proc/$(pgrep -f 'cardano-node run' | head -1)/exe)" --version`);
+  // 2) The exact probed PID, if available.
+  if (probe && probe.pid) candidates.push(`"$(readlink -f /proc/${probe.pid}/exe)" --version`);
+  // 3) Derive from the Guild env CCLI path; 4) bare PATH.
+  if (ccli) candidates.push(`"${ccli.replace(/\/[^/]+$/, '')}/cardano-node" --version`);
+  candidates.push('cardano-node --version');
+
+  for (const cmd of candidates) {
+    try {
+      const out = await execOut(cmd);
+      const m = out.match(/cardano-node\s+(\S+)/i);
+      if (m) return m[1];
+    } catch { /* next candidate */ }
+  }
+  return null;
+}
+
+async function paintNodeVersion() {
+  const el = document.getElementById('ttape-nodever');
+  if (!el) return;
+  if (getMode() !== 'live') { el.textContent = ''; el.style.display = 'none'; return; }
+  try {
+    const v = await fetchNodeVersion();
+    if (v) { el.textContent = `node v${v}`; el.style.display = ''; }
+    else { el.style.display = 'none'; }
+  } catch { el.style.display = 'none'; }
+}
+
 async function runProbeAndPaintRole() {
   if (getMode() !== 'live') {
     setRoleBadge(null);
+    paintNodeVersion();
     return;
   }
   try {
@@ -218,11 +273,20 @@ async function runProbeAndPaintRole() {
     console.warn('[probe] FAIL:', e.message);
     setRoleBadge('UNKNOWN');
   }
+  paintNodeVersion();
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   console.log('PoolTerminal — Phase 3 (1s fast loop, cncli bootstrap-only)');
   canvasEl = document.getElementById('pt-canvas');
+
+  // Cross-tab notification toasts (listens for pt:notif-events from read-model).
+  initToasts();
+  initNotifications();   // unread badge + live feed refresh
+  import('./ui/toast.js').then((m) => { window.__ptToastTest = m._toastTest; }).catch(() => {});
+  import('./data/dbsync-query.js').then((m) => {
+    window.__ptDelegEvents = (o) => m.getDelegationEvents(o).then((r) => { console.table(r.events || r); return r; });
+  }).catch(() => {});
 
   window.__pt_ssh = async (cmd) => {
     const r = await nodeExec(cmd);

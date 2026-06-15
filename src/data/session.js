@@ -42,12 +42,19 @@ export function loadConfig() {
 }
 
 export function saveConfig(conn) {
-  // Sanitised — no creds
+  // Read what we already remembered so local mode can't clobber remote details.
+  let prev = {};
+  try { prev = JSON.parse(localStorage.getItem(CONFIG_KEY)) || {}; } catch { prev = {}; }
+  const isLocal = conn.transport === 'local';
+  // Sanitised — no creds. In local mode the host is always "localhost", which
+  // must NOT overwrite the remembered remote host/port/user, or a later SSH
+  // connect would target localhost and be refused. Preserve the prior remote
+  // values when saving a local session.
   const safe = {
     transport: conn.transport || 'ssh',
-    host: conn.host,
-    port: conn.port,
-    user: conn.user,
+    host: isLocal ? (prev.host || null) : conn.host,
+    port: isLocal ? (prev.port || null) : conn.port,
+    user: isLocal ? (prev.user || conn.user) : conn.user,
     envFile: conn.envFile,
     authOrder: conn.authOrder,
     authMethod: conn.authMethod,

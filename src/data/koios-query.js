@@ -28,9 +28,11 @@
  */
 
 import { invoke } from './tauri.js';
+import { DataKind, registry } from './capabilities.js';
 
 const KOIOS_BASE = 'https://api.koios.rest/api/v1';
 const CURL_MAX_TIME = 8; // seconds, per call
+const ACCOUNT_INFO_MAX_TIME = 15; // account_info pages (50 addrs) are heavier — give them room
 
 /**
  * Run a command on the node over SSH, returning stdout (or '' on failure).
@@ -306,30 +308,305 @@ export async function getLeaderReward(stakeAddress, epochNo) {
 }
 
 /**
- * Current delegators with their stake. Returns an array (possibly empty).
- * Koios paginates at 1000 rows; for pools larger than that we'd page with
- * offset — GNP1 (~138) fits in one call.
+ * Current delegators with their LIVE stake, fully paged. Returns an array
+ * (possibly empty).
+ *
+ * `amount` from Koios is LIVE stake — it moves intra-epoch as a delegator's
+ * balance changes, which is exactly the signal the NOTIFICATIONS diff watches
+ * (stake up / down), unlike the epoch_stake snapshot that only moves at epoch
+ * boundaries. `latest_delegation_tx_hash` lets a redelegation be distinguished
+ * from a same-pool stake change.
+ *
+ * Koios returns up to 1000 rows per page; we page with `offset` until a short
+ * page comes back, so this is honest for a pool of ANY size — not just those
+ * under 1000 (genericness: this app targets every SPO, not just GNP1's ~140).
+ * MAX_PAGES is a safety cap so a bad response can never loop unbounded.
+ *
+ * Canonical shape (source-agnostic — Blockfrost/db-sync providers emit the same):
+ *   { stake, liveStake (ADA), liveStakeLovelace, latestDelegTx|null, activeEpochNo|null }
  */
 export async function getPoolDelegators(poolBech32) {
-  const url = `${KOIOS_BASE}/pool_delegators?_pool_bech32=${poolBech32}&order=amount.desc`;
-  const cmd = `curl -sf --max-time ${CURL_MAX_TIME} '${url}'`;
+  const PAGE = 1000;
+  const MAX_PAGES = 50;   // 50k delegators — far beyond any real pool; just a guard
+  const out = [];
 
-  let out;
-  try {
-    out = await runCmd(cmd);
-  } catch (err) {
-    console.warn('[koios] pool_delegators SSH failure:', err.message);
-    return [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const offset = page * PAGE;
+    const url =
+      `${KOIOS_BASE}/pool_delegators?_pool_bech32=${poolBech32}` +
+      `&order=amount.desc&offset=${offset}`;
+    const cmd = `curl -sf --max-time ${CURL_MAX_TIME} '${url}'`;
+
+    let res;
+    try {
+      res = await runCmd(cmd);
+    } catch (err) {
+      console.warn('[koios] pool_delegators SSH failure:', err.message);
+      break;   // return what we have so far — defensive, never throw into the loop
+    }
+
+    const arr = parseJson(res, []);
+    if (!Array.isArray(arr) || arr.length === 0) break;
+
+    for (const d of arr) {
+      const lov = d.amount == null ? 0 : Number(d.amount);
+      out.push({
+        stake:             d.stake_address,
+        liveStake:         lov / 1_000_000,
+        liveStakeLovelace: lov,
+        latestDelegTx:     d.latest_delegation_tx_hash || null,
+        activeEpochNo:     d.active_epoch_no ?? null,
+      });
+    }
+
+    if (arr.length < PAGE) break;   // short page = last page
   }
 
-  const arr = parseJson(out, []);
-  if (!Array.isArray(arr)) return [];
+  // CRITICAL: pool_delegators.amount is the epoch-BOUNDARY snapshot stake — it
+  // does NOT move intra-epoch, so it's useless for stake-change detection
+  // (verified: a mid-epoch send leaves it unchanged). Overlay the genuinely
+  // live balance from account_info.total_balance — the same number pool.pm and
+  // friends watch. pool_delegators still defines MEMBERSHIP (who delegates to
+  // us, which does change intra-epoch as certs land); account_info supplies the
+  // live amount.
+  //
+  // STRICT, ALL-OR-NOTHING: we must NEVER fall back to pool_delegators' snapshot
+  // amount for an address. That's a different metric, and diffing a snapshot
+  // value against a live baseline produces phantom stake_up/down events AND
+  // corrupts the stored baseline (observed in testing). So if even ONE member's
+  // live balance is unresolved, we discard the whole result and return [] — the
+  // read-model treats that exactly like a Koios outage: skip the poll, emit
+  // nothing, leave the last good snapshot untouched, retry next cycle. Stale but
+  // correct always beats fast but wrong.
+  if (out.length) {
+    let balances = new Map();
+    try {
+      balances = await getAccountsBalances(out.map((d) => d.stake));
+    } catch (err) {
+      console.warn('[koios] balance overlay threw:', err.message);
+      balances = new Map();
+    }
+    let missing = 0;
+    for (const d of out) {
+      const live = balances.get(d.stake);
+      if (live == null) { missing++; continue; }
+      d.liveStakeLovelace = live;
+      d.liveStake = live / 1_000_000;
+    }
+    if (missing > 0) {
+      console.warn(
+        `[koios] live-balance overlay incomplete: ${missing}/${out.length} unresolved — ` +
+        `skipping this poll (no events, snapshot untouched) to avoid mixing snapshot stake with live`
+      );
+      return [];
+    }
+  }
 
-  return arr.map((d) => ({
-    stakeAddress:    d.stake_address,
-    amount:          lovelaceToAda(d.amount),
-    activeEpochNo:   d.active_epoch_no,
-    latestDelegTx:   d.latest_delegation_tx_hash,
-    raw:             d,
-  }));
+  return out;
+}
+
+/**
+ * Live total balance per stake address (Koios account_info.total_balance,
+ * batched and paged at 50/req). Returns Map(stake_address -> lovelace). This is
+ * the LIVE, intra-epoch balance — what actually moves when a delegator sends or
+ * receives ADA — as opposed to pool_delegators' boundary snapshot. Defensive:
+ * skips a page on failure, returns whatever it gathered.
+ */
+export async function getAccountsBalances(stakeAddresses) {
+  const out = new Map();
+  if (!Array.isArray(stakeAddresses) || stakeAddresses.length === 0) return out;
+
+  const PAGE = 50;          // Koios bulk POST batch size
+  const MAX_ATTEMPTS = 2;   // one retry — smooths transient Koios/SSH hiccups so
+                            // a single flaky page doesn't degrade the whole poll
+  for (let i = 0; i < stakeAddresses.length; i += PAGE) {
+    const batch = stakeAddresses.slice(i, i + PAGE);
+    const body = JSON.stringify({ _stake_addresses: batch });
+    const cmd =
+      `curl -sf --max-time ${ACCOUNT_INFO_MAX_TIME} -X POST '${KOIOS_BASE}/account_info' ` +
+      `-H 'content-type: application/json' -d '${shellEscape(body)}'`;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let res;
+      try {
+        res = await runCmd(cmd);
+      } catch (err) {
+        console.warn(`[koios] account_info page @${i} attempt ${attempt} SSH failure:`, err.message);
+        continue;
+      }
+      const arr = parseJson(res, null);
+      if (!Array.isArray(arr)) {
+        console.warn(`[koios] account_info page @${i} attempt ${attempt}: non-array response`);
+        continue;
+      }
+      for (const a of arr) {
+        const tb = a.total_balance == null ? null : Number(a.total_balance);
+        if (tb != null) out.set(a.stake_address, tb);
+      }
+      break;   // page succeeded — stop retrying
+    }
+    // If a page never succeeded, its addresses stay absent from `out`; the caller
+    // (getPoolDelegators) detects the incomplete coverage and skips the poll.
+  }
+  return out;
+}
+
+/**
+ * Current delegated pool for each stake address (Koios account_info, ONE POST
+ * for the whole batch). Returns Map(stake_address -> poolBech32 | null), null
+ * meaning the account isn't currently delegating (deregistered / withdrawn).
+ * Used by the NOTIFICATIONS engine to tell a redelegation from a leave-to-wallet
+ * when a delegator drops off the pool's list. Defensive: returns an empty Map on
+ * any failure so a classification miss never loses the underlying leave event.
+ */
+export async function getAccountsDelegatedPool(stakeAddresses) {
+  const out = new Map();
+  if (!Array.isArray(stakeAddresses) || stakeAddresses.length === 0) return out;
+
+  const body = JSON.stringify({ _stake_addresses: stakeAddresses });
+  const cmd =
+    `curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/account_info' ` +
+    `-H 'content-type: application/json' -d '${shellEscape(body)}'`;
+
+  let res;
+  try {
+    res = await runCmd(cmd);
+  } catch (err) {
+    console.warn('[koios] account_info SSH failure:', err.message);
+    return out;
+  }
+
+  const arr = parseJson(res, []);
+  if (!Array.isArray(arr)) return out;
+  for (const a of arr) out.set(a.stake_address, a.delegated_pool || null);
+  return out;
+}
+
+/**
+ * Prior pool for each stake address — the most recent pool they delegated to
+ * that ISN'T `ourPoolBech32` (Koios account_history, ONE POST for the batch).
+ * Returns Map(stake_address -> priorPoolBech32 | null); null = no earlier pool
+ * (a brand-new delegator). Lets the NOTIFICATIONS engine tell a fresh join from
+ * a redelegation IN. Defensive: empty Map on any failure (joiner then shown as
+ * plain new, never lost).
+ */
+export async function getAccountsPriorPool(stakeAddresses, ourPoolBech32) {
+  const out = new Map();
+  if (!Array.isArray(stakeAddresses) || stakeAddresses.length === 0) return out;
+
+  const body = JSON.stringify({ _stake_addresses: stakeAddresses });
+  const cmd =
+    `curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/account_history' ` +
+    `-H 'content-type: application/json' -d '${shellEscape(body)}'`;
+
+  let res;
+  try {
+    res = await runCmd(cmd);
+  } catch (err) {
+    console.warn('[koios] account_history SSH failure:', err.message);
+    return out;
+  }
+
+  const arr = parseJson(res, []);
+  if (!Array.isArray(arr)) return out;
+  for (const a of arr) {
+    const hist = Array.isArray(a.history) ? a.history.slice() : [];
+    hist.sort((x, y) => (y.epoch_no || 0) - (x.epoch_no || 0));   // newest epoch first
+    let origin = null;
+    for (const h of hist) {
+      const p = h.pool_id_bech32 || h.pool_id || null;
+      if (p && p !== ourPoolBech32) { origin = p; break; }
+    }
+    out.set(a.stake_address, origin);
+  }
+  return out;
+}
+
+/**
+ * Ticker for each pool id (Koios pool_info accepts a batch of bech32 ids in one
+ * POST). Returns Map(pool_id_bech32 -> ticker | null). Used to render
+ * redelegation source/destination pools as tickers instead of raw ids.
+ * Defensive: empty Map on failure (caller falls back to showing the id).
+ */
+export async function getPoolTickers(poolBech32Ids) {
+  const out = new Map();
+  if (!Array.isArray(poolBech32Ids) || poolBech32Ids.length === 0) return out;
+
+  const body = JSON.stringify({ _pool_bech32_ids: poolBech32Ids });
+  const cmd =
+    `curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/pool_info' ` +
+    `-H 'content-type: application/json' -d '${shellEscape(body)}'`;
+
+  let res;
+  try {
+    res = await runCmd(cmd);
+  } catch (err) {
+    console.warn('[koios] pool_info (tickers) SSH failure:', err.message);
+    return out;
+  }
+
+  const arr = parseJson(res, []);
+  if (!Array.isArray(arr)) return out;
+  for (const p of arr) {
+    const ticker = (p.meta_json && p.meta_json.ticker) ? p.meta_json.ticker : null;
+    out.set(p.pool_id_bech32, ticker);
+  }
+  return out;
+}
+
+// ============================================================
+// Live-delegators capability provider (NOTIFICATIONS)
+// ============================================================
+// Koios is the zero-config DEFAULT source for the live delegator set: no key,
+// reachable by every SPO. It's registered into the capability spine as its own
+// source object so the read-model can ask for DELEGATOR_LIST_LIVE without ever
+// naming Koios — the setup wizard will later let an operator prefer Blockfrost
+// or db-sync for the same kind with no change to the notifications code.
+//
+// Deliberately INDEPENDENT of the Koios *history* source (koios-history.js):
+// history may be served by db-sync (the KOIOS_ENABLED history gate off) while
+// live notifications still run on Koios — exactly how live block production
+// already uses Koios regardless of the history toggle. Hence the distinct
+// source id 'koios-live', which also avoids colliding with the history source's
+// registration guard.
+
+let _liveBech32 = null;
+let _liveReady = false;
+
+export const koiosLiveDelegatorsSource = {
+  id: 'koios-live',
+  label: 'Koios',
+  isCli: false,
+  provides: () => (_liveReady ? [DataKind.DELEGATOR_LIST_LIVE] : []),
+  reachable: () => _liveReady,
+  version: () => null,
+  get: async (kind, _params = {}) => {
+    if (kind !== DataKind.DELEGATOR_LIST_LIVE) {
+      throw new Error(`koios-live source can't provide ${kind}`);
+    }
+    if (!_liveBech32) return [];
+    return getPoolDelegators(_liveBech32);
+  },
+};
+
+/**
+ * Arm the Koios live-delegators provider for a pool and register it into the
+ * spine (idempotent). Trusts Koios reachability the way live block production
+ * does — fetch failures degrade to [] rather than flipping reachability — so
+ * there's no probe here; the wizard will add real per-source health checks.
+ */
+export function initKoiosLiveDelegators(poolBech32) {
+  if (!poolBech32) return false;
+  _liveBech32 = poolBech32;
+  _liveReady = true;
+  if (!registry.all().some((s) => s.id === 'koios-live')) {
+    registry.register(koiosLiveDelegatorsSource);
+  }
+  return true;
+}
+
+/** Reset on disconnect / reconnect (mirrors the other sources' reset hooks). */
+export function resetKoiosLiveDelegators() {
+  _liveBech32 = null;
+  _liveReady = false;
 }

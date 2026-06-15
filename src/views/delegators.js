@@ -35,6 +35,7 @@ const DELEGATORS_HTML = `
   <style>
     .pt-delegators { display: flex; flex-direction: column; gap: var(--pt-gap, 8px); padding: 8px; height: 100%; overflow-y: auto; }
     .pt-delegators .pt-hero-row-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--pt-gap, 8px); }
+    .pt-delegators .pt-hero-row-6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--pt-gap, 8px); }
     .pt-delegators .pt-hero-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .pt-delegators .pt-tbl-wrap { max-height: 460px; overflow: auto; }
     .pt-delegators table { width: 100%; border-collapse: collapse; font: 400 11px ui-monospace, monospace; white-space: nowrap; }
@@ -174,9 +175,10 @@ const DELEGATORS_HTML = `
     .loy-stats .sub { display: block; margin-top: 2px; }
   </style>
   <div class="pt-delegators" id="pt-delegators">
-    <div class="pt-hero-row pt-hero-row-5">
+    <div class="pt-hero-row pt-hero-row-6">
       <div class="pt-hero-card"><div class="pt-hero-label">Delegators</div><div class="pt-hero-value" id="d-count">—</div><div class="pt-hero-sub" id="d-count-sub">live</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Live stake</div><div class="pt-hero-value" id="d-stake">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-stake-sub">delegated</div></div>
+      <div class="pt-hero-card"><div class="pt-hero-label">Active stake</div><div class="pt-hero-value" id="d-active">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-active-sub">set snapshot</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Top delegator</div><div class="pt-hero-value" id="d-top">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-top-sub">largest single</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Pledge</div><div class="pt-hero-value" id="d-pledge">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-pledge-sub">live vs declared</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Saturation</div><div class="pt-hero-value" id="d-sat">—<span class="pt-hero-unit">%</span></div><div class="pt-hero-sub" id="d-sat-sub">of cap</div></div>
@@ -197,8 +199,8 @@ const DELEGATORS_HTML = `
         </div>
       </div>
       <div class="loy-legend" id="d-legend">
-        <span title="How long they've delegated unbroken, relative to the longest-serving — blue bar segment."><span class="sw loy-sw-ten"></span>tenure</span>
-        <span title="Current stake, weighted so dust ≈ 0 and whales saturate — gold bar segment."><span class="sw loy-sw-stk"></span>stake-weight</span>
+        <span title="How long they've delegated unbroken, relative to the longest-serving - blue bar segment."><span class="sw loy-sw-ten"></span>tenure</span>
+        <span title="Current stake, weighted so dust ≈ 0 and whales saturate - gold bar segment."><span class="sw loy-sw-stk"></span>stake-weight</span>
         <span title="Loyalty = tenure-rank × stake-weight × defection penalty (×0.25 if moved ≥50% to a rival) × reduction penalty (recent big withdrawal, fades ~6mo).">score = tenure × stake-weight × penalties ⓘ</span>
       </div>
       <div class="pt-tbl-wrap loy-wrap" id="d-table"></div>
@@ -581,6 +583,7 @@ export async function mountDelegators(canvas) {
   const top = list[0];
   setText('d-count', live?.liveDelegators != null ? String(live.liveDelegators) : String(list.length));
   setText('d-stake', fmtAda(live?.liveStake));
+  setText('d-active', live?.activeStake != null ? fmtAda(live.activeStake) : '—');
   setText('d-top', top ? fmtAda(top.liveStake) : '—');
   setText('d-top-sub', top ? (top.isOwner ? 'your pledge' : shortStake(top.stake)) : '—');
   setText('d-pledge', fmtAda(live?.livePledge));

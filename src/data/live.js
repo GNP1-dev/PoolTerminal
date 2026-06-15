@@ -114,7 +114,12 @@ function computePulse(snap) {
   total += components.sync;
 
   // Peers (0-25)
-  const totalPeers = (snap.peersIn || 0) + (snap.peersOut || 0);
+  // Peers (0-25). In live mode the counts come from the Prometheus metrics
+  // scrape, not the tip snapshot, so prefer those and fall back to the snap.
+  const pm = getLastMetrics();
+  const totalPeers = pm
+    ? (pm.outgoingConns || 0) + (pm.incomingConns || 0)
+    : (snap.peersIn || 0) + (snap.peersOut || 0);
   components.peers = totalPeers >= 1 ? 25 : 0;
   total += components.peers;
 
@@ -300,6 +305,7 @@ export class LiveDataSource {
     readModel.refreshSemiLive();
     readModel.refreshBlockProduction(tip.epoch, this._ideal);
     readModel.refreshHistory(tip.epoch);   // db-sync (or Koios) history population
+    readModel.refreshNotifications(tip.epoch);   // live delegator-change feed (~5 min)
 
     // NODE HEALTH — node-direct, never Koios. Host scrape on a slow cadence
     // (~5s; rate deltas computed there), then persist host + node metrics to the

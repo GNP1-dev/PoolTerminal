@@ -74,7 +74,7 @@ const MODAL_HTML = `
           <label>Host</label>
           <input id="cn-host" type="text" placeholder="192.168.0.62" autocomplete="off">
         </div>
-        <div class="pt-field" style="flex: 1">
+        <div class="pt-field" style="flex: 0.6">
           <label>Port</label>
           <input id="cn-port" type="number" value="22" autocomplete="off">
         </div>
@@ -216,6 +216,8 @@ function validate(conn) {
     return null;   // local mode needs nothing else
   }
   if (!conn.host) return 'Host is required';
+  if (/^(localhost|127\.0\.0\.1|::1)$/i.test(conn.host))
+    return 'For SSH, enter the node\u2019s real address (e.g. 192.168.0.62), not localhost. Use "This machine" if PoolTerminal runs on the node itself.';
   if (!conn.user) return 'Username is required';
   if (!conn.envFile) return 'Env file path is required';
   if (conn.authMethod === 'agent') return null;
@@ -281,7 +283,14 @@ export function showConnectModal(onDone) {
   document.body.appendChild(modal);
 
   const cfg = loadConfig();
-  byId('cn-host').value = cfg.host || '192.168.0.62';
+  // Self-heal: the host field is the REMOTE host. If a prior local-mode run
+  // left "localhost" (or it's blank) in the saved config, don't load that into
+  // the SSH host field — fall back to the default so an SSH connect can't be
+  // mis-aimed at localhost and refused.
+  const isLocalHostVal = (h) => !h || /^(localhost|127\.0\.0\.1|::1)$/i.test(String(h).trim());
+  byId('cn-host').value = (cfg.transport !== 'local' && !isLocalHostVal(cfg.host))
+    ? cfg.host
+    : '192.168.0.62';
   byId('cn-port').value = cfg.port || 22;
   byId('cn-user').value = cfg.user || 'russell';
   byId('cn-env').value = cfg.envFile || '/opt/cardano/cnode_bp/scripts/env';
@@ -293,6 +302,12 @@ export function showConnectModal(onDone) {
   byId('cn-auth-order').addEventListener('change', updateAuthUI);
   byId('cn-auth-method').addEventListener('change', updateAuthUI);
   byId('cn-conn-type').addEventListener('change', updateAuthUI);
+  // When switching to SSH, never leave a leftover "localhost" in the host box.
+  byId('cn-conn-type').addEventListener('change', () => {
+    if (byId('cn-conn-type').value !== 'local' && isLocalHostVal(byId('cn-host').value)) {
+      byId('cn-host').value = '192.168.0.62';
+    }
+  });
 
   byId('cn-skip').addEventListener('click', () => {
     setMode('demo');

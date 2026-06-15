@@ -8,7 +8,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
-> _Last updated: 11 June 2026_
+> _Last updated: 15 June 2026_
 
 ## What it is
 
@@ -28,10 +28,11 @@ Working today:
 - **HISTORY** — Full per-epoch table back to your pool's first epoch: blocks, ideal, luck, delegators, active stake, and a colour-coded six-way reward split (delegator reward · pledge · min-fee · margin · **SPO earnings** · total payout), where SPO earnings is the operator's own take per epoch. Charts for blocks-per-epoch and luck. Two interchangeable data sources (see below).
 - **DELEGATORS** — One data-rich, sortable table of every delegator, merging live stake with a computed **loyalty** ranking (tenure × stake-weight × penalties for defection/withdrawal). Sort by loyalty or stake, dust filter, paginated. Click any delegator for a deep-dive: balance, rewards, withdrawals, DRep flag, and a colourful **pool-movement journey** showing every pool they've delegated to with entry/exit epochs and active stake at each. db-sync powered (no rate limits); loyalty cached per epoch.
 - **NODE HEALTH** — Host and node-process metrics (CPU, memory, peers, resources) with historical samples.
+- **NOTIFICATIONS** — A live feed of delegation activity, detected on-chain within minutes: delegators joining (with the pool they came from), transfers in, **returning** delegators (anyone who was ever delegated before), redelegations away, and stake increases/decreases. Each event is colour-coded with a from→to flow, amount, epoch, slot, UTC timestamp and a one-click Cardanoscan transaction link. Corner toasts surface activity from any tab, and an unread badge tracks new events. db-sync detects movements instantly; Koios-only operators get the same feed at epoch-boundary cadence.
 - **MAP** — Full-size D3 world map (Natural Earth, cached offline after first load) plotting your node and its live peers, geo-located, with RTT-coloured connections and a side panel of latency bands and geographic distribution.
 - **DEMO MODE** — Built-in synthetic pool data so you can try the full UI without connecting to a real node.
 
-Placeholder tabs, planned next: **NOTIFICATIONS** (live stake-change feed), **REWARDS**, **GOVERNANCE** (DRep).
+Planned next: a guided **setup wizard**, plus **REWARDS** and **GOVERNANCE (DRep)** views.
 
 ## Data sources
 
@@ -107,7 +108,7 @@ PoolTerminal is built with Cardano's regular hard fork cycle in mind. See `HARDF
 
 ## Status
 
-Active development. Core data layer (both sources), connection (SSH + local), and the NOW / HISTORY / DELEGATORS / NODE HEALTH / MAP views are working. Next: NOTIFICATIONS (live stake-change feed), setup wizard, REWARDS / GOVERNANCE views.
+Active development. Core data layer (both sources), connection (SSH + local), and the NOW / HISTORY / DELEGATORS / NODE HEALTH / NOTIFICATIONS / MAP views are working. Next: a guided setup wizard, then REWARDS / GOVERNANCE views.
 
 ## Contributing
 

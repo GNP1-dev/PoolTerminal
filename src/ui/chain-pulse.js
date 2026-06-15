@@ -59,7 +59,7 @@ let complexGroup = null;
 let activeComplexes = [];
 let rafId = null;
 let lastData = null;
-let currentWindow = 60;
+let currentWindow = 300;
 let optimisticTimes = [];
 let densityFrameCounter = 0;
 
@@ -166,6 +166,19 @@ function recomputeDensity() {
  * When the window is short and contains 0 or 1 blocks we can't form gaps,
  * so stats show "—" rather than misleading zeros.
  */
+/** Human label for the currently selected window (matches the tab text). */
+function windowLabel() {
+  switch (currentWindow) {
+    case 10:   return '10s';
+    case 30:   return '30s';
+    case 60:   return '1m';
+    case 300:  return '5m';
+    case 900:  return '15m';
+    case 3600: return '1h';
+    default:   return currentWindow + 's';
+  }
+}
+
 function recomputeStats() {
   if (!lastData) return;
   const now = Date.now() / 1000;
@@ -184,7 +197,7 @@ function recomputeStats() {
     setText('cp-max', Math.max(...gaps) + 's');
     setText('cp-min', Math.min(...gaps) + 's');
   }
-  setText('cp-blockcount', windowTimes.length + ' blocks');
+  setText('cp-blockcount', 'Number of blocks in last ' + windowLabel() + ': ' + windowTimes.length);
 }
 
 // ════════════════════════════════════════════════════════════════════════

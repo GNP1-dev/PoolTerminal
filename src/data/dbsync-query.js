@@ -338,6 +338,121 @@ export async function fetchHistory(from, to) {
 
 // ---- source object + lifecycle ---------------------------------------------
 
+/**
+ * Live delegation-IN events from db-sync — stake addresses that delegated TO
+ * this pool, newest first. Event-sourced off the `delegation` table (one row
+ * per cert, present the moment the tx is in a block — instant, unlike Koios
+ * pool_delegators which only reflects new members at the epoch boundary).
+ *
+ * Information-rich: each event carries the pool the delegator came from, plus
+ * epoch / slot / block-time / tx hash for an explorer link. Re-delegations to
+ * the SAME pool (prev pool == us) are dropped — they aren't new joins.
+ *
+ * Amount is NOT included here (the `delegation` table doesn't carry balance);
+ * the caller overlays live balance from account_info at emit time.
+ *
+ * @param {object} opts
+ * @param {number} [opts.sinceId]  only certs with delegation.id > this (watermark)
+ * @param {number} [opts.hours=6]  if no sinceId given, look back this many hours
+ * @param {number} [opts.limit=200]
+ * @returns {Promise<Array>} [{ delegationId, type, stake, fromPool, epoch, slot, time, txHash }]
+ *   type: 'join' (first-ever / no prior pool) | 'join_redelegated' (came from another pool)
+ */
+export async function getDelegationEvents(opts = {}) {
+  if (!_poolId) return { events: [], scannedMax: null };
+  const limit = Math.min(Math.max(Number(opts.limit) || 500, 1), 5000);
+
+  let whereWindow;
+  let sid = null;
+  if (opts.sinceId != null) {
+    sid = Number(opts.sinceId);
+    if (!Number.isInteger(sid) || sid < 0) throw new Error(`invalid sinceId: ${opts.sinceId}`);
+    whereWindow = `d.id > ${sid}`;          // watermark mode (global scan, both directions)
+  } else {
+    const hours = Math.min(Math.max(Number(opts.hours) || 6, 1), 24 * 30);
+    whereWindow = `b.time > now() - interval '${hours} hours'`;
+  }
+
+  // Scan recent delegation certs network-wide (capped by LIMIT), resolve each
+  // addr's PREVIOUS pool, then keep only certs that touch OUR pool — either as
+  // the new target (a join) or as the prior pool (a leave / redelegation out).
+  // pool_hash + off_chain_pool_data resolve both sides' bech32 + ticker locally.
+  const rows = await pgQuery(_cfg, `
+    SELECT e.deleg_id, e.stake, e.epoch_no, e.slot_no, e.block_time, e.tx_hash,
+           e.new_pool_id, e.prev_pool_id, e.was_ours,
+           phn.view AS new_pool,  ocn.ticker_name AS new_ticker,
+           php.view AS prev_pool, ocp.ticker_name AS prev_ticker
+    FROM (
+      SELECT d.id AS deleg_id, d.addr_id, d.pool_hash_id AS new_pool_id,
+             sa.view AS stake,
+             b.epoch_no::text AS epoch_no,
+             b.slot_no::text  AS slot_no,
+             b.time::text     AS block_time,
+             encode(tx.hash,'hex') AS tx_hash,
+             (SELECT d2.pool_hash_id FROM delegation d2
+               WHERE d2.addr_id = d.addr_id AND d2.id < d.id
+               ORDER BY d2.id DESC LIMIT 1) AS prev_pool_id,
+             (EXISTS (SELECT 1 FROM delegation d3
+               WHERE d3.addr_id = d.addr_id AND d3.pool_hash_id = ${_poolId} AND d3.id < d.id))::int AS was_ours
+      FROM delegation d
+      JOIN stake_address sa ON sa.id = d.addr_id
+      JOIN tx ON tx.id = d.tx_id
+      JOIN block b ON b.id = tx.block_id
+      WHERE ${whereWindow}
+      ORDER BY d.id ASC
+      LIMIT ${limit}
+    ) e
+    LEFT JOIN pool_hash phn ON phn.id = e.new_pool_id
+    LEFT JOIN pool_hash php ON php.id = e.prev_pool_id
+    LEFT JOIN LATERAL (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = e.new_pool_id  ORDER BY id DESC LIMIT 1) ocn ON true
+    LEFT JOIN LATERAL (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = e.prev_pool_id ORDER BY id DESC LIMIT 1) ocp ON true
+    WHERE e.new_pool_id = ${_poolId} OR e.prev_pool_id = ${_poolId}
+    ORDER BY e.deleg_id ASC`);
+
+  const events = [];
+  for (const r of (rows || [])) {
+    const newId = r.new_pool_id != null ? Number(r.new_pool_id) : null;
+    const prevId = r.prev_pool_id != null ? Number(r.prev_pool_id) : null;
+    const base = {
+      delegationId: Number(r.deleg_id), stake: r.stake,
+      epoch: numOrNull(r.epoch_no), slot: numOrNull(r.slot_no),
+      time: r.block_time, txHash: r.tx_hash,
+    };
+    if (newId === _poolId && prevId !== _poolId) {
+      // Joined us. Returning if they were ever ours before; otherwise a transfer
+      // in from another pool, or a brand-new first-ever delegation.
+      const wasOurs = Number(r.was_ours) === 1 || r.was_ours === true || r.was_ours === 't' || r.was_ours === 'true';
+      const type = wasOurs ? 'join_returning' : (prevId != null ? 'join_redelegated' : 'join');
+      events.push({ ...base, type,
+                    fromPool: r.prev_pool || null, fromTicker: r.prev_ticker || null });
+    } else if (prevId === _poolId && newId !== _poolId) {
+      // Left us — redelegated to another pool.
+      events.push({ ...base, type: 'leave_redelegated',
+                    toPool: r.new_pool || null, toTicker: r.new_ticker || null });
+    }
+    // both === us (re-stake to same pool) or neither → ignore
+  }
+
+  // Advance-watermark target: the highest delegation.id we actually SCANNED in
+  // this window (not just matched), so a poll with no matches still advances.
+  let scannedMax = null;
+  if (sid != null) {
+    const mrows = await pgQuery(_cfg,
+      `SELECT MAX(id)::text AS m FROM (SELECT id FROM delegation WHERE id > ${sid} ORDER BY id ASC LIMIT ${limit}) s`);
+    scannedMax = (mrows.length && mrows[0].m != null) ? Number(mrows[0].m) : null;
+  }
+  return { events, scannedMax };
+}
+
+/**
+ * Highest delegation.id pointing at this pool right now — used to seed the
+ * notifications watermark on first run so we don't replay historical joins.
+ */
+export async function getMaxDelegationId() {
+  const rows = await pgQuery(_cfg, `SELECT MAX(id)::text AS m FROM delegation`);
+  return (rows.length && rows[0].m != null) ? Number(rows[0].m) : 0;
+}
+
 const PROVIDES = [
   DataKind.EPOCH_BLOCKS, DataKind.EPOCH_STAKE, DataKind.EPOCH_DELEGATORS,
   DataKind.EPOCH_REWARDS, DataKind.EPOCH_IDEAL, DataKind.POOL_PARAMS,

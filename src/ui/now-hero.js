@@ -105,7 +105,7 @@ export function renderHero(snap) {
     if (kesBar) { kesBar.style.width = '0%'; }
     if (kesSub) { kesSub.textContent = 'no op.cert'; }
   } else {
-    setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit">d</span>`);
+    setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit"> days</span>`);
     kesVal.style.color = kesColor(snap.kesDaysRemaining);
     const KES_MAX_PERIODS = 62;
     const kesPct = Math.max(
@@ -129,9 +129,9 @@ export function renderHero(snap) {
     const hh   = String(expiry.getHours()).padStart(2, '0');
     const mm   = String(expiry.getMinutes()).padStart(2, '0');
     const periods = snap.kesPeriodsRemaining != null
-      ? `${snap.kesPeriodsRemaining}p · `
+      ? `${snap.kesPeriodsRemaining} KES periods<br>`
       : '';
-    setText('hero-kes-sub', `${periods}${dd} ${mmm} ${yyyy} ${hh}:${mm}`);
+    setHTML('hero-kes-sub', `${periods}${dd} ${mmm} ${yyyy} ${hh}:${mm}`);
   }
 
   prev = {

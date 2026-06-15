@@ -30,6 +30,7 @@ import * as koios from './koios-query.js';
 import * as dbsync from './dbsync-query.js';
 import * as koiosHist from './koios-history.js';
 import * as blockfrost from './blockfrost-query.js';
+import { DataKind, registry } from './capabilities.js';
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -196,6 +197,27 @@ export async function cacheLoyaltyEpoch() {
 export async function cachePutLoyalty(computedEpoch, rows) {
   try { await invoke('cache_put_loyalty', { poolId: poolHex(), computedEpoch, rows }); }
   catch (e) { console.warn('[read-model] cache_put_loyalty:', e.message ?? e); }
+}
+
+// --- Notifications: live-delegator snapshot + event feed (see refreshNotifications) ---
+// These call cache_* commands added in cache.rs schema v4. Defensive like the
+// rest: if the command isn't present yet they degrade to [] / no-op, so this
+// file is safe to deploy before the Rust side lands.
+async function cacheGetNotifSnapshot() {
+  try { return (await invoke('cache_get_notif_snapshot', { poolId: poolHex() })) || []; }
+  catch (e) { console.warn('[read-model] cache_get_notif_snapshot:', e.message ?? e); return []; }
+}
+async function cachePutNotifSnapshot(rows) {
+  try { await invoke('cache_put_notif_snapshot', { poolId: poolHex(), rows }); }
+  catch (e) { console.warn('[read-model] cache_put_notif_snapshot:', e.message ?? e); }
+}
+async function cachePutNotifEvents(events) {
+  try { await invoke('cache_put_notif_events', { poolId: poolHex(), events, keep: NOTIF_EVENTS_KEEP }); }
+  catch (e) { console.warn('[read-model] cache_put_notif_events:', e.message ?? e); }
+}
+async function cacheGetNotifEvents(limit) {
+  try { return (await invoke('cache_get_notif_events', { poolId: poolHex(), limit })) || []; }
+  catch (e) { console.warn('[read-model] cache_get_notif_events:', e.message ?? e); return []; }
 }
 
 // ============================================================
@@ -922,6 +944,273 @@ export async function sampleHealth(host, metrics) {
 }
 
 // ============================================================
+// NOTIFICATIONS — live delegation-change feed (source-agnostic)
+// ============================================================
+// Polls the LIVE delegator set (~5 min), diffs it against the last snapshot
+// held in the local cache, and emits events: join, leave (redelegated vs
+// to-wallet), stake up/down. Genuinely intra-epoch live — Koios `amount` is
+// live stake, not the epoch_stake snapshot that only moves at boundaries.
+//
+// The set is fetched THROUGH the capability spine (DELEGATOR_LIST_LIVE); this
+// function never names a source, so the setup wizard can later point it at
+// Blockfrost or db-sync with zero changes here. Fire-and-forget from the live
+// loop, internally throttled, defensive: a source outage keeps the last
+// snapshot and emits nothing rather than flooding.
+
+const NOTIF_MS = 5 * 60 * 1000;                  // poll cadence
+// Ignore live-stake wobble below this (rounding, tiny reward drift). Tunable;
+// the wizard/settings will expose it per-operator later. 10 ₳ default.
+const NOTIF_STAKE_THRESHOLD_LOVELACE = 10_000_000;
+const NOTIF_EVENTS_KEEP = 1000;                  // cache retains newest N (pruned Rust-side)
+
+let _notifAt = 0;
+let _notifInFlight = false;
+let _notifArmed = false;
+const _tickerCache = new Map();   // poolBech32 -> ticker|null, session-lived (tickers rarely change)
+
+/** Resolve pool ids to tickers, fetching only the ones we haven't seen this
+ *  session. Returns Map(id -> ticker|null). Failures leave the id unresolved
+ *  (caller shows the raw id). */
+async function resolveTickers(ids) {
+  const out = new Map();
+  const missing = [];
+  for (const id of ids) {
+    if (_tickerCache.has(id)) out.set(id, _tickerCache.get(id));
+    else missing.push(id);
+  }
+  if (missing.length) {
+    try {
+      const fetched = await koios.getPoolTickers(missing);
+      for (const id of missing) {
+        const t = fetched.has(id) ? fetched.get(id) : null;
+        _tickerCache.set(id, t);
+        out.set(id, t);
+      }
+    } catch (e) {
+      console.warn('[notif] ticker resolve failed:', e.message ?? e);
+    }
+  }
+  return out;
+}
+
+/** Classify departed delegators: where did each go? Returns Map(stake ->
+ *  'ours' | poolBech32 | null | 'unknown'). 'ours' = false positive (still with
+ *  us → suppress); bech32 = redelegated there; null = no live delegation
+ *  (wallet / deregistered); 'unknown' = couldn't determine (emit a generic
+ *  leave). One batched lookup for ALL leavers. Koios-specific enrichment for
+ *  now; degrades to 'unknown' on any failure so a leave is never lost. */
+async function classifyLeavers(stakes) {
+  const out = new Map();
+  if (!stakes.length) return out;
+  try {
+    const info = await koios.getAccountsDelegatedPool(stakes);   // Map(stake -> poolBech32|null)
+    const ours = ensurePoolBech32();
+    for (const s of stakes) {
+      if (!info.has(s)) { out.set(s, 'unknown'); continue; }
+      const p = info.get(s);
+      if (p && ours && p === ours) out.set(s, 'ours');
+      else out.set(s, p || null);
+    }
+  } catch (e) {
+    console.warn('[notif] classifyLeavers failed:', e.message ?? e);
+    for (const s of stakes) out.set(s, 'unknown');
+  }
+  return out;
+}
+
+/** Live delegation-change poll. Fire-and-forget; safe to call every loop. */
+export async function refreshNotifications(currentEpoch) {
+  if (_notifInFlight) return;
+  const now = Date.now();
+  if (_notifAt !== 0 && now - _notifAt < NOTIF_MS) return;
+
+  // Arm the zero-config default provider (Koios) ONLY if nothing else already
+  // provides the live set — when the wizard registers a configured source
+  // (Blockfrost / db-sync), this no-ops and we use that instead.
+  if (!_notifArmed) {
+    _notifArmed = true;
+    if (!registry.can(DataKind.DELEGATOR_LIST_LIVE)) {
+      koios.initKoiosLiveDelegators(ensurePoolBech32());
+    }
+  }
+  if (!registry.can(DataKind.DELEGATOR_LIST_LIVE)) return;   // no source available yet
+
+  _notifInFlight = true;
+  _notifAt = now;
+  try {
+    const cur = await registry.get(DataKind.DELEGATOR_LIST_LIVE);   // source-agnostic
+    if (!Array.isArray(cur) || cur.length === 0) return;   // outage → keep snapshot, emit nothing
+
+    const baseKey = `notif_baseline:${poolHex()}`;
+    const wmKey = `notif_deleg_wm2:${poolHex()}`;   // db-sync global delegation.id watermark (joins + leaves)
+    const baselined = await cacheMetaGet(baseKey);
+    const prevRows = await cacheGetNotifSnapshot();
+    const prev = new Map(prevRows.map((r) => [r.stake, r]));
+
+    const lovOf = (d) => d.liveStakeLovelace ?? Math.round((d.liveStake || 0) * 1e6);
+    const curRows = cur.map((d) => ({ stake: d.stake, lovelace: lovOf(d), latestDelegTx: d.latestDelegTx ?? null }));
+
+    // First run for this pool → store baseline, emit nothing (no false flood of
+    // "joins" for every existing delegator). Re-baselines if the snapshot is
+    // somehow empty (cache cleared), so it stays self-healing.
+    if (baselined !== 'done' || prev.size === 0) {
+      await cachePutNotifSnapshot(curRows);
+      await cacheMetaSet(baseKey, 'done');
+      // Seed the db-sync join watermark to the current tip so first run doesn't
+      // replay every historical join; later polls emit only newer certs.
+      if (dbsync.dbsyncSource.reachable()) {
+        try { await cacheMetaSet(wmKey, String(await dbsync.getMaxDelegationId())); }
+        catch (e) { console.warn('[notif] watermark seed failed:', e.message ?? e); }
+      }
+      console.log(`[notif] baseline stored (${curRows.length} delegators) — no events emitted`);
+      return;
+    }
+
+    const curMap = new Map(cur.map((d) => [d.stake, d]));
+    const events = [];
+
+    // --- Instant joins from db-sync (when available) -------------------------
+    // db-sync records each delegation cert the moment it lands in a block, so
+    // joins / redelegations-in are caught intra-epoch — Koios pool_delegators
+    // only reflects a new delegator at the epoch boundary. Watermark by
+    // delegation.id so each cert emits exactly once. When this is active, the
+    // Koios membership-diff join path below is suppressed: every real join is
+    // caught here, so there's no double-report and no false "leave" when Koios
+    // finally catches up (it's silently absorbed into the snapshot).
+    let dbsyncJoinsActive = false;
+    if (dbsync.dbsyncSource.reachable()) {
+      dbsyncJoinsActive = true;
+      try {
+        const wmRaw = await cacheMetaGet(wmKey);
+        if (wmRaw == null) {
+          // No watermark yet (first run / upgraded semantics) — seed to the
+          // current tip and emit nothing, so we never replay historical certs.
+          try { await cacheMetaSet(wmKey, String(await dbsync.getMaxDelegationId())); }
+          catch (e) { console.warn('[notif] watermark seed (mid-run) failed:', e.message ?? e); }
+        } else {
+          const wm = Number(wmRaw) || 0;
+          const { events: devs, scannedMax } = await dbsync.getDelegationEvents({ sinceId: wm, limit: 1000 });
+          if (devs.length) {
+            // Overlay live balances for everyone involved (the cert carries no
+            // amount): a joiner's brought-in stake, a leaver's departing stake.
+            let bal = new Map();
+            try { bal = await koios.getAccountsBalances(devs.map((d) => d.stake)); }
+            catch (e) { console.warn('[notif] event balance overlay failed:', e.message ?? e); }
+            for (const d of devs) {
+              const detail = {
+                amount: bal.has(d.stake) ? bal.get(d.stake) : null,
+                epoch: d.epoch ?? null, slot: d.slot ?? null,
+                time: d.time ?? null, txHash: d.txHash ?? null,
+              };
+              if (d.fromPool) { detail.fromPool = d.fromPool; detail.fromTicker = d.fromTicker ?? null; }
+              if (d.toPool) { detail.toPool = d.toPool; detail.toTicker = d.toTicker ?? null; }
+              events.push({ type: d.type, stake: d.stake, detail });
+            }
+          }
+          if (scannedMax != null && scannedMax > wm) await cacheMetaSet(wmKey, String(scannedMax));
+        }
+      } catch (e) {
+        console.warn('[notif] db-sync event detection failed:', e.message ?? e);
+      }
+    }
+
+    // Joins (collected, classified below) + stake up/down (walk current set).
+    const joins = [];
+    for (const d of cur) {
+      const before = prev.get(d.stake);
+      const lov = lovOf(d);
+      if (!before) {
+        // New in the Koios set. If db-sync is catching joins, this is just the
+        // boundary catch-up of a join already emitted — absorb silently.
+        if (!dbsyncJoinsActive) joins.push({ stake: d.stake, amount: lov });
+      } else {
+        const delta = lov - Number(before.lovelace || 0);
+        if (Math.abs(delta) >= NOTIF_STAKE_THRESHOLD_LOVELACE) {
+          events.push({ type: delta > 0 ? 'stake_up' : 'stake_down', stake: d.stake,
+                        detail: { amount: lov, delta, epoch: currentEpoch ?? null } });
+        }
+      }
+    }
+
+    // Classify joins: brand-new vs redelegated IN from another pool. One batched
+    // prior-pool lookup; on failure every joiner degrades to a plain 'join'.
+    if (joins.length) {
+      let origins = new Map();
+      try { origins = await koios.getAccountsPriorPool(joins.map((j) => j.stake), ensurePoolBech32()); }
+      catch (e) { console.warn('[notif] join origin lookup failed:', e.message ?? e); }
+      for (const j of joins) {
+        const from = origins.get(j.stake) || null;
+        if (from) {
+          events.push({ type: 'join_redelegated', stake: j.stake,
+                        detail: { amount: j.amount, fromPool: from, epoch: currentEpoch ?? null } });
+        } else {
+          events.push({ type: 'join', stake: j.stake, detail: { amount: j.amount, epoch: currentEpoch ?? null } });
+        }
+      }
+    }
+
+    // Leaves (in prev, gone from cur) — classify destination. Skipped when
+    // db-sync is active: it already catches redelegations out instantly and
+    // richly, and the Koios set only drops a leaver at the epoch boundary
+    // (which would double-report and lag).
+    const leavers = dbsyncJoinsActive ? [] : prevRows.filter((r) => !curMap.has(r.stake)).map((r) => r.stake);
+    if (leavers.length) {
+      const dest = await classifyLeavers(leavers);
+      for (const stake of leavers) {
+        const to = dest.has(stake) ? dest.get(stake) : 'unknown';
+        if (to === 'ours') continue;   // false positive — still delegated to us
+        const amount = Number(prev.get(stake)?.lovelace || 0);
+        if (to === 'unknown') {
+          events.push({ type: 'leave', stake, detail: { amount, epoch: currentEpoch ?? null } });
+        } else if (to) {
+          events.push({ type: 'leave_redelegated', stake, detail: { toPool: to, amount, epoch: currentEpoch ?? null } });
+        } else {
+          events.push({ type: 'leave_to_wallet', stake, detail: { amount, epoch: currentEpoch ?? null } });
+        }
+      }
+    }
+
+    // Fill any STILL-MISSING tickers via Koios (db-sync joins already carry
+    // theirs; this covers Koios-fallback joins and leave destinations).
+    const poolIds = new Set();
+    for (const e of events) {
+      if (e.detail && e.detail.fromPool && e.detail.fromTicker == null) poolIds.add(e.detail.fromPool);
+      if (e.detail && e.detail.toPool && e.detail.toTicker == null) poolIds.add(e.detail.toPool);
+    }
+    if (poolIds.size) {
+      const tickers = await resolveTickers([...poolIds]);
+      for (const e of events) {
+        if (e.detail && e.detail.fromPool && e.detail.fromTicker == null) e.detail.fromTicker = tickers.get(e.detail.fromPool) || null;
+        if (e.detail && e.detail.toPool && e.detail.toTicker == null) e.detail.toTicker = tickers.get(e.detail.toPool) || null;
+      }
+    }
+
+    if (events.length) {
+      await cachePutNotifEvents(events);
+      const tally = events.reduce((m, e) => (m[e.type] = (m[e.type] || 0) + 1, m), {});
+      console.log('[notif] emitted', JSON.stringify(tally));
+      // Signal the UI (toast / view badge) — decoupled: we dispatch a window
+      // event rather than touching the DOM from the data layer.
+      try {
+        if (typeof window !== 'undefined' && window.dispatchEvent) {
+          window.dispatchEvent(new CustomEvent('pt:notif-events', { detail: events }));
+        }
+      } catch (e) { /* non-fatal: feed is still persisted */ }
+    }
+    await cachePutNotifSnapshot(curRows);   // advance the baseline
+  } catch (e) {
+    console.warn('[notif] refresh failed:', e.message ?? e);
+  } finally {
+    _notifInFlight = false;
+  }
+}
+
+/** Newest-first event feed for the NOTIFICATIONS view. */
+export async function getNotifications(limit = 200) {
+  return cacheGetNotifEvents(limit);
+}
+
+// ============================================================
 // Lifecycle
 // ============================================================
 
@@ -943,4 +1232,7 @@ export function resetReadModel() {
   koiosHist.resetKoios();
   _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
   dbsync.resetDbsync();
+  _notifAt = 0; _notifInFlight = false; _notifArmed = false;
+  _tickerCache.clear();
+  koios.resetKoiosLiveDelegators();
 }

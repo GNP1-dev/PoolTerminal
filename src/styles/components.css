@@ -728,7 +728,7 @@
 
 /* Form fields */
 .pt-field-row { display: flex; gap: 10px; }
-.pt-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.pt-field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 .pt-field label {
   font-family: var(--pt-font-sans);
   font-size: var(--pt-text-label);
@@ -738,6 +738,8 @@
 }
 .pt-field input,
 .pt-field select {
+  width: 100%;
+  box-sizing: border-box;
   background: var(--pt-bg-base);
   border: var(--pt-border-line);
   border-radius: var(--pt-radius-sm);
@@ -747,6 +749,9 @@
   padding: 7px 9px;
   outline: none;
 }
+/* No spinner buttons on the Port number field (they waste width). */
+.pt-field input[type="number"]::-webkit-inner-spin-button,
+.pt-field input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .pt-field input:focus,
 .pt-field select:focus { border-color: var(--pt-accent-blue); }
 .pt-field-hint {

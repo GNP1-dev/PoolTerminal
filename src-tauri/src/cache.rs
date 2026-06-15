@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 5;
 
 pub struct CacheState(pub Mutex<Connection>);
 
@@ -81,7 +81,44 @@ impl CacheState {
             );
             CREATE INDEX IF NOT EXISTS idx_deloyalty_pool
                 ON delegator_loyalty (pool_id, computed_epoch);
+            -- v4: NOTIFICATIONS. notif_delegator_snapshot = last-seen live set
+            -- (wholesale-replaced each poll); notif_events = append-only emitted
+            -- feed (join / leave* / stake_up / stake_down), pruned to newest N.
+            CREATE TABLE IF NOT EXISTS notif_delegator_snapshot (
+                pool_id         TEXT    NOT NULL,
+                stake_addr      TEXT    NOT NULL,
+                amount          INTEGER NOT NULL,
+                latest_deleg_tx TEXT,
+                PRIMARY KEY (pool_id, stake_addr)
+            );
+            CREATE TABLE IF NOT EXISTS notif_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                pool_id     TEXT    NOT NULL,
+                captured_at INTEGER NOT NULL,
+                event_type  TEXT    NOT NULL,
+                stake_addr  TEXT    NOT NULL,
+                detail      TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_notif_events_pool_time
+                ON notif_events (pool_id, id DESC);
             ",
+        )?;
+        // v5: dedupe guard for notif_events. A natural unique key so the same
+        // on-chain cert (keyed by tx hash) — or an identical detected change for
+        // tx-less events (keyed by detail) — can never be stored twice, however
+        // the watermark moves or re-baselines. Additive + idempotent: the ALTER
+        // is ignored once the column exists; the index is IF NOT EXISTS.
+        let _ = conn.execute("ALTER TABLE notif_events ADD COLUMN tx_hash TEXT", []);
+        // Clear any pre-existing exact duplicates (pre-migration tx_hash is NULL,
+        // so COALESCE collapses to detail) so the unique index can be built.
+        let _ = conn.execute_batch(
+            "DELETE FROM notif_events WHERE id NOT IN (
+               SELECT MIN(id) FROM notif_events
+               GROUP BY pool_id, event_type, stake_addr, detail);",
+        );
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_notif_events
+               ON notif_events (pool_id, event_type, stake_addr, COALESCE(tx_hash, detail));",
         )?;
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
@@ -140,6 +177,40 @@ pub struct LoyaltyRow {
     pub defect_to_pool: Option<String>,
     pub defect_epoch: Option<i64>,
     pub defect_to_ada: Option<i64>,
+}
+
+// --- NOTIFICATIONS (v4) -------------------------------------------------------
+// One row per delegator in the last-seen live set. Serialised AND deserialised
+// (read back for the diff, written wholesale each poll). JS sees
+// { stake, lovelace, latestDelegTx }.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifSnapshotRow {
+    pub stake: String,
+    pub lovelace: i64,
+    pub latest_deleg_tx: Option<String>,
+}
+
+// Inbound event from the read-model. JS sends { type, stake, detail }; `type` is
+// a Rust keyword so the field is `kind` with an explicit rename.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifEventInput {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub stake: String,
+    pub detail: serde_json::Value,
+}
+
+// Outbound event for the view. JS sees { capturedAt, type, stake, detail }.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifEventRow {
+    pub captured_at: i64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub stake: String,
+    pub detail: serde_json::Value,
 }
 
 // ============================================================
@@ -474,4 +545,152 @@ pub fn cache_meta_get(
         )
         .ok();
     Ok(val)
+}
+
+// ============================================================
+// NOTIFICATIONS (v4) — live-delegator snapshot + emitted event feed
+// ============================================================
+
+/// Read the last-seen live delegator set for a pool (empty if none).
+#[tauri::command]
+pub fn cache_get_notif_snapshot(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+) -> Result<Vec<NotifSnapshotRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT stake_addr, amount, latest_deleg_tx FROM notif_delegator_snapshot
+             WHERE pool_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![pool_id], |row| {
+            Ok(NotifSnapshotRow {
+                stake: row.get(0)?,
+                lovelace: row.get(1)?,
+                latest_deleg_tx: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Replace the whole live-delegator snapshot for a pool (wholesale, each poll).
+/// Wipe the pool's prior rows and insert the fresh set in one transaction.
+#[tauri::command]
+pub fn cache_put_notif_snapshot(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    rows: Vec<NotifSnapshotRow>,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        tx.execute(
+            "DELETE FROM notif_delegator_snapshot WHERE pool_id = ?1",
+            rusqlite::params![pool_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO notif_delegator_snapshot
+                   (pool_id, stake_addr, amount, latest_deleg_tx)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for r in &rows {
+            stmt.execute(rusqlite::params![pool_id, r.stake, r.lovelace, r.latest_deleg_tx])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Append a batch of emitted events (all stamped with the same capture time),
+/// then prune to the newest `keep` rows for the pool (0 = keep all).
+#[tauri::command]
+pub fn cache_put_notif_events(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    events: Vec<NotifEventInput>,
+    keep: i64,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let ts = now_ts();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT OR IGNORE INTO notif_events
+                   (pool_id, captured_at, event_type, stake_addr, detail, tx_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|e| e.to_string())?;
+        for ev in &events {
+            let tx_hash = ev.detail.get("txHash").and_then(|v| v.as_str());
+            stmt.execute(rusqlite::params![
+                pool_id,
+                ts,
+                ev.kind,
+                ev.stake,
+                ev.detail.to_string(),
+                tx_hash
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+        if keep > 0 {
+            tx.execute(
+                "DELETE FROM notif_events
+                  WHERE pool_id = ?1
+                    AND id NOT IN (
+                      SELECT id FROM notif_events WHERE pool_id = ?1
+                      ORDER BY id DESC LIMIT ?2
+                    )",
+                rusqlite::params![pool_id, keep],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Newest-first event feed for the NOTIFICATIONS view (limit <= 0 → 200).
+#[tauri::command]
+pub fn cache_get_notif_events(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+    limit: i64,
+) -> Result<Vec<NotifEventRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let lim = if limit <= 0 { 200 } else { limit };
+    let mut stmt = conn
+        .prepare(
+            "SELECT captured_at, event_type, stake_addr, detail FROM notif_events
+             WHERE pool_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![pool_id, lim], |row| {
+            let detail_str: String = row.get(3)?;
+            Ok(NotifEventRow {
+                captured_at: row.get(0)?,
+                kind: row.get(1)?,
+                stake: row.get(2)?,
+                detail: serde_json::from_str(&detail_str).unwrap_or(serde_json::Value::Null),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }

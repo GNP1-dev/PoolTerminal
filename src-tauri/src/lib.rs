@@ -28,6 +28,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(SshState::default())
         .setup(|app| {
             // Cache DB lives in the OS-standard app data dir (XDG on Linux).
@@ -56,6 +57,10 @@ pub fn run() {
             cache::cache_loyalty_epoch,
             cache::cache_meta_set,
             cache::cache_meta_get,
+            cache::cache_get_notif_snapshot,
+            cache::cache_put_notif_snapshot,
+            cache::cache_put_notif_events,
+            cache::cache_get_notif_events,
             pg::pg_query,
             sshkeys::list_ssh_keys,
             localrun::local_run,

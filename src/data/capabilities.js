@@ -37,7 +37,8 @@ export const DataKind = Object.freeze({
   REWARD_ADDRESS: 'REWARD_ADDRESS',
   // Live pool & delegators (DELEGATORS view — own pool)
   POOL_LIVE: 'POOL_LIVE',               // rich live summary: live/active stake, saturation, pledge, counts
-  DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators: [{ stake, liveStake }]
+  DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators (epoch_stake snapshot): [{ stake, liveStake }]
+  DELEGATOR_LIST_LIVE: 'DELEGATOR_LIST_LIVE', // live delegators, intra-epoch: [{ stake, liveStake, liveStakeLovelace, latestDelegTx, activeEpochNo }]
   DELEGATOR_DETAIL: 'DELEGATOR_DETAIL', // one delegator: balance, rewards, tenure, drep, pool trail
   DELEGATOR_LOYALTY: 'DELEGATOR_LOYALTY', // tenure leaderboard: [{ stake, tenure, sinceEpoch }]
   POOL_LIFECYCLE: 'POOL_LIFECYCLE',     // registration / metadata / retirement history
@@ -60,6 +61,19 @@ const HISTORY_KINDS = new Set([
   DataKind.EPOCH_DELEGATORS, DataKind.EPOCH_REWARDS,
   DataKind.POOL_PARAMS, DataKind.REWARD_ADDRESS,
 ]);
+
+// Live-feed preference (NOTIFICATIONS): zero-config-first. Koios needs no key
+// and is reachable by every SPO, so it's the default; Blockfrost (needs a key)
+// and db-sync (needs the operator's own node) are opt-in fallbacks the setup
+// wizard will configure. This is the INVERSE of HISTORY_PREFERENCE, where the
+// local, gap-free db-sync wins. Live providers are registered as their own
+// source objects (id suffix '-live') so they're independent of the historical
+// sources — e.g. live notifications can run on Koios while history runs on
+// db-sync. Unlisted source ids fall to the end (see liveRank).
+const LIVE_PREFERENCE = ['koios-live', 'blockfrost-live', 'dbsync-live'];
+
+// DataKinds whose preferred answer follows LIVE_PREFERENCE.
+const LIVE_KINDS = new Set([DataKind.DELEGATOR_LIST_LIVE]);
 
 /**
  * A Source is any object with this shape (duck-typed, not enforced):
@@ -115,6 +129,10 @@ class CapabilityRegistry {
       const ranked = [...cands].sort((a, b) => prefRank(a.id) - prefRank(b.id));
       return ranked[0];
     }
+    if (LIVE_KINDS.has(kind)) {
+      const ranked = [...cands].sort((a, b) => liveRank(a.id) - liveRank(b.id));
+      return ranked[0];
+    }
     return cands[0];   // registration order
   }
 
@@ -143,6 +161,10 @@ class CapabilityRegistry {
 function prefRank(id) {
   const i = HISTORY_PREFERENCE.indexOf(id);
   return i === -1 ? HISTORY_PREFERENCE.length : i;
+}
+function liveRank(id) {
+  const i = LIVE_PREFERENCE.indexOf(id);
+  return i === -1 ? LIVE_PREFERENCE.length : i;
 }
 function safeCall(fn) { try { return fn(); } catch { return null; } }
 

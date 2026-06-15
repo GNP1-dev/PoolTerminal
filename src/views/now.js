@@ -25,6 +25,23 @@ import * as readModel from '../data/read-model.js';
 
 const NOW_HTML = `
   <style>
+    /* Cosmetic: make the block-production counts (Leader / Adopt / Confirmed /
+       Lost) read much larger than the other hero cards. */
+    #hero-leader-val, #hero-adopt-val, #hero-conf-val, #hero-lost-val {
+      font-size: 40px;
+      font-weight: 800;
+      line-height: 1.04;
+    }
+    /* Label to the left of the chain-pulse window tabs ("Poll Period"). */
+    .pt-cp-tabs-wrap { display: flex; align-items: center; }
+    .pt-cp-controls-label {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      opacity: 0.55;
+      margin-right: 10px;
+      white-space: nowrap;
+    }
     .pt-chainpulse-body {
       padding: 4px 16px 10px 16px;
       display: flex;
@@ -134,41 +151,41 @@ const NOW_HTML = `
         <div class="pt-hero-value" id="hero-blocks-val">—</div>
         <div class="pt-hero-sub" id="hero-blocks-sub">lifetime</div>
       </div>
-      <div class="pt-hero-card" id="hero-epoch">
+      <div class="pt-hero-card" id="hero-epoch" title="Progress through the current epoch, with estimated time until the next epoch boundary.">
         <div class="pt-hero-label">Epoch</div>
         <div class="pt-hero-value" id="hero-epoch-val">—<span class="pt-hero-unit">%</span></div>
         <div class="pt-hero-bar"><div class="pt-hero-bar-fill" id="hero-epoch-bar"></div></div>
         <div class="pt-hero-sub" id="hero-epoch-eta">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-pulse">
+      <div class="pt-hero-card" id="hero-pulse" title="Pulse - PoolTerminal's overall health score (0-100), combining node sync, tip freshness, peer connectivity and KES validity. Higher is healthier; the arrow shows the change since the last reading.">
         <div class="pt-hero-label">Pulse</div>
         <div class="pt-hero-value" id="hero-pulse-val">—<span class="pt-hero-unit">/100</span></div>
         <div class="pt-hero-sub" id="hero-pulse-delta">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-kes">
+      <div class="pt-hero-card" id="hero-kes" title="KES (Key Evolving Signature) validity - time until this node's operational certificate hot key expires. Once it expires the node stops minting until you rotate the KES key and issue a new op.cert.">
         <div class="pt-hero-label">KES</div>
         <div class="pt-hero-value" id="hero-kes-val">—<span class="pt-hero-unit">d</span></div>
         <div class="pt-hero-bar"><div class="pt-hero-bar-fill" id="hero-kes-bar"></div></div>
         <div class="pt-hero-sub" id="hero-kes-sub">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-ideal">
+      <div class="pt-hero-card" id="hero-ideal" title="Ideal blocks (d) - the number of blocks this pool is mathematically expected to mint this epoch, based on its active stake and the protocol parameters.">
         <div class="pt-hero-label">Ideal</div>
         <div class="pt-hero-value" id="hero-ideal-val">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-leader">
+      <div class="pt-hero-card" id="hero-leader" title="Leader Slots - slots this epoch where this pool is the elected slot leader and is scheduled to mint a block (from the leadership schedule).">
         <div class="pt-hero-label">Leader</div>
         <div class="pt-hero-value" id="hero-leader-val">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-adopt">
-        <div class="pt-hero-label">Adopt</div>
+      <div class="pt-hero-card" id="hero-adopt" title="Blocks Adopted - blocks this pool has minted that have been adopted into the local node's chain this epoch. Luck compares blocks made so far against the ideal expectation.">
+        <div class="pt-hero-label">Adopted</div>
         <div class="pt-hero-value" id="hero-adopt-val">—</div>
         <div class="pt-hero-sub" id="hero-adopt-sub">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-conf">
+      <div class="pt-hero-card" id="hero-conf" title="Blocks Confirmed - adopted blocks that have since received enough confirmations to be considered settled on-chain.">
         <div class="pt-hero-label">Confirmed</div>
         <div class="pt-hero-value" id="hero-conf-val">—</div>
       </div>
-      <div class="pt-hero-card" id="hero-lost">
+      <div class="pt-hero-card" id="hero-lost" title="Blocks Lost - blocks this pool was leader for but did not make it onto the chain: missed slots, or blocks that lost a slot/height battle (ghosted or orphaned).">
         <div class="pt-hero-label">Lost</div>
         <div class="pt-hero-value" id="hero-lost-val">—</div>
       </div>
@@ -201,13 +218,16 @@ const NOW_HTML = `
              viewBox="0 0 600 120" preserveAspectRatio="none"
              style="height: 140px !important; width: 100%; display: block;"></svg>
         <div class="pt-cp-controls">
-          <span class="pt-cp-tabs" id="cp-tabs">
-            <span class="pt-cp-tab" data-window="10">10s</span>
-            <span class="pt-cp-tab" data-window="30">30s</span>
-            <span class="pt-cp-tab" data-window="60">1m</span>
-            <span class="pt-cp-tab" data-window="300">5m</span>
-            <span class="pt-cp-tab" data-window="900">15m</span>
-            <span class="pt-cp-tab" data-window="3600">1h</span>
+          <span class="pt-cp-tabs-wrap">
+            <span class="pt-cp-controls-label">Poll Period</span>
+            <span class="pt-cp-tabs" id="cp-tabs">
+              <span class="pt-cp-tab" data-window="10">10s</span>
+              <span class="pt-cp-tab" data-window="30">30s</span>
+              <span class="pt-cp-tab" data-window="60">1m</span>
+              <span class="pt-cp-tab" data-window="300">5m</span>
+              <span class="pt-cp-tab" data-window="900">15m</span>
+              <span class="pt-cp-tab" data-window="3600">1h</span>
+            </span>
           </span>
           <span class="pt-cp-stats-inline">
             <span id="cp-blockcount" class="pt-muted">—</span>
@@ -217,6 +237,7 @@ const NOW_HTML = `
           </span>
         </div>
         <div class="pt-cp-timer-row">
+          <span class="pt-cp-controls-label">Tip (diff)</span>
           <span class="pt-cp-timer" id="cp-since">—</span>
           <span class="pt-cp-progress">
             <span class="pt-cp-progress-fill" id="cp-progress-fill"></span>
@@ -319,7 +340,7 @@ function isRelayConfirmed() {
 // writes when the text needs changing, and self-corrects once the probe lands.
 const BP_CARD_LABELS = {
   'hero-kes': 'KES', 'hero-ideal': 'Ideal', 'hero-leader': 'Leader',
-  'hero-adopt': 'Adopt', 'hero-conf': 'Confirmed', 'hero-lost': 'Lost',
+  'hero-adopt': 'Adopted', 'hero-conf': 'Confirmed', 'hero-lost': 'Lost',
 };
 function applyRelayLabels(canvas) {
   const root = canvas || document;

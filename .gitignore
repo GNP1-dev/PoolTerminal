@@ -1,6 +1,10 @@
 # Private project handover document — NEVER COMMIT
 HANDOVER.md
 
+# Local development manuals — keep local, do not publish
+MANUAL.md
+MANUAL_*.md
+
 # Rust / Tauri build artefacts
 target/
 **/*.rs.bk

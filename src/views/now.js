@@ -311,6 +311,11 @@ let _steps = [];
 // must NOT re-run the loader (it would wait again, and on a relay that's the
 // full 2-min fallback). Reset only on a fresh connection (resetNowLoading).
 let _initialLoadComplete = false;
+// Last-known values, retained so returning to NOW can paint instantly (cache-
+// first) instead of blanking and waiting for the next live tick. Refreshed in
+// the background by the live loop. Cleared on a fresh connection.
+let _lastSnap = null;
+let _lastUpcoming = null;
 
 function hasDigit(id) { const el = document.getElementById(id); return !!el && /\d/.test(el.textContent || ''); }
 
@@ -373,7 +378,7 @@ function buildSteps() {
 }
 
 /** Reset the load-once gate — call on a fresh connection so the loader shows. */
-export function resetNowLoading() { _initialLoadComplete = false; }
+export function resetNowLoading() { _initialLoadComplete = false; _lastSnap = null; _lastUpcoming = null; }
 
 // The overlay is done when every (role-appropriate) step is ready AND the first
 // real fast-loop snapshot has rendered. Steps are REBUILT each check: the node
@@ -452,13 +457,26 @@ export function mountNow(canvas) {
   canvas.innerHTML = NOW_HTML;
   resetHero();
   initChainPulse();
-  // Show a "calculating" placeholder rather than the empty state — the leader
-  // schedule query is slow first-time-per-epoch (cached after), so make it clear
-  // the panel is working, not that there are no blocks.
   const ubBody = canvas.querySelector('#ub-body');
   const ubCount = canvas.querySelector('#ub-count');
-  if (ubBody) ubBody.innerHTML = '<div class="pt-ub-empty">Calculating leader schedule…</div>';
-  if (ubCount) ubCount.textContent = 'calculating…';
+  if (_initialLoadComplete && (_lastSnap || _lastUpcoming)) {
+    // Returning to NOW: paint last-known values immediately (cache-first); the
+    // live loop refreshes them on its next tick. No blank "calculating" state.
+    if (_lastSnap) {
+      renderHero(_lastSnap);
+      if (_lastSnap.epochLength != null && _lastSnap.slotInEpoch != null) {
+        const secsLeft = Math.max(0, _lastSnap.epochLength - _lastSnap.slotInEpoch);
+        _epochEndMs = Date.now() + secsLeft * 1000;
+      }
+    }
+    if (_lastUpcoming) renderUpcomingBlocks(_lastUpcoming, { isRelay: isRelayConfirmed() });
+    else if (ubBody) { ubBody.innerHTML = '<div class="pt-ub-empty">Calculating leader schedule…</div>'; if (ubCount) ubCount.textContent = 'calculating…'; }
+  } else {
+    // First load this connection - the leader schedule query is slow first-time-
+    // per-epoch (cached after), so show that the panel is working.
+    if (ubBody) ubBody.innerHTML = '<div class="pt-ub-empty">Calculating leader schedule…</div>';
+    if (ubCount) ubCount.textContent = 'calculating…';
+  }
   renderRelayMap();
   initRelayMap();
   // Lifetime blocks (sum of adopted across all epochs incl. current) — portable,
@@ -515,6 +533,7 @@ function tickEpochCountdown() {
 }
 
 export function updateNowFast(snap) {
+  _lastSnap = snap;
   renderHero(snap);
   // Re-sync the epoch-end time from the snapshot (1 slot = 1 second). The local
   // timer counts down to this between snapshots, so it stays accurate.
@@ -545,6 +564,7 @@ export async function refreshMempool(src, tipBlock) {
 
 export async function refreshUpcomingBlocks(src) {
   const list = await src.getUpcomingBlocks();
+  _lastUpcoming = list;
   renderUpcomingBlocks(list, { isRelay: isRelayConfirmed() });
 }
 

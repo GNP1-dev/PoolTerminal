@@ -60,6 +60,9 @@ const HISTORY_KINDS = new Set([
   DataKind.EPOCH_BLOCKS, DataKind.EPOCH_IDEAL, DataKind.EPOCH_STAKE,
   DataKind.EPOCH_DELEGATORS, DataKind.EPOCH_REWARDS,
   DataKind.POOL_PARAMS, DataKind.REWARD_ADDRESS,
+  // Deep-dive + delegator list: db-sync first (local, instant), Koios next,
+  // Blockfrost last - all can serve them, db-sync is best when present.
+  DataKind.DELEGATOR_DETAIL, DataKind.DELEGATOR_LIST,
 ]);
 
 // Live-feed preference (NOTIFICATIONS): zero-config-first. Koios needs no key
@@ -73,7 +76,7 @@ const HISTORY_KINDS = new Set([
 const LIVE_PREFERENCE = ['koios-live', 'blockfrost-live', 'dbsync-live'];
 
 // DataKinds whose preferred answer follows LIVE_PREFERENCE.
-const LIVE_KINDS = new Set([DataKind.DELEGATOR_LIST_LIVE]);
+const LIVE_KINDS = new Set([DataKind.DELEGATOR_LIST_LIVE, DataKind.POOL_LIVE]);
 
 /**
  * A Source is any object with this shape (duck-typed, not enforced):

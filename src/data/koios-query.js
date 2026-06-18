@@ -573,14 +573,103 @@ export async function getPoolTickers(poolBech32Ids) {
 let _liveBech32 = null;
 let _liveReady = false;
 
+/**
+ * DELEGATOR_DETAIL - one-delegator deep-dive from Koios (account_info +
+ * account_history), same shape as the db-sync/Blockfrost providers so the modal
+ * is source-agnostic. ~2 calls, on demand.
+ */
+export async function getDelegatorDetail(stake, _currentEpoch) {
+  if (!stake) return null;
+  const body = JSON.stringify({ _stake_addresses: [stake] });
+  const toAda = (v) => (v == null ? null : Number(v) / 1e6);
+
+  let info = null;
+  try {
+    const r = await runCmd(`curl -sf --max-time ${ACCOUNT_INFO_MAX_TIME} -X POST '${KOIOS_BASE}/account_info' ` +
+      `-H 'content-type: application/json' -d '${shellEscape(body)}'`);
+    const arr = parseJson(r, []);
+    if (Array.isArray(arr) && arr.length) info = arr[0];
+  } catch (e) { console.warn('[koios] detail account_info failed:', e.message); }
+
+  let hist = [];
+  try {
+    const r = await runCmd(`curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/account_history' ` +
+      `-H 'content-type: application/json' -d '${shellEscape(body)}'`);
+    const arr = parseJson(r, []);
+    if (Array.isArray(arr) && arr.length && Array.isArray(arr[0].history)) hist = arr[0].history.slice();
+  } catch (e) { console.warn('[koios] detail account_history failed:', e.message); }
+  hist.sort((a, b) => (a.epoch_no || 0) - (b.epoch_no || 0));   // oldest first
+
+  const runs = [];
+  for (const h of hist) {
+    const pool = h.pool_id_bech32 || h.pool_id || null;
+    if (!pool) continue;
+    const amt = h.active_stake != null ? Number(h.active_stake) / 1e6 : null;
+    const ep = h.epoch_no;
+    const last = runs[runs.length - 1];
+    if (last && last.poolId === pool) { last.exitEpoch = ep; last.exitStake = amt; }
+    else runs.push({ poolId: pool, entryEpoch: ep, entryStake: amt, exitEpoch: ep, exitStake: amt });
+  }
+  if (runs.length) runs[runs.length - 1].isCurrent = true;
+
+  let cameFrom = null;
+  const firstUsIdx = runs.findIndex((r) => r.poolId === _liveBech32);
+  if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
+
+  return {
+    stake,
+    balance: info ? toAda(info.total_balance) : null,
+    rewardsSum: info ? toAda(info.rewards) : null,
+    withdrawalsSum: info ? toAda(info.withdrawals) : null,
+    withdrawable: info ? toAda(info.rewards_available) : null,
+    sinceEpoch: hist.length ? hist[0].epoch_no : (info && info.active_epoch_no != null ? Number(info.active_epoch_no) : null),
+    drepId: info ? (info.delegated_drep || null) : null,
+    currentPool: info ? (info.delegated_pool || null) : null,
+    cameFrom,
+    runs,
+  };
+}
+
 export const koiosLiveDelegatorsSource = {
   id: 'koios-live',
   label: 'Koios',
   isCli: false,
-  provides: () => (_liveReady ? [DataKind.DELEGATOR_LIST_LIVE] : []),
+  provides: () => (_liveReady ? [DataKind.DELEGATOR_LIST_LIVE, DataKind.POOL_LIVE, DataKind.DELEGATOR_LIST, DataKind.DELEGATOR_DETAIL] : []),
   reachable: () => _liveReady,
   version: () => null,
   get: async (kind, _params = {}) => {
+    if (kind === DataKind.DELEGATOR_LIST) {
+      if (!_liveBech32) return [];
+      const rows = await getPoolDelegators(_liveBech32);
+      return (rows || []).map((d) => ({
+        stake: d.stake, liveStake: d.liveStake, liveStakeLovelace: d.liveStakeLovelace, isOwner: false,
+      }));
+    }
+    if (kind === DataKind.DELEGATOR_DETAIL) {
+      return getDelegatorDetail(_params.stake, _params.currentEpoch);
+    }
+    if (kind === DataKind.POOL_LIVE) {
+      if (!_liveBech32) return null;
+      const p = await getPoolInfo(_liveBech32);
+      if (!p) return null;
+      // Map Koios pool_info to the shared POOL_LIVE shape (matches Blockfrost).
+      return {
+        poolId: p.poolIdBech32,
+        blocksMinted: p.blockCountLifetime != null ? Number(p.blockCountLifetime) : null,
+        blocksEpoch: null,                       // not in pool_info; sourced elsewhere
+        liveStake: p.liveStake,
+        activeStake: p.activeStake,
+        liveSaturation: p.liveSaturation != null ? Number(p.liveSaturation) : null,
+        liveDelegators: p.liveDelegators != null ? Number(p.liveDelegators) : null,
+        declaredPledge: p.pledge,
+        livePledge: p.livePledge,
+        margin: p.margin != null ? Number(p.margin) : null,
+        fixedCost: p.fixedCost,
+        rewardAccount: p.rewardAddr || null,
+        owners: [],
+        registrations: [],
+      };
+    }
     if (kind !== DataKind.DELEGATOR_LIST_LIVE) {
       throw new Error(`koios-live source can't provide ${kind}`);
     }

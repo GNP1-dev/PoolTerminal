@@ -456,8 +456,102 @@ export async function getMaxDelegationId() {
 const PROVIDES = [
   DataKind.EPOCH_BLOCKS, DataKind.EPOCH_STAKE, DataKind.EPOCH_DELEGATORS,
   DataKind.EPOCH_REWARDS, DataKind.EPOCH_IDEAL, DataKind.POOL_PARAMS,
-  DataKind.DELEGATOR_LOYALTY, DataKind.DELEGATOR_LIST,
+  DataKind.DELEGATOR_LOYALTY, DataKind.DELEGATOR_LIST, DataKind.DELEGATOR_DETAIL,
 ];
+
+let _ourBech32 = null;
+async function getOurBech32() {
+  if (_ourBech32) return _ourBech32;
+  try {
+    const r = await pgQuery(_cfg, `SELECT view AS v FROM pool_hash WHERE id = ${_poolId}`);
+    _ourBech32 = r.length ? r[0].v : null;
+  } catch { _ourBech32 = null; }
+  return _ourBech32;
+}
+
+/**
+ * DELEGATOR_DETAIL - one-delegator deep-dive, same shape as the Blockfrost
+ * provider so the modal is source-agnostic. db-sync is local/instant, so this
+ * queries live each open (no API budget to protect). `balance` here is the
+ * delegator's active stake at the latest epoch snapshot (db-sync's authoritative
+ * figure); rewards/withdrawals are exact from the reward/withdrawal tables.
+ */
+async function getDelegatorDetail(stake, _currentEpoch) {
+  if (!_ready || !stake) return null;
+  const esc = String(stake).replace(/'/g, "''");
+
+  // Per-epoch stake history across ALL pools (oldest first) -> pool-movement runs.
+  const hist = await pgQuery(_cfg, `
+    SELECT es.epoch_no::text AS epoch, ph.view AS pool, es.amount::text AS amount
+    FROM epoch_stake es
+    JOIN stake_address sa ON sa.id = es.addr_id
+    JOIN pool_hash ph ON ph.id = es.pool_id
+    WHERE sa.view = '${esc}'
+    ORDER BY es.epoch_no ASC`);
+
+  // Account totals: rewards earned, withdrawals, first active epoch.
+  let rewards = null, withdrawals = null, sinceEpoch = null;
+  try {
+    const a = await pgQuery(_cfg, `
+      WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}')
+      SELECT
+        (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a))::text AS rewards,
+        (SELECT COALESCE(SUM(amount),0) FROM withdrawal WHERE addr_id = (SELECT id FROM a))::text AS withdrawals,
+        (SELECT MIN(epoch_no) FROM epoch_stake WHERE addr_id = (SELECT id FROM a))::text AS since`);
+    if (a.length) { rewards = a[0].rewards; withdrawals = a[0].withdrawals; sinceEpoch = numOrNull(a[0].since); }
+  } catch (e) { console.warn('[dbsync] detail account query failed:', e.message ?? e); }
+
+  // DRep vote delegation (Conway) - defensive: table may be absent on older schema.
+  let drepId = null;
+  try {
+    const d = await pgQuery(_cfg, `
+      SELECT dh.view AS drep
+      FROM delegation_vote dv
+      JOIN drep_hash dh ON dh.id = dv.drep_hash_id
+      WHERE dv.addr_id = (SELECT id FROM stake_address WHERE view = '${esc}')
+      ORDER BY dv.id DESC LIMIT 1`);
+    if (d.length) drepId = d[0].drep;
+  } catch { drepId = null; }
+
+  // Group contiguous same-pool epochs into runs (identical logic to Blockfrost).
+  const runs = [];
+  for (const row of hist) {
+    const last = runs[runs.length - 1];
+    if (last && last.poolId === row.pool) {
+      last.exitEpoch = Number(row.epoch);
+      last.exitStake = lovelaceToAda(row.amount);
+    } else {
+      runs.push({
+        poolId: row.pool,
+        entryEpoch: Number(row.epoch), entryStake: lovelaceToAda(row.amount),
+        exitEpoch: Number(row.epoch), exitStake: lovelaceToAda(row.amount),
+      });
+    }
+  }
+  if (runs.length) runs[runs.length - 1].isCurrent = true;
+
+  const ourB = await getOurBech32();
+  let cameFrom = null;
+  const firstUsIdx = runs.findIndex((r) => r.poolId === ourB);
+  if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
+
+  const lastRow = hist.length ? hist[hist.length - 1] : null;
+  const rewardsSum = lovelaceToAda(rewards);
+  const withdrawalsSum = lovelaceToAda(withdrawals);
+
+  return {
+    stake,
+    balance: lastRow ? lovelaceToAda(lastRow.amount) : null,   // active stake @ latest snapshot
+    rewardsSum,
+    withdrawalsSum,
+    withdrawable: (rewardsSum != null && withdrawalsSum != null) ? (rewardsSum - withdrawalsSum) : null,
+    sinceEpoch,
+    drepId,
+    currentPool: lastRow ? lastRow.pool : null,
+    cameFrom,
+    runs,
+  };
+}
 
 export const dbsyncSource = {
   id: 'dbsync',
@@ -478,6 +572,8 @@ export const dbsyncSource = {
         return getLoyalty();
       case DataKind.DELEGATOR_LIST:
         return getDelegatorList();
+      case DataKind.DELEGATOR_DETAIL:
+        return getDelegatorDetail(params.stake, params.currentEpoch);
       default:
         throw new Error(`db-sync source can't provide ${kind}`);
     }

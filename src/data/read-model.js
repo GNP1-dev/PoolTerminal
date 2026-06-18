@@ -31,6 +31,7 @@ import * as dbsync from './dbsync-query.js';
 import * as koiosHist from './koios-history.js';
 import * as blockfrost from './blockfrost-query.js';
 import { DataKind, registry } from './capabilities.js';
+import { getNotifPollMs, getNotifThresholdLovelace } from './notif-settings.js';
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -872,6 +873,40 @@ export async function ensureBlockfrost() {
   return blockfrost.initBlockfrost(ensurePoolBech32());
 }
 
+/**
+ * Set (or clear) the Blockfrost key from the UI and (re)activate it immediately.
+ * Pass a falsy key to remove it. Returns true if Blockfrost is reachable after.
+ * Centralises key + re-init so the wizard/settings never touch pool internals.
+ */
+export async function applyBlockfrostKey(key) {
+  blockfrost.setBlockfrostKey(key || '');
+  blockfrost.resetBlockfrost();
+  _blockfrostInit = false;
+  if (!key) return false;
+  _blockfrostInit = true;
+  try { return await blockfrost.initBlockfrost(ensurePoolBech32()); }
+  catch (e) { console.warn('[blockfrost] apply failed:', e.message ?? e); return false; }
+}
+
+/** Re-probe the already-configured Blockfrost key (clears the latched init guard
+ *  so a failed/incomplete earlier probe can be retried). Returns reachable bool. */
+export async function reverifyBlockfrost() {
+  if (!blockfrost.hasBlockfrostKey()) return false;
+  blockfrost.resetBlockfrost();
+  _blockfrostInit = false;
+  _blockfrostInit = true;
+  try { return await blockfrost.initBlockfrost(ensurePoolBech32()); }
+  catch (e) { console.warn('[blockfrost] reverify failed:', e.message ?? e); return false; }
+}
+
+/** UI status: is a key configured, and is the source currently reachable? */
+export function blockfrostStatus() {
+  return {
+    configured: blockfrost.hasBlockfrostKey(),
+    healthy: (() => { try { return blockfrost.blockfrostSource.reachable(); } catch { return false; } })(),
+  };
+}
+
 async function backfillFromKoios(currentEpoch) {
   if (_koiosBackfillDone || _koiosBackfillInFlight || !currentEpoch) return;
   _koiosBackfillInFlight = true;
@@ -957,10 +992,9 @@ export async function sampleHealth(host, metrics) {
 // loop, internally throttled, defensive: a source outage keeps the last
 // snapshot and emits nothing rather than flooding.
 
-const NOTIF_MS = 5 * 60 * 1000;                  // poll cadence
-// Ignore live-stake wobble below this (rounding, tiny reward drift). Tunable;
-// the wizard/settings will expose it per-operator later. 10 ₳ default.
-const NOTIF_STAKE_THRESHOLD_LOVELACE = 10_000_000;
+// Poll cadence and stake-change threshold are operator-configurable via the
+// notifications settings panel / setup wizard (see notif-settings.js). The
+// defaults (5 min, 10 ADA) live there; we read the live values each poll.
 const NOTIF_EVENTS_KEEP = 1000;                  // cache retains newest N (pruned Rust-side)
 
 let _notifAt = 0;
@@ -1022,7 +1056,7 @@ async function classifyLeavers(stakes) {
 export async function refreshNotifications(currentEpoch) {
   if (_notifInFlight) return;
   const now = Date.now();
-  if (_notifAt !== 0 && now - _notifAt < NOTIF_MS) return;
+  if (_notifAt !== 0 && now - _notifAt < getNotifPollMs()) return;
 
   // Arm the zero-config default provider (Koios) ONLY if nothing else already
   // provides the live set — when the wizard registers a configured source
@@ -1125,7 +1159,7 @@ export async function refreshNotifications(currentEpoch) {
         if (!dbsyncJoinsActive) joins.push({ stake: d.stake, amount: lov });
       } else {
         const delta = lov - Number(before.lovelace || 0);
-        if (Math.abs(delta) >= NOTIF_STAKE_THRESHOLD_LOVELACE) {
+        if (Math.abs(delta) >= getNotifThresholdLovelace()) {
           events.push({ type: delta > 0 ? 'stake_up' : 'stake_down', stake: d.stake,
                         detail: { amount: lov, delta, epoch: currentEpoch ?? null } });
         }

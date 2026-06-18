@@ -28,11 +28,15 @@ import {
 } from './views/now.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
+import { mountDataSources, unmountDataSources } from './views/data-sources.js';
+import { mountAbout, unmountAbout } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
 import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal } from './views/connect.js';
+import { showSettingsModal } from './views/settings.js';
+import { showSetupWizard } from './views/wizard.js';
 import { nodeExec } from './data/tauri.js';
-import { getSession, setNodeProbe, getNodeProbe } from './data/session.js';
+import { getSession, setNodeProbe, getNodeProbe, loadConfig } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
 import { initToasts } from './ui/toast.js';
@@ -53,6 +57,7 @@ let lastSeenBlock = null;
 let lastPollTime = null;
 let lastMempoolRefreshTime = 0;
 let lastPeersRefreshTime = 0;
+let _lastPeers = null;   // last peers poll result, for instant repaint on NOW re-entry
 let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
 
@@ -69,9 +74,16 @@ function mountView(view) {
   if ((activeView === 'health' || activeView === 'node-health') && !isHealth) unmountNodeHealth();
   if (activeView === "map" && view !== "map") unmountMap();
   if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
+  if (activeView === 'data' && view !== 'data') unmountDataSources();
+  if (activeView === 'about' && view !== 'about') unmountAbout();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
+    // Cache-first: repaint last-known peers immediately (the panel is otherwise
+    // empty until the next 5s peers poll). Live loop refreshes it behind this.
+    if (_lastPeers) {
+      try { renderPeersPanel(_lastPeers); if (_lastPeers.peers) renderRelayMap(_lastPeers.peers); } catch { /* panel not ready */ }
+    }
     refreshUpcomingBlocks(dataSource()).catch(() => {});
   } else if (view === 'history') {
     mountHistory(canvasEl);
@@ -83,6 +95,10 @@ function mountView(view) {
     mountDelegators(canvasEl);
   } else if (view === 'notifications') {
     mountNotifications(canvasEl);
+  } else if (view === 'data') {
+    mountDataSources(canvasEl);
+  } else if (view === 'about') {
+    mountAbout(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">
@@ -168,6 +184,7 @@ async function fastPollTick() {
       lastPeersRefreshTime = nowSec;
       queryPeers().then((r) => {
         if (!r) return;
+        _lastPeers = r;
         if (r.metrics) {
           setPeerCounts(r.metrics.outgoingConns, r.metrics.incomingConns);
         } else {
@@ -302,6 +319,12 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Settings opens the About page; it's not a nav tab, so deactivate tabs.
+  window.addEventListener('pt-open-about', () => {
+    tabs.forEach((t) => t.classList.remove('pt-tab-active'));
+    mountView('about');
+  });
+
   // Branding link → open in the system browser. A bare <a target="_blank"> is
   // swallowed by the Tauri webview, so route through whichever opener is present.
   const brand = document.querySelector('.pt-ticker-brand');
@@ -331,6 +354,7 @@ window.addEventListener('DOMContentLoaded', () => {
       lastPollTime = null;
       lastMempoolRefreshTime = 0;
       lastPeersRefreshTime = 0;
+      _lastPeers = null;
       lastUpcomingRefreshTime = 0;
       bootstrapStarted = false;
       setPeerCounts(null, null);
@@ -342,15 +366,27 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  const settingsGear = document.getElementById('ttape-settings');
+  if (settingsGear) settingsGear.addEventListener('click', () => showSettingsModal());
+
   setMode('demo');
   paintMode();
   setRoleBadge(null);
   mountView('now');
 
-  showConnectModal((result) => {
+  // First run (no saved connection) opens the guided setup wizard; returning
+  // users go straight to the quick connect screen. The wizard hands off to the
+  // same connect screen internally, so both paths end live + polling.
+  const startLive = () => {
     mountView('now');
     paintMode();
     runProbeAndPaintRole();
     startPolling();
-  });
+  };
+  const cfg = loadConfig();
+  if (!cfg || !cfg.transport) {
+    showSetupWizard({ onComplete: startLive });
+  } else {
+    showConnectModal(() => startLive());
+  }
 });

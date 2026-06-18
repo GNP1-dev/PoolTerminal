@@ -168,3 +168,95 @@ pub async fn pg_query(conn: PgConn, sql: String) -> Result<PgResult, String> {
     let _ = handle.await;
     result
 }
+// ===========================================================================
+// SSH-tunnelled query (additive) - appended for PoolTerminal. Runs Postgres over
+// a direct-tcpip SSH channel via the existing SshState connection, for a db-sync
+// that only listens on the remote machine's localhost. The existing `pg_query`
+// (local socket / direct TCP) is untouched. Routed to from JS only when the
+// SSH_TUNNEL_ENABLED flag is on AND the conn carries viaSsh.
+// ===========================================================================
+#[tauri::command]
+pub async fn pg_query_ssh(
+    conn: PgConn,
+    sql: String,
+    ssh_state: tauri::State<'_, crate::ssh::SshState>,
+) -> Result<PgResult, String> {
+    // Target as seen from the SSH server. Default to the remote's own localhost.
+    let host = conn
+        .host
+        .clone()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = conn.port.unwrap_or(5432);
+
+    // Open the forward channel briefly under the lock, then release the guard so
+    // the query does not hold the SSH session mutex.
+    let channel = {
+        let guard = ssh_state.0.lock().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| "SSH not connected".to_string())?;
+        session
+            .open_forward(&host, port)
+            .await
+            .map_err(|e| format!("tunnel open failed: {e}"))?
+    };
+
+    let stream = channel.into_stream();
+
+    // Build the Postgres config WITHOUT a host (we supply the stream directly).
+    let mut cfg = tokio_postgres::Config::new();
+    cfg.dbname(&conn.database);
+    match conn.user.as_deref() {
+        Some(u) if !u.is_empty() => {
+            cfg.user(u);
+        }
+        _ => {
+            if let Ok(os_user) = std::env::var("USER") {
+                cfg.user(&os_user);
+            }
+        }
+    }
+    if let Some(pw) = conn.password.as_deref() {
+        if !pw.is_empty() {
+            cfg.password(pw);
+        }
+    }
+
+    let (client, connection) = cfg
+        .connect_raw(stream, NoTls)
+        .await
+        .map_err(|e| format!("tunneled connect failed: {e}"))?;
+
+    // Drive the connection in the background; it ends when `client` drops.
+    let handle = tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("[pg-ssh] connection error: {e}");
+        }
+    });
+
+    let result = async {
+        let rows = client
+            .query(sql.as_str(), &[])
+            .await
+            .map_err(|e| format!("query failed: {e}"))?;
+
+        let columns: Vec<String> = if let Some(first) = rows.first() {
+            first.columns().iter().map(|c| c.name().to_string()).collect()
+        } else {
+            Vec::new()
+        };
+
+        let out: Vec<Vec<Option<String>>> = rows
+            .iter()
+            .map(|r| (0..r.columns().len()).map(|i| value_to_string(r, i)).collect())
+            .collect();
+
+        Ok::<PgResult, String>(PgResult { columns, rows: out })
+    }
+    .await;
+
+    drop(client);
+    let _ = handle.await;
+    result
+}

@@ -318,18 +318,14 @@ async function render(canvas) {
   try { events = await getNotifications(FEED_LIMIT); }
   catch (e) { console.warn('[notif-view] load failed:', e.message ?? e); }
 
-  if (!events.length) {
-    canvas.innerHTML =
-      `<div class="nf-wrap"><div class="nf-empty">` +
+  const body = events.length
+    ? `<div class="nf-list">${events.map(rowHtml).join('')}</div>`
+    : `<div class="nf-empty">` +
         `<span class="big">\u{1F50D}</span>No delegation activity yet.<br>` +
         `Joins, transfers and stake changes will appear here the moment they happen on-chain.` +
-      `</div></div>`;
-    return;
-  }
+      `</div>`;
 
-  canvas.innerHTML =
-    `<div class="nf-wrap">${summaryHtml(events)}` +
-    `<div class="nf-list">${events.map(rowHtml).join('')}</div></div>`;
+  canvas.innerHTML = `<div class="nf-wrap">${summaryHtml(events)}${body}</div>`;
 
   const list = canvas.querySelector('.nf-list');
   if (list && !list._txWired) {

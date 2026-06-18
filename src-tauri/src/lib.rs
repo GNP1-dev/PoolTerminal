@@ -62,6 +62,7 @@ pub fn run() {
             cache::cache_put_notif_events,
             cache::cache_get_notif_events,
             pg::pg_query,
+            pg::pg_query_ssh,
             sshkeys::list_ssh_keys,
             localrun::local_run,
             localrun::local_probe,

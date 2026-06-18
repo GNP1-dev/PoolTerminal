@@ -361,3 +361,26 @@ pub async fn ssh_disconnect(state: tauri::State<'_, SshState>) -> Result<(), Str
 pub async fn ssh_is_connected(state: tauri::State<'_, SshState>) -> Result<bool, String> {
     Ok(state.0.lock().await.is_some())
 }
+// ===========================================================================
+// SSH tunnel support (additive) - appended for PoolTerminal SSH-tunnelled
+// Postgres. Opens a direct-tcpip channel (the SSH local-forward primitive) so a
+// db-sync that only listens on the remote machine's localhost can be reached.
+// This impl block is separate and touches nothing above; safe to append.
+// ===========================================================================
+impl SshSession {
+    /// Open a direct-tcpip channel to `host:port` as resolved on the SSH server
+    /// side (typically 127.0.0.1:5432 - the remote db-sync). The returned channel
+    /// owns its own stream and is independent of the session lock, so the caller
+    /// can release the SshState guard before running a (potentially long) query.
+    pub async fn open_forward(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> anyhow::Result<russh::Channel<russh::client::Msg>> {
+        let ch = self
+            .handle
+            .channel_open_direct_tcpip(host.to_string(), port as u32, "127.0.0.1".to_string(), 0)
+            .await?;
+        Ok(ch)
+    }
+}

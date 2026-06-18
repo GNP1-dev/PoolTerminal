@@ -314,8 +314,15 @@ export async function initBlockfrost(poolBech32) {
   _reachable = false;
   if (!_key) { console.log('[blockfrost] no key configured — optional source not enabled'); return false; }
   try {
-    const out = await runCmd(`curl -sf --max-time 6 -H 'project_id: ${_key}' '${BF_BASE}/health'`);
-    const h = parseJson(out, null);
+    // Health probe runs over the (possibly SSH) connection to an external API,
+    // so a single attempt can time out spuriously. Try twice before giving up.
+    let h = null;
+    for (let attempt = 0; attempt < 2 && !(h && h.is_healthy); attempt++) {
+      try {
+        const out = await runCmd(`curl -sf --max-time 9 -H 'project_id: ${_key}' '${BF_BASE}/health'`);
+        h = parseJson(out, null);
+      } catch (e) { if (attempt === 1) throw e; }
+    }
     _reachable = !!(h && h.is_healthy);
     if (!_reachable) { console.warn('[blockfrost] key present but not healthy/invalid'); return false; }
     if (!registry.all().some((s) => s.id === 'blockfrost')) registry.register(blockfrostSource);

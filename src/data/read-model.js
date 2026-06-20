@@ -30,6 +30,9 @@ import * as koios from './koios-query.js';
 import * as dbsync from './dbsync-query.js';
 import * as koiosHist from './koios-history.js';
 import * as blockfrost from './blockfrost-query.js';
+// Give Blockfrost the persistent meta-cache so per-epoch network data (for luck)
+// survives across sessions and is fetched only once.
+if (blockfrost.setBfMetaCache) blockfrost.setBfMetaCache((k) => cacheMetaGet(k), (k, v) => cacheMetaSet(k, v));
 import { DataKind, registry } from './capabilities.js';
 import { getNotifPollMs, getNotifThresholdLovelace } from './notif-settings.js';
 
@@ -68,7 +71,7 @@ const DBSYNC_CONFIG = { database: 'cexplorer' };
 // Temporarily OFF while the public free-tier cooldown clears. This is also the
 // first piece of the planned transport selector (node / host / off) — flip to
 // true (or wire to a setting) to re-enable.
-const KOIOS_ENABLED = false;
+const KOIOS_ENABLED = false;  // TEMP: off for Blockfrost test, restore to true for Koios call-volume work
 
 // ============================================================
 // bech32 (pool id hex → pool1...) — portable, offline, no deps
@@ -162,9 +165,29 @@ function cliCmd(args) {
 // cache wrappers (defensive; never throw into the loop)
 // ============================================================
 
+// Reward fields flicker null on Koios (proven: same epoch returns a real number
+// on one request, null the next). A real cached value is authoritative for a
+// settled epoch and must never be overwritten by a later null/undefined. Block
+// counts are likewise immutable once real. A genuine 0 is allowed through.
+const _REWARD_FIELDS = ['delegRewards', 'memberRewards', 'ros', 'margin', 'fixedCost', 'leaderReward', 'adopted', 'confirmed'];
+function _isRealVal(v) { return v != null; }
+
 async function cachePutEpoch(epoch, data) {
-  try { await invoke('cache_put_epoch', { poolId: poolHex(), epoch, data }); }
-  catch (e) { console.warn('[read-model] cache_put_epoch:', e.message ?? e); }
+  try {
+    let merged = data;
+    try {
+      const existing = await invoke('cache_get_epochs', { poolId: poolHex(), fromEpoch: epoch, toEpoch: epoch });
+      const prevWrap = Array.isArray(existing) && existing.length ? existing[0] : null;
+      const prev = prevWrap && prevWrap.data ? prevWrap.data : prevWrap;
+      if (prev) {
+        merged = { ...data };
+        for (const f of _REWARD_FIELDS) {
+          if (!_isRealVal(merged[f]) && _isRealVal(prev[f])) merged[f] = prev[f];
+        }
+      }
+    } catch { /* no existing row - write as-is */ }
+    await invoke('cache_put_epoch', { poolId: poolHex(), epoch, data: merged });
+  } catch (e) { console.warn('[read-model] cache_put_epoch:', e.message ?? e); }
 }
 async function cacheGetEpochsRaw(fromEpoch, toEpoch) {
   try { return (await invoke('cache_get_epochs', { poolId: poolHex(), fromEpoch, toEpoch })) || []; }
@@ -245,7 +268,7 @@ function ensurePoolBech32() {
 // Bump to force a one-time rebuild of all epoch rows after a data-shape fix.
 // v2: store raw active_stake lovelace; ideal recomputed via epoch_info filler.
 // v4: store margin + fixedCost; leaderReward filled via account_rewards.
-const BACKFILL_VERSION = '4';
+const BACKFILL_VERSION = '5';   // bump: re-read history to clear stale flicker-nulls
 
 let _backfillInFlight = false;
 let _backfillDone = false;
@@ -311,6 +334,7 @@ export async function backfillIfNeeded() {
     await cacheMetaSet('backfill_high_epoch', String(Math.max(...hist.map((h) => h.epoch))));
     _backfillDone = true;
     console.log(`[read-model] backfilled ${hist.length} epochs (ideal fills in next)`);
+    reconcileRewards();   // fire-and-forget: re-query epochs whose rewards are still null
   } catch (err) {
     console.warn('[read-model] backfill failed:', err.message ?? err);
   } finally {
@@ -751,10 +775,34 @@ let _dbsyncInit = false;
 let _dbsyncBackfillDone = false;
 let _dbsyncBackfillInFlight = false;
 
+function savedSourceChoice() {
+  try { return JSON.parse(localStorage.getItem('poolterminal.source.v1') || '{}'); } catch { return {}; }
+}
+
+// Build a db-sync config from the saved wizard/Settings choice. Returns null if
+// the operator did not opt into db-sync - which is how we respect "Koios-only".
+function dbsyncConfigFromChoice() {
+  const c = savedSourceChoice();
+  if (!c || c.useDbsync !== true) return null;
+  const d = c.dbsync || {};
+  const mode = c.dbsyncMode || 'local';
+  const cfg = { database: d.database || 'cexplorer' };
+  if (mode !== 'local') {
+    cfg.host = d.host || (mode === 'tunnel' ? '127.0.0.1' : '');
+    cfg.port = d.port || 5432;
+    if (d.user) cfg.user = d.user;
+    if (d.password) cfg.password = d.password;
+    if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
+  }
+  return cfg;
+}
+
 async function ensureDbsync() {
   if (_dbsyncInit) return dbsync.dbsyncSource.reachable();
+  const _dbCfg = dbsyncConfigFromChoice();
+  if (!_dbCfg) return false;   // user did not opt into db-sync - respect that choice
   _dbsyncInit = true;
-  const ok = await dbsync.initDbsync(DBSYNC_CONFIG, poolHex());
+  const ok = await dbsync.initDbsync(_dbCfg, poolHex());
   if (ok) {
     await cacheMetaSet('history_source', 'dbsync');
     await cacheMetaSet('dbsync_schema', dbsync.dbsyncSource.version() || '');
@@ -839,13 +887,46 @@ async function dbsyncIdealFiller(currentEpoch) {
 
 /** History dispatcher — called from the live loop; routes by DATA_SOURCE. */
 export async function refreshHistory(currentEpoch) {
-  if (DATA_SOURCE === 'dbsync') {
+  // Koios is the always-available baseline - register it so history and pool
+  // parameters resolve even when db-sync is not used.
+  const koiosOk = await ensureKoios();
+  // db-sync only if the operator opted in (ensureDbsync respects the saved
+  // choice). When present it is preferred and backfills the richer history.
+  const dbOk = await ensureDbsync();
+  if (dbOk) {
     await backfillFromDbsync(currentEpoch);
     dbsyncIdealFiller(currentEpoch);   // fire-and-forget; self-throttled
-  } else if (DATA_SOURCE === 'koios') {
+  } else if (koiosOk) {
     await backfillFromKoios(currentEpoch);
+  } else if (await ensureBlockfrost()) {
+    await backfillFromBlockfrost(currentEpoch);
   }
-  // 'off' does nothing.
+}
+
+// ---- Blockfrost history source (optional fallback for Blockfrost-only ops) --
+// Pulls the full per-epoch history via the capability registry (Stage-1
+// getPoolHistory provider). Paginated /pools/{id}/history is ~4 calls for the
+// whole history, then cached - runs once per session.
+let _bfBackfillDone = false;
+let _bfBackfillInFlight = false;
+async function backfillFromBlockfrost(currentEpoch) {
+  if (_bfBackfillDone || _bfBackfillInFlight || !currentEpoch) return;
+  _bfBackfillInFlight = true;
+  try {
+    const t0 = performance.now();
+    const rows = await registry.get(DataKind.EPOCH_BLOCKS, { from: null, to: currentEpoch });
+    if (Array.isArray(rows) && rows.length) {
+      for (const r of rows) await cachePutEpoch(r.epoch, r);
+      _bfBackfillDone = true;
+      console.log(`[blockfrost] backfill: ${rows.length} epochs in ${Math.round(performance.now() - t0)}ms`);
+    } else {
+      console.warn('[blockfrost] backfill returned no rows');
+    }
+  } catch (e) {
+    console.warn('[blockfrost] backfill failed:', e.message ?? e);
+  } finally {
+    _bfBackfillInFlight = false;
+  }
 }
 
 // ---- Koios history source (portable fallback for no-db-sync operators) ----
@@ -856,6 +937,7 @@ let _koiosBackfillDone = false;
 let _koiosBackfillInFlight = false;
 
 async function ensureKoios() {
+  if (!KOIOS_ENABLED) return false;   // master switch: Koios fully off
   if (_koiosInit) return koiosHist.koiosSource.reachable();
   _koiosInit = true;
   const ok = await koiosHist.initKoios(ensurePoolBech32());
@@ -915,6 +997,14 @@ async function backfillFromKoios(currentEpoch) {
     const t0 = performance.now();
     const rows = await koiosHist.fetchHistory(null, currentEpoch);   // ONE call
     for (const r of rows) await cachePutEpoch(r.epoch, r);
+    // Recently-settled epochs are returned with null rewards by Koios until it
+    // computes them (a day or so later). Re-fetch the trailing window every run
+    // so those null->real transitions overwrite the stale cached nulls.
+    try {
+      const fromE = Math.max(0, currentEpoch - 12);
+      const recent = await koiosHist.fetchHistory(fromE, currentEpoch);
+      for (const r of recent) await cachePutEpoch(r.epoch, r);
+    } catch (e) { console.warn('[koios] trailing re-fetch failed:', e.message ?? e); }
     _koiosBackfillDone = true;
     console.log(`[koios] backfill: ${rows.length} epochs (1 API call) in ${Math.round(performance.now() - t0)}ms`);
   } catch (e) {
@@ -1063,7 +1153,7 @@ export async function refreshNotifications(currentEpoch) {
   // (Blockfrost / db-sync), this no-ops and we use that instead.
   if (!_notifArmed) {
     _notifArmed = true;
-    if (!registry.can(DataKind.DELEGATOR_LIST_LIVE)) {
+    if (KOIOS_ENABLED && !registry.can(DataKind.DELEGATOR_LIST_LIVE)) {
       koios.initKoiosLiveDelegators(ensurePoolBech32());
     }
   }
@@ -1270,3 +1360,45 @@ export function resetReadModel() {
   _tickerCache.clear();
   koios.resetKoiosLiveDelegators();
 }
+
+// ---- Reward reconciler -----------------------------------------------------
+// Koios returns reward fields intermittently null for settled epochs (the data
+// exists; the response flickers). For any cached epoch that produced blocks but
+// still shows null deleg_rewards, re-query it individually until Koios returns a
+// real value, then it is locked in (cachePutEpoch won't let null overwrite it).
+let _reconcileInFlight = false;
+let _reconcileDone = false;
+async function reconcileRewards() {
+  if (!KOIOS_ENABLED || _reconcileInFlight || _reconcileDone) return;
+  _reconcileInFlight = true;
+  try {
+    const bech32 = ensurePoolBech32();
+    if (!bech32) return;
+    const rows = await cacheGetEpochsRaw(0, 9_999_999);
+    // Need rewards where the pool produced blocks but the cached pot is null.
+    const need = rows.filter((r) => r.data && (r.data.adopted || 0) > 0 && r.data.delegRewards == null)
+                     .map((r) => r.epoch)
+                     .sort((a, b) => b - a);   // newest first
+    const needSet = new Set(need);
+    if (!needSet.size) { _reconcileDone = true; console.log('[read-model] reward reconcile: nothing to fix'); return; }
+    console.log(`[read-model] reward reconcile: ${needSet.size} epochs need rewards`, need);
+    // One full pool_history fetch; write back any needed epoch that now has a
+    // real reward. cachePutEpoch guards against null overwriting a real value,
+    // so epochs that flicker null on this pass are simply left for next launch.
+    let fixed = 0;
+    const hist = await koios.getPoolHistory(bech32, { limit: 0 });
+    for (const h of (Array.isArray(hist) ? hist : [])) {
+      if (needSet.has(h.epoch) && h.delegRewards != null) {
+        await cachePutEpoch(h.epoch, historyRow(h));
+        fixed++;
+      }
+    }
+    console.log(`[read-model] reward reconcile: fixed ${fixed}/${needSet.size} this pass`);
+    if (fixed >= needSet.size) _reconcileDone = true;
+  } catch (err) {
+    console.warn('[read-model] reward reconcile failed:', err.message ?? err);
+  } finally {
+    _reconcileInFlight = false;
+  }
+}
+

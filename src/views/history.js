@@ -15,6 +15,7 @@
  */
 
 import * as readModel from '../data/read-model.js';
+import { registry, DataKind } from '../data/capabilities.js';
 
 const HISTORY_HTML = `
   <style>
@@ -72,7 +73,6 @@ const HISTORY_HTML = `
         <span style="margin-left:auto;display:flex;align-items:center;gap:8px;font:400 11px ui-monospace,monospace;">
           <span class="v-muted">Source:</span>
           <span id="hist-src-label" style="color:var(--pt-accent-blue);font-weight:600;">—</span>
-          <button id="hist-src-toggle" style="cursor:pointer;background:#16202e;color:#e8f0f8;border:1px solid rgba(120,150,190,0.5);border-radius:4px;padding:3px 9px;font:inherit;">Switch source</button>
         </span>
       </div>
       <div class="pt-tbl-wrap" id="hist-table"></div>
@@ -172,6 +172,12 @@ function fmtAdaCell(v) {
 function rewardSplit(r, isCurrent) {
   const blank = ['—', '—', '—', '—', '—', '—'];
   if (isCurrent) return blank;
+  // Blockfrost rows carry a pre-computed, owner-stake-accurate breakdown.
+  // Columns: Deleg · Pledge · Min Fee · Margin · SPO Earnings · Total Payout.
+  if (r.source === 'blockfrost' && r.bfDeleg != null && r.bfTotal != null) {
+    const spo = (r.bfMinFee || 0) + (r.bfMargin || 0) + (r.bfPledge || 0);
+    return [r.bfDeleg, r.bfPledge, r.bfMinFee, r.bfMargin, spo, r.bfTotal].map(fmtAdaCell);
+  }
   const member = r.memberRewards;
   const leader = r.leaderReward;                        // undefined = not fetched/published
   if (member == null || leader == null) return blank;
@@ -218,20 +224,12 @@ function renderTable(rows, currentEpoch) {
 export async function mountHistory(canvas) {
   canvas.innerHTML = HISTORY_HTML;
 
-  // Source label + temporary toggle (dbsync ↔ koios). Persists across restart;
-  // switching reloads so the chosen source backfills fresh.
+  // Source label - read from the capability registry (the source actually
+  // serving epoch history), so it reflects reality (Koios or db-sync).
   const srcLabel = canvas.querySelector('#hist-src-label');
-  const srcToggle = canvas.querySelector('#hist-src-toggle');
-  const curSrc = readModel.getDataSource();
-  if (srcLabel) srcLabel.textContent = curSrc;
-  if (srcToggle) {
-    const other = curSrc === 'dbsync' ? 'koios' : 'dbsync';
-    srcToggle.textContent = `Switch to ${other}`;
-    srcToggle.addEventListener('click', () => {
-      readModel.setDataSource(other);
-      location.reload();   // restart so the new source backfills from scratch
-    });
-  }
+  let activeSrc = null;
+  try { activeSrc = registry.describe(DataKind.EPOCH_BLOCKS); } catch { activeSrc = null; }
+  if (srcLabel) srcLabel.textContent = activeSrc ? activeSrc.name : 'unavailable';
 
   let rows = [];
   let meta = null;
@@ -294,12 +292,11 @@ export async function mountHistory(canvas) {
   const tbl = canvas.querySelector('#hist-table');
   if (tbl) tbl.innerHTML = renderTable([...rows].reverse(), maxEpoch);
   let metaText = `${rows.length} epochs`;
-  if (meta && meta.source) {
-    metaText += ` · Data: ${meta.source}`;
-    if (meta.source === 'dbsync' && meta.schema) {
-      metaText += ` v${meta.schema}`;
-      if (meta.stale) metaText += ` ⚠ tested ${meta.tested} — verify after db-sync upgrade`;
-    }
+  let tblSrc = null;
+  try { tblSrc = registry.describe(DataKind.EPOCH_BLOCKS); } catch { tblSrc = null; }
+  if (tblSrc) {
+    metaText += ` · Data: ${tblSrc.name}`;
+    if (tblSrc.id === 'dbsync' && tblSrc.version) metaText += ` v${tblSrc.version}`;
   }
   set('hist-tbl-meta', metaText);
 }

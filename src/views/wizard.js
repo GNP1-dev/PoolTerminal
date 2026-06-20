@@ -1,28 +1,29 @@
 /**
- * PoolTerminal - first-run SETUP WIZARD (Pass 1: shell + light steps).
+ * PoolTerminal - first-run SETUP WIZARD (branching, one-decision-per-screen).
  *
- * A guided, one-decision-per-screen walkthrough shown on first run (no saved
- * config) and re-runnable anytime from ⚙ Settings → "Run setup again".
+ * Shown on first run (no saved config) and re-runnable from Settings. The flow
+ * adapts to the operator's choices:
  *
- * Design rules (deliberate - this is the first thing a new operator sees):
- *   • One clear decision per step, plain language, no unexplained jargon.
- *   • Every choice says where to change it later (nothing is a dead end).
- *   • Optional inputs say plainly when to include vs skip them.
+ *   Welcome -> Where it runs -> Connect -> Richer data? (hub)
+ *     -> Do you run db-sync?  (Yes reveals connection + credentials)
+ *     -> Do you have Blockfrost? (wording adapts to the db-sync choice)
+ *     -> Notifications cadence -> Summary
  *
- * Pass 1 builds the frame (progress, Back/Next, wording) and the light steps:
- * Welcome, Run-location, and Done (with hard-fork / upgrade awareness). The
- * heavy steps - Connect, Data source (+ db-sync credentials, Blockfrost
- * placeholder), Notifications - are walkable placeholders here and get wired in
- * Pass 2.
+ * Design rules: one clear decision per screen, plain language, every choice says
+ * where to change it later, optional inputs say plainly when to skip them. Each
+ * source has a consistent accent colour (Koios blue, db-sync teal, Blockfrost
+ * violet, node green) carried through to the summary so the operator builds a
+ * mental map. Connect hands off to the existing connection screen unchanged.
  *
- * Reuses the .pt-modal shell and the WebKitGTK-safe select treatment from the
- * connect/settings dialogs.
+ * Reuses the WebKitGTK-safe input/select treatment from the connect/settings
+ * dialogs, the notif-settings advisor, and the tested applyWizard plumbing.
  */
 
 import { DBSYNC_TESTED_SCHEMA as schemaTested, initDbsync } from '../data/dbsync-query.js';
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
 import { applyBlockfrostKey } from '../data/read-model.js';
+import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
 
 const APP_VERSION = '0.1.0';   // keep in step with package.json
 
@@ -30,12 +31,15 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-// ── wizard state (accumulates choices; applied on Finish in Pass 2) ──────────
+// ── wizard state (accumulates choices; applied on Finish) ────────────────────
 function freshState() {
   return {
     transport: null,        // 'ssh' | 'local'
     conn: {},               // host/port/user/env/auth
+    _connected: false,
+    poolHex: null,
     useDbsync: false,       // optional db-sync
+    dbsyncMode: 'local',    // 'local' | 'tcp' | 'tunnel'
     dbsync: {},             // db-sync DB creds
     useBlockfrost: false,   // optional Blockfrost
     blockfrostKey: '',      // Blockfrost project key
@@ -43,8 +47,18 @@ function freshState() {
   };
 }
 
+// Yes/No card pair used by the db-sync and Blockfrost screens.
+function yesNoCards(onChoice, isYes) {
+  return `
+    <div class="wz-cards wz-cards-row">
+      <button class="wz-card wz-card-sm ${isYes === true ? 'wz-card-on' : ''}" data-yn="yes" type="button">
+        <div class="wz-card-h">Yes</div></button>
+      <button class="wz-card wz-card-sm ${isYes === false ? 'wz-card-on' : ''}" data-yn="no" type="button">
+        <div class="wz-card-h">No / skip</div></button>
+    </div>`;
+}
+
 // ── steps ────────────────────────────────────────────────────────────────────
-// Each: { key, title, render(wiz)->html, collect?(wiz,root), validate?(wiz,root)->err|null }
 const STEPS = [
   {
     key: 'welcome',
@@ -52,11 +66,15 @@ const STEPS = [
     render: () => `
       <p class="wz-lead">PoolTerminal is a live dashboard for your Cardano stake pool - block production,
       delegators, node health and on-chain notifications, all in one place.</p>
-      <p class="wz-p">This quick setup takes about two minutes. It asks where your node runs, how to
-      connect to it, and where to read data from.</p>
-      <div class="wz-note">You can change any of these answers later from the
-      <strong>⚙ Settings</strong> button in the top-right, so don't worry about getting everything
-      perfect now.</div>`,
+      <div class="wz-base wz-base-node">
+        <span class="wz-pill wz-pill-node">Your node + internet</span>
+        <span class="wz-base-t">is all you need. With just those, you get live node data plus pool figures,
+        delegators, history and notifications through <span class="wz-src wz-koios">Koios</span> (free, public).</span>
+      </div>
+      <p class="wz-p">This quick setup takes about two minutes: where your node runs, how to connect, and
+      whether you want to add your own data sources for even richer detail.</p>
+      <div class="wz-note">You can change any answer later from the <strong>⚙ Settings</strong> button,
+      top-right - nothing here is permanent.</div>`,
   },
   {
     key: 'transport',
@@ -68,12 +86,10 @@ const STEPS = [
           <div class="wz-card-h">On a different machine</div>
           <div class="wz-card-d">PoolTerminal connects to your node over SSH. This is the usual choice -
           e.g. the app on your laptop, the node on a server.</div>
-          <div class="wz-card-w">Choose this if the node is on another box.</div>
         </button>
         <button class="wz-card ${wiz.transport === 'local' ? 'wz-card-on' : ''}" data-choice="local" type="button">
           <div class="wz-card-h">On the node itself</div>
           <div class="wz-card-d">PoolTerminal runs commands locally - no SSH or password needed.</div>
-          <div class="wz-card-w">Choose this only if you're running the app directly on the node machine.</div>
         </button>
       </div>
       <div class="wz-foot">Change later: ⚙ Settings, or the connection screen (click the LIVE badge).</div>`,
@@ -95,65 +111,84 @@ const STEPS = [
     validate: (wiz) => (wiz._connected ? null : 'Please connect to your node first using the button above.'),
   },
   {
-    key: 'source',
-    title: 'Where should data come from?',
+    key: 'hub',
+    title: 'Want richer data?',
+    render: () => `
+      <p class="wz-p">Your node and Koios are already covering the essentials. If you want even more detail,
+      you can add one or both of these - we'll ask about each on the next screens. Adding nothing is a perfectly
+      good setup.</p>
+      <div class="wz-srcgrid">
+        <div class="wz-srccard wz-srccard-on wz-koios-card">
+          <span class="wz-src wz-koios">Koios</span>
+          <div class="wz-srccard-t">Working now. Pool figures, delegators, history, notifications and the deep-dive.</div>
+          <div class="wz-srccard-tag">Active</div>
+        </div>
+        <div class="wz-srccard wz-dbsync-card">
+          <span class="wz-src wz-dbsync">db-sync</span>
+          <div class="wz-srccard-t">Your own database. Adds the loyalty leaderboard and instant, unlimited history.</div>
+          <div class="wz-srccard-tag wz-tag-opt">Optional - next</div>
+        </div>
+        <div class="wz-srccard wz-bf-card">
+          <span class="wz-src wz-bf">Blockfrost</span>
+          <div class="wz-srccard-t">A free API key. Another route to the deep-dive and pool summary.</div>
+          <div class="wz-srccard-tag wz-tag-opt">Optional - next</div>
+        </div>
+      </div>
+      <div class="wz-foot">You can add or remove either of these later from Settings.</div>`,
+  },
+  {
+    key: 'dbsync',
+    title: 'Do you run db-sync?',
+    accent: 'dbsync',
     render: (wiz) => {
       const db = wiz.dbsync || {};
-      const dbOn = !!wiz.useDbsync;
-      const bfOn = !!wiz.useBlockfrost;
+      const yn = wiz._dbAnswered ? !!wiz.useDbsync : null;
+      const mode = wiz.dbsyncMode || 'local';
+      const tunnelOpt = SSH_TUNNEL_ENABLED
+        ? `<option value="tunnel" ${mode === 'tunnel' ? 'selected' : ''}>Through the SSH connection to your node (tunnel)</option>` : '';
+      const showCreds = mode !== 'local';
       return `
-      <p class="wz-p">Koios, a free public service, is always available - nothing to set up. For richer data
-      you can also add your own db-sync database and/or a Blockfrost key. Many operators use one; some use both.</p>
-
-      <div class="wz-base">
-        <span class="ds-badge ds-koios">Koios</span>
-        <span class="wz-base-t">Always on - pool figures, history and live notifications.</span>
-      </div>
-
-      <label class="wz-toggle">
-        <input type="checkbox" id="wz-use-dbsync"${dbOn ? ' checked' : ''}>
-        <span><span class="wz-toggle-h">Add db-sync</span>
-        <span class="wz-toggle-d">Your own Cardano database. Adds full instant history and the loyalty leaderboard, with no API limits.</span></span>
-      </label>
-      <div class="wz-dbsync" id="wz-dbsync"${dbOn ? '' : ' hidden'}>
-        <div class="wz-field"><label>Database name</label>
-          <input id="wz-db-name" type="text" value="${db.database || 'cexplorer'}" autocomplete="off"></div>
-        <div class="wz-field"><label>Host <span class="wz-opt">(leave blank if db-sync is on the same machine as PoolTerminal)</span></label>
-          <input id="wz-db-host" type="text" value="${db.host || ''}" placeholder="blank = local socket" autocomplete="off"></div>
-        <div class="wz-row">
-          <div class="wz-field" style="flex:0.7"><label>Port</label>
-            <input id="wz-db-port" type="number" value="${db.port || 5432}" autocomplete="off"></div>
-          <div class="wz-field"><label>User <span class="wz-opt">(blank for local socket)</span></label>
-            <input id="wz-db-user" type="text" value="${db.user || ''}" placeholder="cexplorer" autocomplete="off"></div>
+      <p class="wz-p"><span class="wz-src wz-dbsync">db-sync</span> is your own copy of the Cardano database.
+      If you run one, PoolTerminal can read it directly - adding the <strong>loyalty leaderboard</strong>
+      (only db-sync can compute this), full instant history and the delegator deep-dive, with no API limits.</p>
+      ${yesNoCards(null, yn)}
+      <div class="wz-reveal ${yn === true ? 'wz-reveal-open' : ''}" id="wz-dbsync-fields">
+        <div class="wz-field"><label>How is db-sync reached?</label>
+          <select id="wz-db-mode">
+            <option value="local" ${mode === 'local' ? 'selected' : ''}>On the same machine as PoolTerminal (local socket)</option>
+            <option value="tcp" ${mode === 'tcp' ? 'selected' : ''}>Over the network (direct connection)</option>
+            ${tunnelOpt}
+          </select>
         </div>
-        <div class="wz-field"><label>Password <span class="wz-opt">(only if your db-sync user needs one)</span></label>
-          <input id="wz-db-pass" type="password" value="${db.password || ''}" autocomplete="off"></div>
-        <label class="wz-check"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}>
-          Remember this password on this machine</label>
-        <div class="wz-hint">If db-sync runs on the same machine as PoolTerminal, leave host, port, user and
-        password blank - it connects through a local socket. db-sync activates after a successful connection.</div>
+        <div class="wz-field"><label>Database name</label>
+          <input id="wz-db-name" type="text" value="${esc(db.database || 'cexplorer')}" autocomplete="off"></div>
+        <div class="wz-creds ${showCreds ? '' : 'wz-creds-hidden'}" id="wz-db-creds">
+          <div class="wz-field"><label>Host${mode === 'tunnel' ? ' <span class="wz-opt">(as seen from the node; usually 127.0.0.1)</span>' : ''}</label>
+            <input id="wz-db-host" type="text" value="${esc(db.host || (mode === 'tunnel' ? '127.0.0.1' : ''))}" autocomplete="off"></div>
+          <div class="wz-row">
+            <div class="wz-field" style="flex:0.7"><label>Port</label>
+              <input id="wz-db-port" type="number" value="${db.port || 5432}" autocomplete="off"></div>
+            <div class="wz-field"><label>User</label>
+              <input id="wz-db-user" type="text" value="${esc(db.user || '')}" placeholder="cexplorer" autocomplete="off"></div>
+          </div>
+          <div class="wz-field"><label>Password <span class="wz-opt">(only if your db-sync user needs one)</span></label>
+            <input id="wz-db-pass" type="password" value="${esc(db.password || '')}" autocomplete="off"></div>
+          <label class="wz-check"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}>
+            Remember this password on this machine</label>
+        </div>
+        <div class="wz-hint" id="wz-db-hint"></div>
+        <div class="wz-testrow">
+          <button class="pt-btn" id="wz-db-test" type="button">Test connection</button>
+          <span class="wz-test-result" id="wz-db-test-result"></span>
+        </div>
       </div>
-
-      <label class="wz-toggle">
-        <input type="checkbox" id="wz-use-bf"${bfOn ? ' checked' : ''}>
-        <span><span class="wz-toggle-h">Add Blockfrost</span>
-        <span class="wz-toggle-d">A project key from blockfrost.io. Adds the delegator deep-dive (full balance, rewards and pool-movement history) and pool lifecycle.</span></span>
-      </label>
-      <div class="wz-bf" id="wz-bf"${bfOn ? '' : ' hidden'}>
-        <div class="wz-field"><label>Blockfrost project key <span class="wz-opt">(mainnet)</span></label>
-          <input id="wz-bf-key" type="password" value="${esc(wiz.blockfrostKey || '')}" placeholder="mainnet..." autocomplete="off"></div>
-        <div class="wz-hint">Create a free mainnet project at blockfrost.io and paste its project key here.
-        It is stored locally on this machine and checked against Blockfrost when you finish.</div>
-      </div>
-
-      <div class="wz-foot">Change later: Settings. You can add or remove db-sync and Blockfrost anytime.</div>`;
+      <div class="wz-foot">Not sure? Choose No - Koios covers history and the deep-dive. You can add db-sync later.</div>`;
     },
     collect: (wiz, root) => {
-      const dbEl = root.querySelector('#wz-use-dbsync');
-      const bfEl = root.querySelector('#wz-use-bf');
-      wiz.useDbsync = !!(dbEl && dbEl.checked);
-      wiz.useBlockfrost = !!(bfEl && bfEl.checked);
+      // useDbsync + answered flag are set by the Yes/No handler; here we gather creds.
       if (wiz.useDbsync) {
+        const modeEl = root.querySelector('#wz-db-mode');
+        wiz.dbsyncMode = modeEl ? modeEl.value : 'local';
         const v = (id) => { const el = root.querySelector(id); return el ? el.value.trim() : ''; };
         const save = root.querySelector('#wz-db-savepass');
         wiz.dbsync = {
@@ -165,18 +200,50 @@ const STEPS = [
           savePassword: !!(save && save.checked),
         };
       }
+    },
+    validate: (wiz) => (wiz._dbAnswered ? null : 'Please choose Yes or No.'),
+  },
+  {
+    key: 'blockfrost',
+    title: 'Do you have a Blockfrost key?',
+    accent: 'bf',
+    render: (wiz) => {
+      const yn = wiz._bfAnswered ? !!wiz.useBlockfrost : null;
+      const lead = wiz.useDbsync
+        ? `<p class="wz-p">You've added <span class="wz-src wz-dbsync">db-sync</span>, which already gives the
+           deep-dive and more - so <span class="wz-src wz-bf">Blockfrost</span> is entirely optional here. Add it
+           only if you'd like a second source as backup.</p>`
+        : `<p class="wz-p"><span class="wz-src wz-bf">Blockfrost</span> is a free public API. A project key adds the
+           delegator deep-dive and pool summary. Worth adding if you're not running db-sync - though Koios already
+           provides these too, so you can happily skip it.</p>`;
+      return `
+      ${lead}
+      ${yesNoCards(null, yn)}
+      <div class="wz-reveal ${yn === true ? 'wz-reveal-open' : ''}" id="wz-bf-fields">
+        <div class="wz-field"><label>Blockfrost project key <span class="wz-opt">(mainnet)</span></label>
+          <input id="wz-bf-key" type="password" value="${esc(wiz.blockfrostKey || '')}" placeholder="mainnet..." autocomplete="off"></div>
+        <div class="wz-hint">Create a free mainnet project at blockfrost.io and paste its project key here. It's
+        stored locally on this machine and checked against Blockfrost when you finish.</div>
+        <div class="wz-testrow">
+          <button class="pt-btn" id="wz-bf-test" type="button">Test key</button>
+          <span class="wz-test-result" id="wz-bf-test-result"></span>
+        </div>
+      </div>
+      <div class="wz-foot">Change later: Settings. You can add or remove Blockfrost anytime.</div>`;
+    },
+    collect: (wiz, root) => {
       if (wiz.useBlockfrost) {
         const k = root.querySelector('#wz-bf-key');
         wiz.blockfrostKey = k ? k.value.trim() : '';
       }
     },
     validate: (wiz, root) => {
-      const bfEl = root.querySelector('#wz-use-bf');
-      const key = (root.querySelector('#wz-bf-key') || {}).value;
-      if (bfEl && bfEl.checked && !(key && key.trim())) {
-        return 'Enter your Blockfrost project key, or untick Blockfrost. Koios works on its own.';
+      if (!wiz._bfAnswered) return 'Please choose Yes or No.';
+      if (wiz.useBlockfrost) {
+        const key = (root.querySelector('#wz-bf-key') || {}).value;
+        if (!(key && key.trim())) return 'Enter your Blockfrost project key, or choose No. Koios works on its own.';
       }
-      return null;   // Koios baseline is always valid
+      return null;
     },
   },
   {
@@ -192,8 +259,9 @@ const STEPS = [
         .map((ms) => `<option value="${ms}" ${ms === pollMs ? 'selected' : ''}>${fmtInterval(ms)}</option>`).join('');
       const tierSel = (t) => (tier === t ? 'selected' : '');
       return `
-      <p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake.
-      Live notifications use Koios, so the check rate is set to stay within its limits - it suggests a safe rate.</p>
+      <p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
+      notifications use <span class="wz-src wz-koios">Koios</span>, so the check rate is set to stay within
+      its limits - it suggests a safe rate.</p>
       <div class="wz-field"><label>Koios usage tier</label>
         <select id="wz-n-tier">
           <option value="free" ${tierSel('free')}>Free - no key - 5,000 calls/day</option>
@@ -232,18 +300,21 @@ const STEPS = [
   {
     key: 'done',
     title: "You're all set",
-    render: (wiz) => `
+    render: (wiz) => {
+      const chip = (cls, label) => `<span class="wz-pill wz-pill-${cls}">${label}</span>`;
+      const chips = [chip('node', 'Node'), chip('koios', 'Koios')];
+      if (wiz.useDbsync) chips.push(chip('dbsync', 'db-sync'));
+      if (wiz.useBlockfrost) chips.push(chip('bf', 'Blockfrost'));
+      return `
       <p class="wz-lead">That's it - PoolTerminal is ready.</p>
+      <div class="wz-sumchips">${chips.join('')}</div>
       <div class="wz-summary">
         <div class="wz-sum-row"><span class="wz-sum-k">Runs</span><span class="wz-sum-v">${
           wiz.transport === 'local' ? 'On the node (local)' : wiz.transport === 'ssh' ? 'On a different machine (SSH)' : '-'}</span></div>
-        <div class="wz-sum-row"><span class="wz-sum-k">Data sources</span><span class="wz-sum-v">${
-          ['Koios', wiz.useDbsync ? 'db-sync' : null, wiz.useBlockfrost ? 'Blockfrost' : null].filter(Boolean).join(' + ')}</span></div>
-      </div>
-      <div class="wz-note">
-        <div class="wz-note-h">Change anything, anytime</div>
-        All of these live under the <strong>⚙ Settings</strong> button, top-right. Quick reconnects are on
-        the <strong>LIVE</strong> badge.
+        <div class="wz-sum-row"><span class="wz-sum-k">Loyalty leaderboard</span><span class="wz-sum-v">${
+          wiz.useDbsync ? 'On (db-sync)' : 'Needs db-sync'}</span></div>
+        <div class="wz-sum-row"><span class="wz-sum-k">Deep-dive</span><span class="wz-sum-v">${
+          wiz.useDbsync ? 'db-sync' : (wiz.useBlockfrost ? 'Blockfrost' : 'Koios')}</span></div>
       </div>
       <div class="wz-note wz-note-amber">
         <div class="wz-note-h">Keeping up to date</div>
@@ -251,29 +322,23 @@ const STEPS = [
         <strong>hard fork</strong> happens, you'll need to upgrade your node and db-sync - and sometimes
         PoolTerminal itself. If numbers look wrong after a fork, check those are all up to date.
         <div class="wz-ver">App version ${APP_VERSION}${schemaTested ? ` \u00b7 tested against db-sync schema ${schemaTested}` : ''}</div>
-      </div>`,
+      </div>
+      <div class="wz-foot">Change anything anytime from <strong>⚙ Settings</strong>, top-right.</div>`;
+    },
   },
 ];
-
-function placeholderHtml(title, desc) {
-  return `
-    <div class="wz-placeholder">
-      <div class="wz-ph-tag">Coming in the next build pass</div>
-      <div class="wz-ph-h">${title}</div>
-      <div class="wz-ph-d">${desc}</div>
-    </div>
-    <div class="wz-foot">This step is being wired up - for now, Next continues so you can review the flow.</div>`;
-}
 
 const STYLE = `
 .pt-modal-wizard { max-width: 620px; }
 .wz-progress { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px; }
-.wz-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(120,150,190,0.3); transition: background .2s; }
-.wz-dot.wz-dot-on { background: var(--pt-accent-blue, #4aa3ff); }
+.wz-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(120,150,190,0.3); transition: background .25s, transform .25s; }
+.wz-dot.wz-dot-on { background: var(--pt-accent-blue, #4aa3ff); transform: scale(1.35); }
 .wz-dot.wz-dot-done { background: #4ade80; }
 .wz-step-count { margin-left: auto; font-size: 11px; color: var(--pt-text-muted, #9aa7b4); letter-spacing: .04em; }
-.wz-body { padding: 6px 0 4px; min-height: 230px; }
-.wz-lead { font-size: 15px; color: var(--pt-text-primary, #e6edf3); line-height: 1.5; margin: 0 0 10px; }
+.wz-body { padding: 6px 0 4px; min-height: 250px; }
+.wz-anim { animation: wzIn .26s cubic-bezier(.22,.61,.36,1); }
+@keyframes wzIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.wz-lead { font-size: 15px; color: var(--pt-text-primary, #e6edf3); line-height: 1.5; margin: 0 0 12px; }
 .wz-p { font-size: 13px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.55; margin: 0 0 12px; }
 .wz-note { font-size: 12.5px; line-height: 1.55; color: var(--pt-text-secondary, #b9c4d0);
   background: rgba(74,163,255,0.08); border: 1px solid rgba(74,163,255,0.25); border-radius: 8px; padding: 11px 13px; margin: 12px 0 0; }
@@ -282,33 +347,47 @@ const STYLE = `
 .wz-ver { margin-top: 8px; font-family: ui-monospace, monospace; font-size: 11px; color: var(--pt-text-muted, #9aa7b4); }
 .wz-foot { margin-top: 14px; font-size: 11px; color: var(--pt-text-muted, #9aa7b4); opacity: .85; }
 
+/* source accent colours, reused across screens + summary */
+.wz-src { font-weight: 700; padding: 1px 8px; border-radius: 20px; font-size: 12px; border: 1px solid; white-space: nowrap; }
+.wz-koios { color: #4aa3ff; border-color: rgba(74,163,255,0.45); background: rgba(74,163,255,0.12); }
+.wz-dbsync { color: #2dd4bf; border-color: rgba(45,212,191,0.45); background: rgba(45,212,191,0.12); }
+.wz-bf { color: #a78bfa; border-color: rgba(167,139,250,0.45); background: rgba(167,139,250,0.12); }
+.wz-pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 20px; border: 1px solid; }
+.wz-pill-node { color: #4ade80; border-color: rgba(74,222,128,0.45); background: rgba(74,222,128,0.12); }
+.wz-pill-koios { color: #4aa3ff; border-color: rgba(74,163,255,0.45); background: rgba(74,163,255,0.12); }
+.wz-pill-dbsync { color: #2dd4bf; border-color: rgba(45,212,191,0.45); background: rgba(45,212,191,0.12); }
+.wz-pill-bf { color: #a78bfa; border-color: rgba(167,139,250,0.45); background: rgba(167,139,250,0.12); }
+
 .wz-cards { display: flex; flex-direction: column; gap: 10px; }
-.wz-card { text-align: left; cursor: pointer; border-radius: 10px; padding: 14px 16px;
-  background: rgba(120,150,190,0.05); border: 1.5px solid rgba(120,150,190,0.22); color: inherit; transition: border-color .15s, background .15s; }
-.wz-card:hover { border-color: rgba(120,150,190,0.45); }
-.wz-card-on { border-color: var(--pt-accent-blue, #4aa3ff); background: rgba(74,163,255,0.1); }
+.wz-cards-row { flex-direction: row; }
+.wz-card { text-align: left; cursor: pointer; border-radius: 10px; padding: 14px 16px; flex: 1;
+  background: rgba(120,150,190,0.05); border: 1.5px solid rgba(120,150,190,0.22); color: inherit;
+  transition: border-color .15s, background .15s, transform .1s; }
+.wz-card:hover { border-color: rgba(120,150,190,0.5); }
+.wz-card:active { transform: scale(.99); }
+.wz-card-sm { text-align: center; padding: 16px; }
+.wz-card-on { border-color: var(--pt-accent-blue, #4aa3ff); background: rgba(74,163,255,0.12); }
 .wz-card-h { font-size: 14px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); margin-bottom: 3px; }
 .wz-card-d { font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.5; }
-.wz-card-w { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); margin-top: 6px; font-style: italic; }
 
-.wz-placeholder { border: 1.5px dashed rgba(120,150,190,0.3); border-radius: 10px; padding: 22px; text-align: center; }
-.wz-ph-tag { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--pt-accent-blue, #4aa3ff); border: 1px solid rgba(74,163,255,0.4); border-radius: 20px; padding: 3px 10px; margin-bottom: 12px; }
-.wz-ph-h { font-size: 15px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); margin-bottom: 6px; }
-.wz-ph-d { font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.55; max-width: 420px; margin: 0 auto; }
+/* hub source grid */
+.wz-srcgrid { display: flex; flex-direction: column; gap: 9px; margin: 4px 0 2px; }
+.wz-srccard { position: relative; border-radius: 10px; padding: 12px 14px; border: 1px solid rgba(120,150,190,0.2);
+  background: rgba(120,150,190,0.04); }
+.wz-srccard-t { font-size: 12px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.45; margin-top: 6px; }
+.wz-srccard-tag { position: absolute; top: 12px; right: 13px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 700; color: #4ade80; }
+.wz-srccard-tag.wz-tag-opt { color: var(--pt-text-muted, #9aa7b4); }
+.wz-koios-card { border-color: rgba(74,163,255,0.3); }
+.wz-dbsync-card { border-color: rgba(45,212,191,0.22); }
+.wz-bf-card { border-color: rgba(167,139,250,0.22); }
 
-.wz-summary { margin: 4px 0; border: 1px solid rgba(120,150,190,0.2); border-radius: 8px; overflow: hidden; }
-.wz-sum-row { display: flex; justify-content: space-between; padding: 9px 13px; font-size: 13px; border-top: 1px solid rgba(120,150,190,0.12); }
-.wz-sum-row:first-child { border-top: 0; }
-.wz-sum-k { color: var(--pt-text-muted, #9aa7b4); text-transform: uppercase; font-size: 11px; letter-spacing: .05em; }
-.wz-sum-v { color: var(--pt-text-primary, #e6edf3); font-weight: 600; }
-.wz-err { color: #fb7185; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+/* reveal animation for Yes -> fields */
+.wz-reveal { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .25s ease, margin .25s ease; margin: 0; }
+.wz-reveal-open { max-height: 600px; opacity: 1; margin: 14px 0 0; }
+.wz-creds { transition: max-height .25s ease, opacity .2s ease; overflow: hidden; }
+.wz-creds-hidden { max-height: 0; opacity: 0; }
 
-.wz-card-disabled { opacity: .5; cursor: not-allowed; }
-.wz-soon { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--pt-accent-blue, #4aa3ff);
-  border: 1px solid rgba(74,163,255,.4); border-radius: 10px; padding: 1px 7px; margin-left: 6px; vertical-align: middle; }
-.wz-dbsync { margin-top: 12px; padding: 14px; border: 1px solid rgba(120,150,190,.22); border-radius: 10px; background: rgba(120,150,190,.04); }
-.wz-sub-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--pt-text-muted, #9aa7b4); margin-bottom: 10px; font-weight: 700; }
 .wz-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .wz-field > label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--pt-text-muted, #9aa7b4); }
 .wz-row { display: flex; gap: 10px; }
@@ -318,20 +397,24 @@ const STYLE = `
 .wz-hint { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.5; margin-top: 2px; }
 .wz-hint.wz-warn { color: #fb7185; }
 .wz-ok { font-size: 15px; font-weight: 700; color: #4ade80; margin-bottom: 10px; }
+.wz-testrow { display: flex; align-items: center; gap: 11px; margin-top: 10px; flex-wrap: wrap; }
+.wz-test-result { font-size: 12.5px; font-weight: 600; }
+.wz-test-pending { color: var(--pt-text-muted, #9aa7b4); }
+.wz-test-good { color: #4ade80; }
+.wz-test-bad { color: #fb7185; }
 
-.wz-base { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px;
-  border-radius: 9px; background: rgba(74,163,255,0.07); border: 1px solid rgba(74,163,255,0.2); }
-.wz-base-t { font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); }
-.wz-toggle { display: flex; align-items: flex-start; gap: 11px; cursor: pointer; padding: 12px 13px;
-  border-radius: 9px; border: 1px solid rgba(120,150,190,0.2); background: rgba(120,150,190,0.04); margin-bottom: 8px; }
-.wz-toggle input { margin-top: 2px; width: auto !important; flex: 0 0 auto; }
-.wz-toggle-h { font-size: 13.5px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); display: block; }
-.wz-toggle-d { font-size: 12px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.45; display: block; margin-top: 2px; }
-.wz-dbsync, .wz-bf { margin: 0 0 12px; padding: 14px; border: 1px solid rgba(120,150,190,0.22);
-  border-radius: 10px; background: rgba(120,150,190,0.04); }
-/* data-source badge colours (shared look with the Data tab) */
-.ds-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px; border: 1px solid; white-space: nowrap; }
-.ds-koios { color: #4aa3ff; border-color: rgba(74,163,255,0.4); background: rgba(74,163,255,0.1); }
+.wz-base { display: flex; align-items: center; gap: 11px; margin: 0 0 14px; padding: 11px 13px;
+  border-radius: 9px; background: rgba(74,163,255,0.07); border: 1px solid rgba(74,163,255,0.2); flex-wrap: wrap; }
+.wz-base-node { background: rgba(74,222,128,0.06); border-color: rgba(74,222,128,0.22); }
+.wz-base-t { font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.5; flex: 1; min-width: 220px; }
+
+.wz-summary { margin: 10px 0 0; border: 1px solid rgba(120,150,190,0.2); border-radius: 8px; overflow: hidden; }
+.wz-sum-row { display: flex; justify-content: space-between; padding: 9px 13px; font-size: 13px; border-top: 1px solid rgba(120,150,190,0.12); }
+.wz-sum-row:first-child { border-top: 0; }
+.wz-sum-k { color: var(--pt-text-muted, #9aa7b4); text-transform: uppercase; font-size: 11px; letter-spacing: .05em; }
+.wz-sum-v { color: var(--pt-text-primary, #e6edf3); font-weight: 600; }
+.wz-sumchips { display: flex; gap: 7px; flex-wrap: wrap; margin: 2px 0 4px; }
+.wz-err { color: #fb7185; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
 
 /* WebKitGTK-safe inputs/selects (same treatment as connect/settings dialogs). */
 .pt-modal-wizard input, .pt-modal-wizard select {
@@ -378,10 +461,10 @@ export function showSetupWizard(opts = {}) {
   function paint() {
     const step = STEPS[idx];
     $('#wz-title').textContent = step.title;
-    $('#wz-body').innerHTML = step.render(wiz);
+    // Wrap content in a fresh node so the entrance animation re-triggers each step.
+    $('#wz-body').innerHTML = `<div class="wz-anim">${step.render(wiz)}</div>`;
     $('#wz-err').textContent = '';
 
-    // progress dots
     $('#wz-progress').innerHTML =
       STEPS.map((_, i) => `<span class="wz-dot ${i === idx ? 'wz-dot-on' : i < idx ? 'wz-dot-done' : ''}"></span>`).join('') +
       `<span class="wz-step-count">Step ${idx + 1} of ${STEPS.length}</span>`;
@@ -393,22 +476,21 @@ export function showSetupWizard(opts = {}) {
       const btn = modal.querySelector('#wz-connect-btn');
       if (btn) btn.addEventListener('click', () => {
         // Hand off to the existing connection screen (kept unforked). On a live
-        // connect we capture the pool hex (POOL_ID) for db-sync init, then resume
-        // the wizard at the data-source step carrying all choices so far.
+        // connect, capture the pool hex (POOL_ID) for db-sync init, then resume
+        // the wizard at the hub step carrying all choices so far.
         const saved = { ...wiz };
-        const sourceIdx = STEPS.findIndex((s) => s.key === 'source');
+        const hubIdx = STEPS.findIndex((s) => s.key === 'hub');
         modal.remove();
         showConnectModal((res) => {
           if (res && res.mode === 'live') {
             saved._connected = true;
             saved.poolHex = (res.envVars && res.envVars.POOL_ID) || null;
           }
-          showSetupWizard({ onComplete, _resume: saved, _startIndex: sourceIdx });
+          showSetupWizard({ onComplete, _resume: saved, _startIndex: hubIdx });
         });
       });
     }
 
-    // step-specific wiring (Pass 1: transport cards)
     if (step.key === 'transport') {
       modal.querySelectorAll('.wz-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -419,16 +501,96 @@ export function showSetupWizard(opts = {}) {
       });
     }
 
-    if (step.key === 'source') {
-      const dbToggle = modal.querySelector('#wz-use-dbsync');
-      if (dbToggle) dbToggle.addEventListener('change', () => {
-        const f = modal.querySelector('#wz-dbsync'); if (f) f.hidden = !dbToggle.checked;
-        $('#wz-err').textContent = '';
+    if (step.key === 'dbsync') {
+      const reveal = modal.querySelector('#wz-dbsync-fields');
+      modal.querySelectorAll('.wz-card[data-yn]').forEach((card) => {
+        card.addEventListener('click', () => {
+          const yes = card.dataset.yn === 'yes';
+          wiz.useDbsync = yes; wiz._dbAnswered = true;
+          modal.querySelectorAll('.wz-card[data-yn]').forEach((c) => c.classList.toggle('wz-card-on', c === card));
+          if (reveal) reveal.classList.toggle('wz-reveal-open', yes);
+          $('#wz-err').textContent = '';
+          updateDbHint();
+        });
       });
-      const bfToggle = modal.querySelector('#wz-use-bf');
-      if (bfToggle) bfToggle.addEventListener('change', () => {
-        const f = modal.querySelector('#wz-bf'); if (f) f.hidden = !bfToggle.checked;
-        $('#wz-err').textContent = '';
+      const modeEl = modal.querySelector('#wz-db-mode');
+      if (modeEl) modeEl.addEventListener('change', () => {
+        const creds = modal.querySelector('#wz-db-creds');
+        const local = modeEl.value === 'local';
+        if (creds) creds.classList.toggle('wz-creds-hidden', local);
+        const hostEl = modal.querySelector('#wz-db-host');
+        if (hostEl && modeEl.value === 'tunnel' && !hostEl.value) hostEl.value = '127.0.0.1';
+        updateDbHint();
+      });
+      function updateDbHint() {
+        const h = modal.querySelector('#wz-db-hint'); if (!h) return;
+        const m = (modal.querySelector('#wz-db-mode') || {}).value || 'local';
+        h.textContent = m === 'local'
+          ? 'Local socket: db-sync runs on this same machine. Leave the credentials as they are - it connects through the socket. db-sync activates after a successful test.'
+          : m === 'tunnel'
+            ? 'Tunnel: PoolTerminal reaches db-sync through the SSH connection to your node. Host is as the node sees it (usually 127.0.0.1).'
+            : 'Network: enter the host, port and user for the machine running db-sync.';
+      }
+      updateDbHint();
+
+      const dbTest = modal.querySelector('#wz-db-test');
+      if (dbTest) dbTest.addEventListener('click', async () => {
+        const res = modal.querySelector('#wz-db-test-result');
+        if (!res) return;
+        if (!wiz.poolHex) {
+          res.textContent = 'Connect to your node first (needed to find your pool).';
+          res.className = 'wz-test-result wz-test-bad'; return;
+        }
+        const modeEl = modal.querySelector('#wz-db-mode');
+        const v = (id) => { const el = modal.querySelector(id); return el ? el.value.trim() : ''; };
+        const tmp = {
+          dbsyncMode: modeEl ? modeEl.value : 'local',
+          dbsync: {
+            database: v('#wz-db-name') || 'cexplorer',
+            host: v('#wz-db-host'), port: Number(v('#wz-db-port')) || 5432,
+            user: v('#wz-db-user'), password: v('#wz-db-pass'),
+          },
+        };
+        res.textContent = 'Testing...'; res.className = 'wz-test-result wz-test-pending';
+        dbTest.disabled = true;
+        try {
+          const ok = await initDbsync(buildDbsyncConfig(tmp), wiz.poolHex);
+          res.textContent = ok ? 'Connected to db-sync \u2713' : 'Could not connect - check the details above.';
+          res.className = 'wz-test-result ' + (ok ? 'wz-test-good' : 'wz-test-bad');
+        } catch (e) {
+          res.textContent = 'Connection failed: ' + (e.message ?? e);
+          res.className = 'wz-test-result wz-test-bad';
+        } finally { dbTest.disabled = false; }
+      });
+    }
+
+    if (step.key === 'blockfrost') {
+      const reveal = modal.querySelector('#wz-bf-fields');
+      modal.querySelectorAll('.wz-card[data-yn]').forEach((card) => {
+        card.addEventListener('click', () => {
+          const yes = card.dataset.yn === 'yes';
+          wiz.useBlockfrost = yes; wiz._bfAnswered = true;
+          modal.querySelectorAll('.wz-card[data-yn]').forEach((c) => c.classList.toggle('wz-card-on', c === card));
+          if (reveal) reveal.classList.toggle('wz-reveal-open', yes);
+          $('#wz-err').textContent = '';
+        });
+      });
+      const bfTest = modal.querySelector('#wz-bf-test');
+      if (bfTest) bfTest.addEventListener('click', async () => {
+        const res = modal.querySelector('#wz-bf-test-result');
+        if (!res) return;
+        const key = ((modal.querySelector('#wz-bf-key') || {}).value || '').trim();
+        if (!key) { res.textContent = 'Enter a key first.'; res.className = 'wz-test-result wz-test-bad'; return; }
+        res.textContent = 'Testing...'; res.className = 'wz-test-result wz-test-pending';
+        bfTest.disabled = true;
+        try {
+          const ok = await applyBlockfrostKey(key);
+          res.textContent = ok ? 'Key valid, Blockfrost reachable \u2713' : 'Key set but not reachable - check it.';
+          res.className = 'wz-test-result ' + (ok ? 'wz-test-good' : 'wz-test-bad');
+        } catch (e) {
+          res.textContent = 'Test failed: ' + (e.message ?? e);
+          res.className = 'wz-test-result wz-test-bad';
+        } finally { bfTest.disabled = false; }
       });
     }
 
@@ -438,7 +600,7 @@ export function showSetupWizard(opts = {}) {
         const tier = tierEl ? tierEl.value : 'free';
         const intEl = modal.querySelector('#wz-n-interval');
         const intervalMs = intEl ? Number(intEl.value) : getNotifSettings().pollMs;
-        const source = 'koios';   // live notifications run on Koios
+        const source = 'koios';
         const count = wiz._delegCount || 0;
         const sug = suggestPollMs({ delegatorCount: count, source, koiosTier: tier });
         const reasonEl = modal.querySelector('#wz-n-reason');
@@ -497,6 +659,7 @@ function saveSourceChoice(wiz) {
   const out = { koios: true, useDbsync: !!wiz.useDbsync, useBlockfrost: !!wiz.useBlockfrost };
   if (wiz.useDbsync && wiz.dbsync) {
     const d = wiz.dbsync;
+    out.dbsyncMode = wiz.dbsyncMode || 'local';
     out.dbsync = {
       database: d.database || 'cexplorer',
       host: d.host || '',
@@ -510,10 +673,18 @@ function saveSourceChoice(wiz) {
   catch (e) { console.warn('[wizard] source save failed:', e.message ?? e); }
 }
 
-/** Map the wizard db-sync inputs to an initDbsync config (blank host = local socket). */
-function buildDbsyncConfig(d = {}) {
+/** Map the wizard db-sync inputs to an initDbsync config. Mode decides shape:
+ *  local = socket (no host); tcp = direct network; tunnel = over SSH (viaSsh). */
+function buildDbsyncConfig(wiz) {
+  const d = wiz.dbsync || {};
+  const mode = wiz.dbsyncMode || 'local';
   const cfg = { database: d.database || 'cexplorer' };
-  if (d.host) { cfg.host = d.host; cfg.port = d.port || 5432; if (d.user) cfg.user = d.user; if (d.password) cfg.password = d.password; }
+  if (mode === 'local') return cfg;
+  cfg.host = d.host || (mode === 'tunnel' ? '127.0.0.1' : '');
+  cfg.port = d.port || 5432;
+  if (d.user) cfg.user = d.user;
+  if (d.password) cfg.password = d.password;
+  if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
   return cfg;
 }
 
@@ -533,7 +704,7 @@ async function applyWizard(wiz) {
 
   if (wiz.useDbsync && wiz.poolHex) {
     try {
-      const ok = await initDbsync(buildDbsyncConfig(wiz.dbsync), wiz.poolHex);
+      const ok = await initDbsync(buildDbsyncConfig(wiz), wiz.poolHex);
       console.log(ok ? '[wizard] db-sync activated' : '[wizard] db-sync not reachable - Koios still serves history');
     } catch (e) { console.warn('[wizard] db-sync init failed:', e.message ?? e); }
   }
@@ -543,7 +714,5 @@ async function applyWizard(wiz) {
       const ok = await applyBlockfrostKey(wiz.blockfrostKey);
       console.log(ok ? '[wizard] Blockfrost activated' : '[wizard] Blockfrost key set but not reachable - check the key');
     } catch (e) { console.warn('[wizard] Blockfrost init failed:', e.message ?? e); }
-  } else if (!wiz.useBlockfrost) {
-    // Left unticked: do not touch an existing key here (managed in Settings).
   }
 }

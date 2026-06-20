@@ -443,12 +443,26 @@ function fadeOutLoading() {
 // Koios), no extra API call. Updates the hero card when ready.
 async function refreshLifetimeBlocks() {
   try {
+    // Authoritative lifetime total from Koios pool_info.block_count (the exact
+    // field gLiveView displays) - it counts the current and just-ended epochs,
+    // which pool_history excludes. Summing cached epoch rows undercounts those.
+    const info = readModel.liveInfo();
+    const el = document.getElementById('hero-blocks-val');
+    const sub = document.getElementById('hero-blocks-sub');
+    if (info && info.blockCountLifetime != null) {
+      el && (el.textContent = Number(info.blockCountLifetime).toLocaleString());
+      if (sub) {
+        const rows = await readModel.getEpochHistory(0, 9_999_999);
+        const producing = Array.isArray(rows) ? rows.filter((r) => (r.adopted || 0) > 0).length : 0;
+        sub.textContent = producing ? `${producing} producing epochs` : 'lifetime';
+      }
+      return;
+    }
+    // Fallback (no pool_info yet, e.g. db-sync only): sum cached epochs.
     const rows = await readModel.getEpochHistory(0, 9_999_999);
     if (!Array.isArray(rows) || !rows.length) return;
     const total = rows.reduce((s, r) => s + (r && r.adopted ? Number(r.adopted) : 0), 0);
-    const el = document.getElementById('hero-blocks-val');
     if (el) el.textContent = total.toLocaleString();
-    const sub = document.getElementById('hero-blocks-sub');
     if (sub) sub.textContent = `${rows.filter((r) => (r.adopted || 0) > 0).length} producing epochs`;
   } catch { /* leave placeholder */ }
 }

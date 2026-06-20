@@ -29,6 +29,7 @@
 
 import { invoke } from './tauri.js';
 import { DataKind, registry } from './capabilities.js';
+import * as meter from './koios-meter.js';
 
 const KOIOS_BASE = 'https://api.koios.rest/api/v1';
 const CURL_MAX_TIME = 8; // seconds, per call
@@ -39,9 +40,15 @@ const ACCOUNT_INFO_MAX_TIME = 15; // account_info pages (50 addrs) are heavier â
  * Mirrors the helper in geo-query.js so behaviour is identical across modules.
  */
 async function runCmd(command) {
+  // Respect the pause switch: when paused (manually or auto on hitting the
+  // daily cap), make no Koios call at all - return empty so callers fall back.
+  if (meter.isPaused()) return '';
+  meter.recordCall();
   const r = await invoke('ssh_run', { command });
-  if (typeof r === 'string') return r;
-  return r?.stdout ?? '';
+  const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
+  // Detect Koios tier-limit response and auto-pause (captures the real count).
+  if (meter.looksLikeLimit(out)) return '';
+  return out;
 }
 
 /** Single-quote shell-escape for embedding a JSON body in a curl -d '...'. */
@@ -659,7 +666,9 @@ export const koiosLiveDelegatorsSource = {
         blocksEpoch: null,                       // not in pool_info; sourced elsewhere
         liveStake: p.liveStake,
         activeStake: p.activeStake,
-        liveSaturation: p.liveSaturation != null ? Number(p.liveSaturation) : null,
+        // Koios live_saturation is already a percent (e.g. 1.24 = 1.24%); the
+        // view multiplies by 100, so convert to the fraction it expects.
+        liveSaturation: p.liveSaturation != null ? Number(p.liveSaturation) / 100 : null,
         liveDelegators: p.liveDelegators != null ? Number(p.liveDelegators) : null,
         declaredPledge: p.pledge,
         livePledge: p.livePledge,

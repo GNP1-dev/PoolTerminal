@@ -275,6 +275,214 @@ export async function getPoolMeta(poolId) {
 }
 
 // ============================================================
+/** EPOCH_BLOCKS (+ epoch stake/delegators/rewards) — full per-epoch history.
+ *  Paginates /pools/{id}/history (100 epochs/page, ~4 calls for full history,
+ *  cached by the read-model after). Maps to the canonical epoch row. ideal/ros
+ *  luck columns are filled later (Stage 3) to avoid a per-epoch call burst. */
+async function getPoolHistory(from, to) {
+  const rows = [];
+  const _params = await ensureBfParams();           // current params (fallback)
+  const _timeline = await buildParamTimeline();     // historical param change-points
+  const _ownerStake = await buildOwnerStake();      // pledge active stake per epoch
+  for (let page = 1; page <= 20; page++) {     // 2000 epochs max; stop on short page
+    const part = await bfGet(`/pools/${_poolBech32}/history?count=100&page=${page}&order=asc`, []);
+    if (!Array.isArray(part) || part.length === 0) break;
+    for (const h of part) {
+      const epoch = Number(h.epoch);
+      if (from != null && epoch < from) continue;
+      if (to != null && epoch > to) continue;
+      const activeLov = h.active_stake != null ? Number(h.active_stake) : null;
+      const rewardsLov = h.rewards != null ? Number(h.rewards) : null;   // total pool pot
+      const feesLov = h.fees != null ? Number(h.fees) : null;            // operator take (fixed+margin)
+      const memberLov = (rewardsLov != null && feesLov != null) ? Math.max(0, rewardsLov - feesLov) : null;
+      const blocks = h.blocks != null ? Number(h.blocks) : null;
+      let rewardsState = 'complete';
+      if ((blocks === 0) && (rewardsLov == null || rewardsLov === 0)) rewardsState = 'zero';
+      // Params actually in force at THIS epoch (on-chain cert history) - gives the
+      // view's MIN FEE / MARGIN / PLEDGE breakdown the correct historical values.
+      // We only supply measured member + leader rewards and the historical
+      // fixedCost/margin; the History view derives the split exactly as it does
+      // for db-sync/Koios (pledge = leader - minFee - marginEarn).
+      const ep = paramsAtEpoch(_timeline, epoch, _params);
+      // Six-column decomposition (all measured/derived, no approximation):
+      //   member = rewards - fees ; minFee = min(fixedCost, fees) ;
+      //   margin = fees - minFee ; pledge = ownerStake x (member/activeStake) ;
+      //   deleg = member - pledge.
+      const memberAda = lovelaceToAda(memberLov);
+      const feesAda = lovelaceToAda(feesLov);
+      let bfMinFee = null, bfMargin = null, bfPledge = null, bfDeleg = memberAda;
+      if (feesAda != null) {
+        const fc = (ep && ep.fixedCost != null) ? ep.fixedCost : 0;
+        bfMinFee = Math.min(fc, feesAda);
+        bfMargin = Math.max(0, feesAda - bfMinFee);
+      }
+      if (memberAda != null && activeLov && activeLov > 0) {
+        const ownerLov = _ownerStake.get(epoch);
+        if (ownerLov != null && ownerLov > 0) {
+          bfPledge = memberAda * (ownerLov / activeLov);   // pledge's share of member pot
+          bfDeleg = Math.max(0, memberAda - bfPledge);
+        }
+      }
+      rows.push({
+        epoch,
+        adopted: blocks, confirmed: blocks, leader: null, lost: null,
+        delegators: h.delegators_count != null ? Number(h.delegators_count) : null,
+        activeStake: lovelaceToAda(activeLov),
+        activeStakeLovelace: activeLov,
+        memberRewards: memberAda,
+        delegRewards: memberAda,
+        leaderReward: feesAda,
+        margin: ep ? ep.margin : null,
+        fixedCost: ep ? ep.fixedCost : null,
+        // Pre-computed accurate breakdown for the History view (Blockfrost path).
+        bfMinFee, bfMargin, bfPledge, bfDeleg,
+        bfTotal: lovelaceToAda(rewardsLov),
+        ideal: null,         // Stage 3 fills luck (cached per epoch)
+        saturation: h.active_size != null ? Number(h.active_size) * 100 : null,  // fraction → percent
+        ros: null,
+        rewardsState,
+        source: 'blockfrost',
+      });
+    }
+    if (part.length < 100) break;
+  }
+  rows.sort((a, b) => a.epoch - b.epoch);
+  // Fill ideal blocks (and thus luck) per epoch from network stake + blocks.
+  // Cached permanently per epoch; only epochs with pool active stake are fetched.
+  for (const r of rows) {
+    if (r.ideal != null) continue;
+    if (!r.activeStakeLovelace || r.activeStakeLovelace <= 0) continue;
+    try {
+      const net = await getNetworkInfo(r.epoch);
+      if (net && net.stakeLov > 0) {
+        // ideal = sigma x expected blocks/epoch (432000 slots x f=0.05 = 21600).
+        // NOT actual minted blocks (net.blocks) - that under-counts the ideal.
+        const EXPECTED_BLOCKS_PER_EPOCH = 432000 * 0.05;   // 21600
+        const sigma = r.activeStakeLovelace / net.stakeLov;
+        r.ideal = sigma * EXPECTED_BLOCKS_PER_EPOCH;
+      }
+    } catch { /* leave ideal null for this epoch */ }
+  }
+  return rows;
+}
+
+/** POOL_PARAMS — margin, fixed cost, pledge from /pools/{id}. ~1 call.
+ *  Also cached in _bfParams so getPoolHistory can stamp each epoch row with the
+ *  fixed cost + margin the History view needs for the operator-reward breakdown. */
+let _bfParams = null;
+async function getPoolParams() {
+  const p = await bfGet(`/pools/${_poolBech32}`, null);
+  if (!p) return null;
+  _bfParams = {
+    margin: p.margin_cost != null ? Number(p.margin_cost) : null,
+    fixedCost: lovelaceToAda(p.fixed_cost),
+    declaredPledge: lovelaceToAda(p.declared_pledge),
+  };
+  return _bfParams;
+}
+async function ensureBfParams() {
+  if (_bfParams) return _bfParams;
+  try { return await getPoolParams(); } catch { return null; }
+}
+
+// ---- Parameter timeline (historically-accurate pledge/margin/fixed cost) ----
+// Reconstructs the pool's parameter history from its on-chain registration and
+// update certs so per-epoch reward breakdowns use the values that were actually
+// in force - not today's. Built once, cached.
+let _bfParamTimeline = null;       // sorted ascending by fromEpoch
+async function buildParamTimeline() {
+  if (_bfParamTimeline) return _bfParamTimeline;
+  const timeline = [];
+  try {
+    // All registration/update certs for the pool (oldest first).
+    const updates = await bfGet(`/pools/${_poolBech32}/updates?order=asc`, []);
+    for (const u of (Array.isArray(updates) ? updates : [])) {
+      if (!u || !u.tx_hash) continue;
+      // The registration/update cert(s) in that tx carry the params + active epoch.
+      const certs = await bfGet(`/txs/${u.tx_hash}/pool_updates`, []);
+      for (const c of (Array.isArray(certs) ? certs : [])) {
+        if (c.pool_id && c.pool_id !== _poolBech32) continue;   // ignore other pools in a multi-cert tx
+        timeline.push({
+          fromEpoch: c.active_epoch != null ? Number(c.active_epoch) : 0,
+          pledge: lovelaceToAda(c.pledge),
+          margin: c.margin_cost != null ? Number(c.margin_cost) : null,
+          fixedCost: lovelaceToAda(c.fixed_cost),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[blockfrost] param timeline build failed, falling back to current params:', e.message ?? e);
+  }
+  timeline.sort((a, b) => a.fromEpoch - b.fromEpoch);
+  _bfParamTimeline = timeline;
+  console.log(`[blockfrost] param timeline: ${timeline.length} change-point(s)`,
+    timeline.map((t) => `e${t.fromEpoch}:m${t.margin},fc${t.fixedCost},pl${t.pledge}`));
+  return _bfParamTimeline;
+}
+
+// Params in force at a given epoch: the latest change-point with fromEpoch <= epoch.
+function paramsAtEpoch(timeline, epoch, fallback) {
+  let best = null;
+  for (const t of timeline) {
+    if (t.fromEpoch <= epoch) best = t; else break;
+  }
+  return best || fallback || { pledge: null, margin: null, fixedCost: null };
+}
+
+// ---- Network data per epoch (for ideal blocks / luck) ----------------------
+// Injected meta-cache accessors (set by read-model) so settled-epoch network
+// data persists across sessions and is only fetched once.
+let _metaGet = null, _metaSet = null;
+export function setBfMetaCache(getFn, setFn) { _metaGet = getFn; _metaSet = setFn; }
+
+// Returns { stakeLov, blocks } for an epoch, from cache or /epochs/{n}. Cached
+// permanently (settled epochs never change). null if unavailable.
+async function getNetworkInfo(epoch) {
+  const key = `netinfo:${epoch}`;
+  if (_metaGet) {
+    try {
+      const cached = await _metaGet(key);
+      if (cached) { const o = JSON.parse(cached); if (o && o.s) return { stakeLov: Number(o.s), blocks: Number(o.b) }; }
+    } catch { /* fall through to fetch */ }
+  }
+  const e = await bfGet(`/epochs/${epoch}`, null);
+  if (!e || e.active_stake == null || e.block_count == null) return null;
+  const info = { stakeLov: Number(e.active_stake), blocks: Number(e.block_count) };
+  if (_metaSet) { try { await _metaSet(key, JSON.stringify({ s: e.active_stake, b: e.block_count })); } catch { /* ignore */ } }
+  return info;
+}
+
+// ---- Owner (pledge) stake per epoch ----------------------------------------
+// The pledge's actual active stake each epoch = sum over the pool's owner
+// stake addresses of their /accounts/{stake}/history amount for that epoch.
+// Owners are read automatically from /pools/{id}; no user entry. Cached.
+let _bfOwnerStake = null;     // Map<epoch, lovelace>
+async function buildOwnerStake() {
+  if (_bfOwnerStake) return _bfOwnerStake;
+  const byEpoch = new Map();
+  try {
+    const pool = await bfGet(`/pools/${_poolBech32}`, null);
+    const owners = (pool && Array.isArray(pool.owners)) ? pool.owners : [];
+    for (const stake of owners) {
+      for (let page = 1; page <= 20; page++) {
+        const part = await bfGet(`/accounts/${stake}/history?count=100&page=${page}&order=asc`, []);
+        if (!Array.isArray(part) || part.length === 0) break;
+        for (const h of part) {
+          const e = Number(h.active_epoch);
+          const amt = h.amount != null ? Number(h.amount) : 0;
+          byEpoch.set(e, (byEpoch.get(e) || 0) + amt);   // sum multiple owners
+        }
+        if (part.length < 100) break;
+      }
+    }
+  } catch (e) {
+    console.warn('[blockfrost] owner-stake build failed:', e.message ?? e);
+  }
+  _bfOwnerStake = byEpoch;
+  console.log(`[blockfrost] owner stake: ${byEpoch.size} epochs of pledge history`);
+  return _bfOwnerStake;
+}
+
 // Capability-registry source (optional — registers only with a key)
 // ============================================================
 
@@ -283,6 +491,12 @@ const PROVIDES = [
   DataKind.DELEGATOR_LIST,
   DataKind.DELEGATOR_DETAIL,
   DataKind.POOL_LIFECYCLE,
+  DataKind.EPOCH_BLOCKS,
+  DataKind.EPOCH_STAKE,
+  DataKind.EPOCH_DELEGATORS,
+  DataKind.EPOCH_REWARDS,
+  DataKind.EPOCH_IDEAL,
+  DataKind.POOL_PARAMS,
 ];
 
 export const blockfrostSource = {
@@ -298,6 +512,12 @@ export const blockfrostSource = {
       case DataKind.DELEGATOR_LIST:    return getDelegatorList();
       case DataKind.DELEGATOR_DETAIL:  return getDelegatorDetail(params.stake, params.currentEpoch);
       case DataKind.POOL_LIFECYCLE:    return getPoolLifecycle();
+      case DataKind.EPOCH_BLOCKS:
+      case DataKind.EPOCH_STAKE:
+      case DataKind.EPOCH_DELEGATORS:
+      case DataKind.EPOCH_REWARDS:
+      case DataKind.EPOCH_IDEAL:       return getPoolHistory(params.from, params.to);
+      case DataKind.POOL_PARAMS:       return getPoolParams();
       default: throw new Error(`blockfrost source can't provide ${kind}`);
     }
   },

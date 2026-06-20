@@ -7,7 +7,7 @@
  *   • From your node  - the SSH/local connection (tip, KES, peers, blocks, ...).
  *     Always the node; available only while connected.
  *   • External data   - governed by the capability registry, where db-sync,
- *     Koios and (soon) Blockfrost compete. The active source per feature is read
+ *     Koios and Blockfrost compete. The active source per feature is read
  *     live from the registry, so this screen is always truthful.
  *
  * This is read-only - it reflects the current setup; you change sources in the
@@ -89,6 +89,8 @@ function summaryHtml(live) {
   const dbsyncOn = dbsync && safeReach(dbsync);
   const dbsyncVer = dbsyncOn ? safeCall(() => dbsync.version()) : null;
   const koiosOn = has('koios') || has('koios-live');
+  const bf = registry.all().find((s) => s.id === 'blockfrost');
+  const bfOn = bf && safeReach(bf);
 
   const chip = (cls, label, status, on) =>
     `<div class="ds-chip ${on ? '' : 'ds-chip-off'}"><span class="ds-dot ${cls}"></span>` +
@@ -102,7 +104,7 @@ function summaryHtml(live) {
     chip('ds-node', 'Node', live ? (transport || 'Connected') : 'Not connected', live) +
     chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}` : 'Not configured', dbsyncOn) +
     chip('ds-koios', 'Koios', koiosOn ? 'Available (public API)' : 'Unavailable', koiosOn) +
-    chip('ds-bf', 'Blockfrost', 'Coming soon', false) +
+    chip('ds-bf', 'Blockfrost', bfOn ? 'Active' : 'Not configured', bfOn) +
   `</div>`;
 }
 

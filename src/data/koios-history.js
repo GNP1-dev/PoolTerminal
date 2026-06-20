@@ -31,6 +31,7 @@
 
 import { invoke } from './tauri.js';
 import { DataKind, registry } from './capabilities.js';
+import * as meter from './koios-meter.js';
 
 const KOIOS_BASE = 'https://api.koios.rest/api/v1';
 const CURL_MAX_TIME = 12;
@@ -49,9 +50,12 @@ let _bech32 = null;
 let _ready = false;
 
 async function runCmd(command) {
+  if (meter.isPaused()) return '';
+  meter.recordCall();
   const r = await invoke('ssh_run', { command });
-  if (typeof r === 'string') return r;
-  return r?.stdout ?? '';
+  const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
+  if (meter.looksLikeLimit(out)) return '';
+  return out;
 }
 function parseJson(out, fallback) {
   if (!out || !out.trim()) return fallback;

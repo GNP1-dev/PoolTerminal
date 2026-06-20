@@ -580,7 +580,9 @@ export async function mountDelegators(canvas) {
 
   // Hero stats (computed on the FULL list — totals are always whole-pool).
   const totalStakeLov = list.reduce((s, d) => s + (d.liveStakeLovelace || 0), 0);
-  const top = list[0];
+  // Largest single delegator by stake - the list order from Koios is not
+  // reliably stake-descending, so compute the max explicitly.
+  const top = list.reduce((m, d) => (!m || (d.liveStakeLovelace || 0) > (m.liveStakeLovelace || 0)) ? d : m, null);
   setText('d-count', live?.liveDelegators != null ? String(live.liveDelegators) : String(list.length));
   setText('d-stake', fmtAda(live?.liveStake));
   setText('d-active', live?.activeStake != null ? fmtAda(live.activeStake) : '—');

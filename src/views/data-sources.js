@@ -116,26 +116,43 @@ function ensureStyle() {
   const el = document.createElement('style');
   el.id = 'ds-style';
   el.textContent = `
-    .ds-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 4px 2px 24px; max-width: 980px; }
-    .ds-head h2 { font-size: 20px; font-weight: 800; margin: 0 0 4px; color: var(--pt-text-primary, #e6edf3); }
-    .ds-head p { font-size: 13px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 16px; line-height: 1.5; }
-    .ds-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
-    .ds-chip { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px;
-      background: rgba(120,150,190,0.06); border: 1px solid rgba(120,150,190,0.2); min-width: 170px; }
+    /* Outer wrap fills the canvas; the header is fixed and the grid fills the rest. */
+    .ds-wrap { flex: 1 1 auto; min-height: 0; box-sizing: border-box; padding: 4px 2px 6px;
+      display: flex; flex-direction: column; overflow: hidden; }
+    .ds-head h2 { font-size: 18px; font-weight: 800; margin: 0 0 2px; color: var(--pt-text-primary, #e6edf3); }
+    .ds-head p { font-size: 12px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 10px; line-height: 1.4; }
+
+    /* 2x2 tile grid filling the remaining height, no page scroll. */
+    .ds-grid { flex: 1 1 auto; min-height: 0; display: grid;
+      grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px; }
+    .ds-tile { min-height: 0; display: flex; flex-direction: column;
+      background: rgba(120,150,190,0.04); border: 1px solid rgba(120,150,190,0.14);
+      border-radius: 12px; padding: 12px 14px; box-sizing: border-box; }
+    .ds-tile-h { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--pt-text-secondary, #b9c4d0); margin: 0 0 2px; flex: 0 0 auto; }
+    .ds-tile-sub { font-size: 11px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 9px; flex: 0 0 auto; line-height: 1.35; }
+    /* Tile body scrolls internally only if its content is taller than the tile. */
+    .ds-tile-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    .ds-tile-body::-webkit-scrollbar { width: 7px; }
+    .ds-tile-body::-webkit-scrollbar-thumb { background: rgba(120,150,190,0.25); border-radius: 4px; }
+
+    /* Status chips - stacked vertically inside the top-left tile. */
+    .ds-chips { display: flex; flex-direction: column; gap: 8px; }
+    .ds-chip { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 9px;
+      background: rgba(120,150,190,0.06); border: 1px solid rgba(120,150,190,0.2); }
     .ds-chip-off { opacity: 0.55; }
     .ds-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
     .ds-chip-l { font-size: 13px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); }
     .ds-chip-s { font-size: 11px; color: var(--pt-text-muted, #9aa7b4); margin-top: 1px; }
-    .ds-section { margin-bottom: 22px; }
-    .ds-section-h { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
-      color: var(--pt-text-secondary, #b9c4d0); margin: 0 0 4px; }
-    .ds-section-sub { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 10px; }
-    .ds-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
-      padding: 12px 14px; border-radius: 9px; background: rgba(120,150,190,0.04);
-      border: 1px solid rgba(120,150,190,0.12); margin-bottom: 8px; }
-    .ds-row-l { font-size: 13.5px; font-weight: 600; color: var(--pt-text-primary, #e6edf3); }
-    .ds-row-d { font-size: 12px; color: var(--pt-text-muted, #9aa7b4); margin-top: 2px; line-height: 1.45; }
-    .ds-note { font-size: 11.5px; color: var(--pt-text-secondary, #b9c4d0); margin-top: 6px; line-height: 1.45;
+
+    /* Feature rows - compacted for tile density. */
+    .ds-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      padding: 9px 11px; border-radius: 8px; background: rgba(120,150,190,0.04);
+      border: 1px solid rgba(120,150,190,0.12); margin-bottom: 7px; }
+    .ds-row:last-child { margin-bottom: 0; }
+    .ds-row-l { font-size: 13px; font-weight: 600; color: var(--pt-text-primary, #e6edf3); }
+    .ds-row-d { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); margin-top: 2px; line-height: 1.4; }
+    .ds-note { font-size: 11px; color: var(--pt-text-secondary, #b9c4d0); margin-top: 5px; line-height: 1.4;
       border-left: 2px solid rgba(120,150,190,0.3); padding-left: 8px; }
     .ds-note-warn { color: #fbbf24; border-left-color: rgba(251,191,36,0.5); }
     .ds-row-src { flex: 0 0 auto; }
@@ -150,6 +167,13 @@ function ensureStyle() {
     .ds-none   { color: #fb7185; border-color: rgba(251,113,133,0.4); background: rgba(251,113,133,0.08); }
     .ds-dot.ds-node { background: #4ade80; } .ds-dot.ds-dbsync { background: #2dd4bf; }
     .ds-dot.ds-koios { background: #4aa3ff; } .ds-dot.ds-bf { background: #a78bfa; }
+
+    /* Below a narrow width, stack tiles vertically and allow the page to scroll. */
+    @media (max-width: 760px) {
+      .ds-wrap { overflow-y: auto; }
+      .ds-grid { grid-template-columns: 1fr; grid-template-rows: none; }
+      .ds-tile { min-height: 180px; }
+    }
   `;
   document.head.appendChild(el);
 }
@@ -199,18 +223,31 @@ function draw(canvas) {
       `<div class="ds-head"><h2>Data sources</h2>` +
       `<p>Where each part of PoolTerminal gets its data, and what needs a particular source. ` +
       `Change sources in the setup wizard or Settings.</p></div>` +
-      summaryHtml(live) +
-      `<div class="ds-section"><div class="ds-section-h">From your node</div>` +
-        `<div class="ds-section-sub">Read directly from the Cardano node over your connection.</div>` +
-        NODE_FEATURES.map((f) => nodeRow(f, live)).join('') +
-      `</div>` +
-      `<div class="ds-section"><div class="ds-section-h">Pool &amp; delegators</div>` +
-        `<div class="ds-section-sub">Live pool and delegator data from an external source.</div>` +
-        POOL_FEATURES.map(extRow).join('') +
-      `</div>` +
-      `<div class="ds-section"><div class="ds-section-h">History</div>` +
-        `<div class="ds-section-sub">Per-epoch records and pool lifecycle.</div>` +
-        HISTORY_FEATURES.map(extRow).join('') +
+      `<div class="ds-grid">` +
+        // top-left: status
+        `<div class="ds-tile">` +
+          `<div class="ds-tile-h">Status</div>` +
+          `<div class="ds-tile-sub">Connections in use right now.</div>` +
+          `<div class="ds-tile-body">` + summaryHtml(live) + `</div>` +
+        `</div>` +
+        // top-right: node
+        `<div class="ds-tile">` +
+          `<div class="ds-tile-h">From your node</div>` +
+          `<div class="ds-tile-sub">Read directly from the Cardano node over your connection.</div>` +
+          `<div class="ds-tile-body">` + NODE_FEATURES.map((f) => nodeRow(f, live)).join('') + `</div>` +
+        `</div>` +
+        // bottom-left: pool & delegators
+        `<div class="ds-tile">` +
+          `<div class="ds-tile-h">Pool &amp; delegators</div>` +
+          `<div class="ds-tile-sub">Live pool and delegator data from an external source.</div>` +
+          `<div class="ds-tile-body">` + POOL_FEATURES.map(extRow).join('') + `</div>` +
+        `</div>` +
+        // bottom-right: history
+        `<div class="ds-tile">` +
+          `<div class="ds-tile-h">History</div>` +
+          `<div class="ds-tile-sub">Per-epoch records and pool lifecycle.</div>` +
+          `<div class="ds-tile-body">` + HISTORY_FEATURES.map(extRow).join('') + `</div>` +
+        `</div>` +
       `</div>` +
     `</div>`;
 }

@@ -34,7 +34,7 @@ import * as blockfrost from './blockfrost-query.js';
 // survives across sessions and is fetched only once.
 if (blockfrost.setBfMetaCache) blockfrost.setBfMetaCache((k) => cacheMetaGet(k), (k, v) => cacheMetaSet(k, v));
 import { DataKind, registry } from './capabilities.js';
-import { getNotifPollMs, getNotifThresholdLovelace } from './notif-settings.js';
+import { getNotifPollMs, getNotifThresholdLovelace, getNotifSource } from './notif-settings.js';
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -1104,7 +1104,10 @@ async function resolveTickers(ids) {
   }
   if (missing.length) {
     try {
-      const fetched = await koios.getPoolTickers(missing);
+      const _src = getNotifSource();
+      const fetched = (_src === 'blockfrost')
+        ? await blockfrost.getPoolTickers(missing)
+        : await koios.getPoolTickers(missing);
       for (const id of missing) {
         const t = fetched.has(id) ? fetched.get(id) : null;
         _tickerCache.set(id, t);
@@ -1127,7 +1130,10 @@ async function classifyLeavers(stakes) {
   const out = new Map();
   if (!stakes.length) return out;
   try {
-    const info = await koios.getAccountsDelegatedPool(stakes);   // Map(stake -> poolBech32|null)
+    const _src = getNotifSource();
+    const info = (_src === 'blockfrost')
+      ? await blockfrost.getAccountsDelegatedPool(stakes)
+      : await koios.getAccountsDelegatedPool(stakes);            // Map(stake -> poolBech32|null)
     const ours = ensurePoolBech32();
     for (const s of stakes) {
       if (!info.has(s)) { out.set(s, 'unknown'); continue; }

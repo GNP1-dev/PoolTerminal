@@ -30,6 +30,11 @@ const DEFAULTS = {
 export const POLL_LADDER_MS = [30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000];
 // Koios daily call budgets by tier.
 export const TIER_BUDGET = { free: 5000, token: 50000 };
+// Blockfrost free-tier daily budget (registered project key).
+export const BLOCKFROST_BUDGET = 50000;
+// Blockfrost calls per poll: notifications only need the paginated delegator
+// list (100/page), no per-account calls. +1 small allowance.
+export function bfCallsPerPoll(n) { return 1 + Math.ceil((Number(n) || 0) / 100); }
 // Leave headroom for other Koios use (pool info, tickers): notifications take
 // at most this fraction of the daily budget when computing a suggestion.
 const NOTIF_BUDGET_FRACTION = 0.7;
@@ -88,6 +93,19 @@ export function suggestPollMs({ delegatorCount = 0, source = 'koios', koiosTier 
       unlimited: true, callsPerPoll: 0, over: false,
     };
   }
+  if (source === 'blockfrost') {
+    const bcpp = bfCallsPerPoll(delegatorCount);
+    const bbudget = BLOCKFROST_BUDGET * NOTIF_BUDGET_FRACTION;
+    const bmaxPolls = Math.max(1, Math.floor(bbudget / bcpp));
+    const bminMs = Math.ceil(DAY_MS / bmaxPolls);
+    let bms = POLL_LADDER_MS.find((v) => v >= bminMs);
+    let bover = false;
+    if (!bms) { bms = POLL_LADDER_MS[POLL_LADDER_MS.length - 1]; bover = true; }
+    const breason = bover
+      ? `${delegatorCount} delegators need ~${bcpp} Blockfrost calls per poll — too many to stay safe even hourly on the 50k/day free tier. Consider db-sync for live updates, or a higher Blockfrost plan.`
+      : `${delegatorCount} delegators is about ${bcpp} Blockfrost call(s) per poll. ${fmtInterval(bms)} keeps notifications within ~${Math.round(NOTIF_BUDGET_FRACTION * 100)}% of the ${BLOCKFROST_BUDGET.toLocaleString()}/day Blockfrost budget.`;
+    return { ms: bms, reason: breason, unlimited: false, callsPerPoll: bcpp, over: bover };
+  }
   const cpp = callsPerPoll(delegatorCount);
   const tier = TIER_BUDGET[koiosTier] ? koiosTier : 'free';
   const budget = TIER_BUDGET[tier] * NOTIF_BUDGET_FRACTION;
@@ -108,6 +126,12 @@ export function suggestPollMs({ delegatorCount = 0, source = 'koios', koiosTier 
  */
 export function pollUsage({ ms, delegatorCount = 0, source = 'koios', koiosTier = 'free' }) {
   if (source === 'dbsync') return { callsPerDay: 0, budget: Infinity, breaches: false };
+  if (source === 'blockfrost') {
+    const bcpp = bfCallsPerPoll(delegatorCount);
+    const bpolls = DAY_MS / Math.max(1000, ms);
+    const bcalls = Math.round(bcpp * bpolls);
+    return { callsPerDay: bcalls, budget: BLOCKFROST_BUDGET, breaches: bcalls > BLOCKFROST_BUDGET };
+  }
   const cpp = callsPerPoll(delegatorCount);
   const pollsPerDay = DAY_MS / Math.max(1000, ms);
   const callsPerDay = Math.round(cpp * pollsPerDay);

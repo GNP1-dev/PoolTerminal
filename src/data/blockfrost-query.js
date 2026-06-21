@@ -274,6 +274,38 @@ export async function getPoolMeta(poolId) {
   return meta;
 }
 
+/** Current delegated pool per account (for leaver classification).
+ *  Returns Map(stake -> pool_id bech32 | null). One /accounts/{stake} each;
+ *  only called for the (rare) set of leavers, so cost is negligible. */
+export async function getAccountsDelegatedPool(stakes) {
+  const out = new Map();
+  for (const s of (stakes || [])) {
+    try {
+      // Read the latest delegation CERTIFICATE (immediate), not /accounts.pool_id
+      // (the active delegation, which lags the cert by up to ~2 epochs). The most
+      // recent cert's pool_id is where the delegator just moved - what db-sync sees.
+      const certs = await bfGet(`/accounts/${s}/delegations?order=desc&count=1`, []);
+      const latest = Array.isArray(certs) && certs.length ? certs[0] : null;
+      if (latest && latest.pool_id) { out.set(s, latest.pool_id); continue; }
+      // Fallback to the active pool if no cert came back.
+      const a = await bfGet(`/accounts/${s}`, null);
+      out.set(s, (a && a.pool_id) ? a.pool_id : null);
+    } catch { out.set(s, null); }
+  }
+  return out;
+}
+
+/** Pool tickers for a set of pool ids. Reuses the cached getPoolMeta.
+ *  Returns Map(id -> ticker | null), matching the Koios signature. */
+export async function getPoolTickers(ids) {
+  const out = new Map();
+  for (const id of (ids || [])) {
+    try { const m = await getPoolMeta(id); out.set(id, m && m.ticker ? m.ticker : null); }
+    catch { out.set(id, null); }
+  }
+  return out;
+}
+
 // ============================================================
 /** EPOCH_BLOCKS (+ epoch stake/delegators/rewards) — full per-epoch history.
  *  Paginates /pools/{id}/history (100 epochs/page, ~4 calls for full history,
@@ -486,9 +518,104 @@ async function buildOwnerStake() {
 // Capability-registry source (optional — registers only with a key)
 // ============================================================
 
+/** DELEGATOR_LOYALTY - full parity with db-sync, computed per delegator from
+ *  /accounts/{stake}/history. Returns the same row shape as dbsync getLoyalty so
+ *  the view's scoreLoyalty() and the loyalty cache work unchanged.
+ *  Cost: 1 history call per delegator (cached per-address). Logs the count. */
+async function getAccountHistoryAll(stake) {
+  // Cached per-address: past epochs never change. Cache key acct-hist:{stake}.
+  const key = `accthist:${stake}`;
+  if (_metaGet) {
+    try { const c = await _metaGet(key); if (c) return JSON.parse(c); } catch { /* refetch */ }
+  }
+  const all = [];
+  for (let page = 1; page <= 30; page++) {
+    const part = await bfGet(`/accounts/${stake}/history?count=100&page=${page}&order=asc`, []);
+    if (!Array.isArray(part) || part.length === 0) break;
+    for (const r of part) all.push({ active_epoch: Number(r.active_epoch), amount: r.amount, pool_id: r.pool_id || null });
+    if (part.length < 100) break;
+  }
+  // Only cache once the account has settled history (avoid caching a transient empty).
+  if (_metaSet && all.length) { try { await _metaSet(key, JSON.stringify(all)); } catch { /* ignore */ } }
+  return all;
+}
+
+// Pure translation of the db-sync getLoyalty SQL for one account.
+function computeLoyaltyForAccount(history, poolBech32, currentEpoch) {
+  const h = history
+    .map((r) => ({ epoch: Number(r.active_epoch), amount: r.amount != null ? Number(r.amount) : 0, pool: r.pool_id || null }))
+    .sort((a, b) => a.epoch - b.epoch);
+  const mine = h.filter((r) => r.pool === poolBech32);
+  if (!mine.length) return null;
+
+  // current unbroken run with us (gaps-and-islands): walk back while consecutive.
+  let runStart = mine.length - 1;
+  for (let i = mine.length - 1; i > 0; i--) {
+    if (mine[i].epoch - mine[i - 1].epoch === 1) runStart = i - 1; else break;
+  }
+  const run = mine.slice(runStart);
+  const tenure = run.length;
+  const sinceEpoch = run[0].epoch;
+  const curStake = Math.round(mine[mine.length - 1].amount / 1e6);
+
+  // big drops WITH US (consecutive epochs only, matching LAG over our rows).
+  const bigDrops = [];
+  for (let i = 1; i < mine.length; i++) {
+    if (mine[i].epoch - mine[i - 1].epoch !== 1) continue;
+    const prev = mine[i - 1].amount, now = mine[i].amount;
+    if (prev != null && now < prev * 0.5) bigDrops.push({ dropEpoch: mine[i].epoch, newAmt: now, prevAmt: prev });
+  }
+
+  // reduction factor: worst (fraction pulled x recency), halflife 36 epochs.
+  let reductionFactor = 0;
+  for (const d of bigDrops) {
+    const frac = 1 - (d.newAmt / (d.prevAmt || 1));
+    const recency = 36 / (36 + (currentEpoch - d.dropEpoch));
+    reductionFactor = Math.max(reductionFactor, frac * recency);
+  }
+
+  // defection: a big drop where >=50% of lost stake appears at another pool
+  // within 1 epoch (first such drop, matching DISTINCT ON ... ORDER BY drop_epoch).
+  let defected = false, defectToPool = null, defectEpoch = null, defectToAda = null;
+  for (const d of bigDrops) {
+    const lost = d.prevAmt - d.newAmt;
+    const cand = h.find((r) => r.pool && r.pool !== poolBech32
+      && r.epoch >= d.dropEpoch && r.epoch <= d.dropEpoch + 1
+      && r.amount >= lost * 0.5);
+    if (cand) { defected = true; defectToPool = cand.pool; defectEpoch = d.dropEpoch; defectToAda = Math.round(cand.amount / 1e6); break; }
+  }
+
+  return { tenure, sinceEpoch, curStake, reductionFactor, defected, defectToPool, defectEpoch, defectToAda };
+}
+
+async function getDelegatorLoyalty() {
+  const list = await getDelegatorList();
+  // current epoch from the network info we already fetch elsewhere; fall back to
+  // the max epoch seen in the first delegator's history.
+  let currentEpoch = 0;
+  const t0 = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  let calls = 0;
+  const rows = [];
+  for (const d of list) {
+    const stake = d.stake;
+    if (!stake) continue;
+    let hist = [];
+    try { hist = await getAccountHistoryAll(stake); calls++; } catch { hist = []; }
+    if (!hist.length) continue;
+    if (!currentEpoch) currentEpoch = hist.reduce((m, r) => Math.max(m, Number(r.active_epoch)), 0);
+    const loy = computeLoyaltyForAccount(hist, _poolBech32, currentEpoch);
+    if (loy) rows.push({ stake, ...loy });
+  }
+  rows.sort((a, b) => b.tenure - a.tenure);
+  const ms = Math.round(((typeof performance !== 'undefined') ? performance.now() : Date.now()) - t0);
+  console.log(`[blockfrost] loyalty: ${rows.length} delegators, ${calls} history calls in ${ms}ms`);
+  return rows;
+}
+
 const PROVIDES = [
   DataKind.POOL_LIVE,
   DataKind.DELEGATOR_LIST,
+  DataKind.DELEGATOR_LOYALTY,
   DataKind.DELEGATOR_DETAIL,
   DataKind.POOL_LIFECYCLE,
   DataKind.EPOCH_BLOCKS,
@@ -497,7 +624,35 @@ const PROVIDES = [
   DataKind.EPOCH_REWARDS,
   DataKind.EPOCH_IDEAL,
   DataKind.POOL_PARAMS,
+  DataKind.DELEGATOR_LIST_LIVE,
 ];
+
+/** DELEGATOR_LIST_LIVE — current delegators for the notification poller.
+ *  Reuses getDelegatorList (paginated /pools/{id}/delegators, no per-account
+ *  calls) and stamps the current epoch. latestDelegTx is null on Blockfrost
+ *  (the leave/join is still detected; only that enrichment is absent). */
+let _bfLatestEpoch = 0;
+let _bfLatestEpochAt = 0;
+async function bfCurrentEpoch() {
+  // Cache for 60s so rapid polls don't each hit /blocks/latest.
+  const now = Date.now();
+  if (_bfLatestEpoch && (now - _bfLatestEpochAt) < 60_000) return _bfLatestEpoch;
+  const b = await bfGet('/blocks/latest', null);
+  if (b && b.epoch != null) { _bfLatestEpoch = Number(b.epoch); _bfLatestEpochAt = now; }
+  return _bfLatestEpoch || null;
+}
+async function getDelegatorListLive() {
+  const list = await getDelegatorList();
+  const epoch = await bfCurrentEpoch();
+  return list.map((d) => ({
+    stake: d.stake,
+    liveStake: d.liveStake,
+    liveStakeLovelace: d.liveStakeLovelace,
+    latestDelegTx: null,
+    activeEpochNo: epoch,
+    isOwner: d.isOwner,
+  }));
+}
 
 export const blockfrostSource = {
   id: 'blockfrost',
@@ -510,6 +665,8 @@ export const blockfrostSource = {
     switch (kind) {
       case DataKind.POOL_LIVE:         return getPoolLive();
       case DataKind.DELEGATOR_LIST:    return getDelegatorList();
+      case DataKind.DELEGATOR_LIST_LIVE: return getDelegatorListLive();
+      case DataKind.DELEGATOR_LOYALTY: return getDelegatorLoyalty();
       case DataKind.DELEGATOR_DETAIL:  return getDelegatorDetail(params.stake, params.currentEpoch);
       case DataKind.POOL_LIFECYCLE:    return getPoolLifecycle();
       case DataKind.EPOCH_BLOCKS:

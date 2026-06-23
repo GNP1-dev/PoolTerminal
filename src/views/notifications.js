@@ -21,6 +21,31 @@
 import { fmtAda, shortStake, getOwnPoolTicker } from '../ui/notif-format.js';
 import { getNotifications } from '../data/read-model.js';
 
+// Copy text to the clipboard with a brief check-mark on the button that fired.
+function copyStake(text, btn) {
+  const flash = () => {
+    if (!btn) return;
+    const prev = btn.innerHTML;
+    btn.innerHTML = '\u2713 copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.innerHTML = prev; btn.classList.remove('copied'); }, 1100);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash).catch(() => fallbackCopy(text, flash));
+    } else { fallbackCopy(text, flash); }
+  } catch { fallbackCopy(text, flash); }
+}
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    done && done();
+  } catch (e) { console.warn('[notif] copy failed:', e); }
+}
+
 const STYLE_ID = 'pt-notif-view-style';
 const BADGE_ID = 'pt-notif-badge';
 const FEED_LIMIT = 300;
@@ -139,7 +164,7 @@ function amountHtml(ev) {
 function metaHtml(ev) {
   const d = ev.detail || {};
   const bits = [];
-  bits.push(`<span class="nf-stake" title="${esc(ev.stake)}">${esc(shortStake(ev.stake))}</span>`);
+  bits.push(`<span class="nf-stake" title="${esc(ev.stake)}">${esc(shortStake(ev.stake))}</span>` + (ev.stake ? `<button class="nf-copy" type="button" data-copy="${esc(ev.stake)}" title="Copy stake address">\u29C9 copy</button>` : ''));
   const dt = fmtDateTime(ev);
   if (dt) bits.push(`<span class="nf-when">${esc(dt)}</span>`);
   if (d.epoch != null) bits.push(`<span class="nf-ep">epoch ${esc(d.epoch)}</span>`);
@@ -268,6 +293,9 @@ function ensureStyle() {
       font-size: 11px; color: var(--pt-text-muted, #9aa7b4); font-variant-numeric: tabular-nums; }
     .nf-meta .nf-sep { opacity: 0.4; }
     .nf-stake { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--pt-text-primary, #e6edf3); opacity: 0.82; }
+    .nf-copy { margin-left: 6px; background: rgba(90,140,220,0.14); border: 1px solid var(--pt-border, #2c3a4d); border-radius: 4px; color: var(--pt-accent-blue, #5a8cdc); cursor: pointer; font: 600 9px ui-monospace, monospace; line-height: 1; padding: 3px 5px; letter-spacing: 0.3px; vertical-align: middle; transition: background 0.12s, color 0.12s; }
+    .nf-copy:hover { background: var(--pt-accent-blue, #5a8cdc); color: #fff; }
+    .nf-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; border-color: var(--pt-accent-gold, #d6b246); }
     .nf-when { color: var(--pt-text-primary, #e6edf3); opacity: 0.9; }
     .nf-ep { color: var(--nf-acc); font-weight: 600; }
     .nf-tx { cursor: pointer; color: var(--nf-acc); border: 1px solid var(--nf-edge); border-radius: 5px; padding: 1px 7px; font-weight: 600; }
@@ -331,6 +359,8 @@ async function render(canvas) {
   if (list && !list._txWired) {
     list._txWired = true;
     list.addEventListener('click', (e) => {
+      const cp = e.target.closest('[data-copy]');
+      if (cp) { e.stopPropagation(); copyStake(cp.getAttribute('data-copy'), cp); return; }
       const el = e.target.closest('[data-tx]');
       if (el) openUrl(`https://cardanoscan.io/transaction/${el.getAttribute('data-tx')}`);
     });

@@ -52,35 +52,37 @@ const SECTIONS = `
     connection. With just those it reads everything live from the node - chain tip, sync, KES, blocks,
     leader schedule, peers, mempool and host health - and uses <span class="ab-src ab-koios">Koios</span>,
     a free public Cardano service, for pool summary, delegators, history and notifications.</p>
-    <p>That alone is a complete setup, and it's all most operators need.</p>
+    <p>That alone is a complete setup, and it's all most operators need. The one thing Koios can't do
+    is the loyalty leaderboard, which needs db-sync or Blockfrost (below).</p>
   </div>
 
   <div class="ab-sec">
     <h3>Optional: add db-sync</h3>
     <p>If you run your own <span class="ab-src ab-dbsync">db-sync</span> database, PoolTerminal can read
-    from it directly. It adds the <strong>loyalty leaderboard</strong> (longest-tenured delegators, which
-    only db-sync can compute), full instant per-epoch history, and the delegator deep-dive - all with no
-    API limits, straight from your own data.</p>
+    straight from it. Because it is your own data there are no API limits and history loads instantly. You
+    get full per-epoch history, the delegator deep-dive and the <strong>loyalty leaderboard</strong> (your
+    longest-standing delegators), all from your own machine.</p>
   </div>
 
   <div class="ab-sec">
     <h3>Optional: add Blockfrost</h3>
-    <p>A free <span class="ab-src ab-bf">Blockfrost</span> project key is another way to get the pool
-    summary, delegator list and delegator deep-dive - useful if you want richer delegator data without
-    running db-sync. Enter the key in Settings.</p>
+    <p>A free <span class="ab-src ab-bf">Blockfrost</span> project key gives you almost everything db-sync
+    does without running a database: pool summary, delegator list and deep-dive, full history,
+    notifications and the loyalty leaderboard. It is a good middle ground if you want the richer delegator
+    features but do not run db-sync. Enter the key in Settings.</p>
   </div>
 
   <div class="ab-sec">
     <h3>Who serves what</h3>
-    <p>PoolTerminal picks the best available source for each piece of data automatically. When more than
-    one source can answer, it prefers db-sync (your own data, instant), then Koios, then Blockfrost. You
-    can see exactly which source is answering each feature on the <strong>Data</strong> tab.</p>
+    <p>PoolTerminal picks the best available source for each piece of data automatically, and prefers your
+    own db-sync when you have it. You can see exactly which source is answering each feature on the
+    <strong>Data</strong> tab.</p>
     <ul class="ab-list">
       <li>Live node data - always from your node.</li>
-      <li>History and pool parameters - db-sync or Koios.</li>
-      <li>Pool summary and notifications - Koios (or Blockfrost for the summary).</li>
+      <li>History and pool parameters - db-sync, Koios or Blockfrost.</li>
+      <li>Pool summary and notifications - Koios or Blockfrost.</li>
       <li>Delegator list and deep-dive - db-sync, Koios or Blockfrost.</li>
-      <li>Loyalty leaderboard - db-sync only.</li>
+      <li>Loyalty leaderboard - db-sync or Blockfrost (not Koios).</li>
     </ul>
   </div>
 
@@ -97,7 +99,7 @@ function ensureStyle() {
   const el = document.createElement('style');
   el.id = 'ab-style';
   el.textContent = `
-    .ab-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 6px 4px 28px; max-width: 760px; }
+    .ab-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 6px 24px 28px; max-width: 760px; width: 100%; margin: 0 auto; align-self: center; }
     .ab-wrap h2 { font-size: 21px; font-weight: 800; margin: 0 0 4px; color: var(--pt-text-primary, #e6edf3); }
     .ab-tagline { font-size: 13px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 18px; }
     .ab-setup { border: 1px solid rgba(120,150,190,0.2); border-radius: 11px; padding: 14px 16px; margin-bottom: 22px;

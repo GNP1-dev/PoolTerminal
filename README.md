@@ -8,7 +8,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
-> _Last updated: 18 June 2026_
+> _Last updated: 23 June 2026_
 
 ## What it is
 
@@ -26,9 +26,9 @@ Working today:
 
 - **NOW** — Live current-epoch dashboard: chain pulse, tip/sync, KES expiry, ideal/leader, era badge, mempool, peer counts, and a compact relay map. **Upcoming blocks** lists your assigned leader slots for the current *and* next epoch (once the ~36 h leadership-schedule window opens), each with a live countdown — sourced from the authoritative `cardano-cli` leadership schedule and cached per epoch. Views repaint instantly from cache on return, refreshing live behind.
 - **HISTORY** — Full per-epoch table back to your pool's first epoch: blocks, ideal, luck, delegators, active stake, and a colour-coded six-way reward split (delegator reward · pledge · min-fee · margin · **SPO earnings** · total payout), where SPO earnings is the operator's own take per epoch. Charts for blocks-per-epoch and luck.
-- **DELEGATORS** — One data-rich, sortable table of every delegator, merging live stake with a computed **loyalty** ranking (tenure × stake-weight × penalties for defection/withdrawal). Sort by loyalty or stake, dust filter, paginated. Click any delegator for a deep-dive: balance, rewards, withdrawals, DRep flag, and a colourful **pool-movement journey** showing every pool they've delegated to with entry/exit epochs and active stake at each. The deep-dive works from db-sync, Koios *or* Blockfrost; loyalty (which needs full tenure history) is db-sync only.
+- **DELEGATORS** — One data-rich, sortable table of every delegator, merging live stake with a computed **loyalty** ranking (tenure × stake-weight × penalties for defection/withdrawal). Sort by loyalty or stake, dust filter, paginated. **Search by stake address** to jump straight to a delegator and highlight their row, and **copy** any full stake address with one click. Click any delegator for a deep-dive: balance, rewards, withdrawals, DRep flag, and a colourful **pool-movement journey** showing every pool they've delegated to with entry/exit epochs and active stake at each. The deep-dive works from db-sync, Koios *or* Blockfrost; the loyalty leaderboard needs db-sync or Blockfrost (Koios can't compute it).
 - **NODE HEALTH** — Host and node-process metrics (CPU, memory, peers, resources) with historical samples.
-- **NOTIFICATIONS** — A live feed of delegation activity, detected on-chain within minutes: delegators joining (with the pool they came from), transfers in, **returning** delegators (anyone who was ever delegated before), redelegations away, and stake increases/decreases. Each event is colour-coded with a from→to flow, amount, epoch, slot, UTC timestamp and a one-click Cardanoscan transaction link. Corner toasts surface activity from any tab, and an unread badge tracks new events. A built-in advisor scales the polling cadence to your delegator count and chosen source so notifications stay within free-tier limits.
+- **NOTIFICATIONS** — A live feed of delegation activity, detected on-chain within minutes: delegators joining (with the pool they came from), transfers in, **returning** delegators (anyone who was ever delegated before), redelegations away, and stake increases/decreases. Each event is colour-coded with a from→to flow, amount, epoch, slot, UTC timestamp and a one-click Cardanoscan transaction link. Each event's stake address can be **copied** with one click (handy for pasting into the Delegators search). Corner toasts surface activity from any tab, and an unread badge tracks new events. A built-in advisor scales the polling cadence to your delegator count and chosen source so notifications stay within free-tier limits.
 - **DATA** — A transparency screen showing exactly which source is answering each feature (node, db-sync, Koios or Blockfrost), and what each optional source would unlock.
 - **MAP** — Full-size D3 world map (Natural Earth, cached offline after first load) plotting your node and its live peers, geo-located, with RTT-coloured connections and a side panel of latency bands and geographic distribution.
 - **SETUP WIZARD** — A first-run guided walkthrough: connect to your node, then optionally add db-sync and/or Blockfrost, with notification cadence tuned to your pool size. Re-runnable any time from Settings.
@@ -42,24 +42,24 @@ PoolTerminal needs only **your node plus an internet connection** to be fully us
 
 - **Your node** (required) — all live data: chain tip, sync, KES, leader schedule, blocks, peers, mempool, host health. Read over SSH (or directly when run on the node).
 - **Koios** (the baseline, free) — a public Cardano API needing only internet. Provides pool summary, delegator list, per-epoch history, live notifications, and the delegator deep-dive. This alone is a complete setup, and it's all most operators need.
-- **db-sync** (optional) — read your own Cardano db-sync Postgres directly. Adds the **loyalty leaderboard** (which only db-sync can compute), full instant per-epoch history, and the deep-dive — all with no API limits, straight from your own data.
-- **Blockfrost** (optional) — a free project key, another route to the pool summary, delegator list and deep-dive.
+- **db-sync** (optional) — read your own Cardano db-sync Postgres directly. Because it's your own data there are no API limits and history loads instantly: full per-epoch history, the delegator deep-dive and the **loyalty leaderboard**, straight from your own machine.
+- **Blockfrost** (optional) — a free project key that gives almost everything db-sync does without running a database: pool summary, delegator list and deep-dive, full per-epoch history, live notifications, and the **loyalty leaderboard**. A good middle ground for richer delegator features without db-sync.
 
-When more than one source can answer, the order of preference is **db-sync → Koios → Blockfrost** for your own pool's data, and Koios for the live pool summary. You can see exactly who serves what on the DATA tab, and there's a plain-language explanation under Settings → About.
+When more than one source can answer, PoolTerminal prefers your own db-sync where you have it, then the public services. You can see exactly who serves what on the DATA tab, and there's a plain-language explanation under Settings → About.
 
 ### Capability matrix
 
 | Capability | Node | Koios | db-sync | Blockfrost |
 |---|:---:|:---:|:---:|:---:|
 | Live node data (tip, KES, peers, mempool, blocks) | ✓ | | | |
-| Epoch history, pool parameters | | ✓ | ✓ | |
+| Epoch history, pool parameters | | ✓ | ✓ | ✓ |
 | Pool summary (live/active stake, saturation, pledge) | | ✓ | | ✓ |
-| Live notifications | | ✓ | | |
+| Live notifications | | ✓ | | ✓ |
 | Delegator list | | ✓ | ✓ | ✓ |
 | Delegator deep-dive | | ✓ | ✓ | ✓ |
-| Loyalty leaderboard | | | ✓ | |
+| Loyalty leaderboard | | | ✓ | ✓ |
 
-Every displayed capability has a Koios path, so a node-plus-internet setup is complete on its own. db-sync and Blockfrost are add-ons that take over what they do best.
+Almost every capability has a Koios path, so a node-plus-internet setup is complete on its own — the one exception is the loyalty leaderboard, which needs db-sync or Blockfrost. Those two are add-ons that take over what they do best, with no API limits in db-sync's case.
 
 ## Connecting
 

@@ -27,13 +27,16 @@ const MODAL_HTML = `
     </div>
     <style>
 .pt-modal-settings { max-width: 560px; }
-.set-section { border-top: 1px solid rgba(120,150,190,0.18); padding: 16px 0 4px; }
+.pt-modal-settings .pt-modal-header { padding: 10px 18px; }
+.pt-modal-settings .pt-modal-body { padding: 10px 18px; gap: 7px; }
+.pt-modal-settings .pt-modal-actions { padding: 9px 18px; }
+.set-section { border-top: 1px solid rgba(120,150,190,0.18); padding: 9px 0 2px; }
 .set-section:first-of-type { border-top: 0; }
-.set-section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--pt-text-primary, #e6edf3); margin-bottom: 12px; }
-.set-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.set-section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--pt-text-primary, #e6edf3); margin-bottom: 8px; }
+.set-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
 .set-label { flex: 0 0 150px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--pt-text-muted, #9aa7b4); }
 .set-val { font-size: 13px; font-weight: 600; color: var(--pt-text-primary, #e6edf3); }
-.set-hint { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.5; padding-left: 160px; margin: -2px 0 12px; }
+.set-hint { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.4; padding-left: 160px; margin: -3px 0 6px; }
 .set-hint.set-warn { color: #fb7185; }
 .pt-modal-settings input,
 .pt-modal-settings select {

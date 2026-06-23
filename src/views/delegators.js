@@ -145,8 +145,20 @@ const DELEGATORS_HTML = `
     .du-row:not(.head):hover { background: rgba(90,140,220,0.10); cursor: pointer; }
     .du-rank { font: 700 12px ui-monospace, monospace; color: var(--pt-text-secondary); text-align: right; }
     .du-rank.top { color: var(--pt-accent-gold, #d6b246); }
-    .du-addr { font: 400 11px ui-monospace, monospace; color: var(--pt-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .du-addr { font: 400 11px ui-monospace, monospace; color: var(--pt-text-primary); display: flex; align-items: center; gap: 4px; min-width: 0; }
+    .du-addr-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .du-addr .me { color: var(--pt-accent-gold, #d6b246); font-weight: 700; margin-left: 6px; }
+    .du-copy { flex: 0 0 auto; background: rgba(90,140,220,0.14); border: 1px solid var(--pt-border); border-radius: 4px; color: var(--pt-accent-blue); cursor: pointer; font: 600 9px ui-monospace, monospace; line-height: 1; padding: 3px 5px; letter-spacing: 0.3px; transition: background 0.12s, color 0.12s; }
+    .du-copy:hover { background: var(--pt-accent-blue); color: #fff; }
+    .du-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; border-color: var(--pt-accent-gold, #d6b246); }
+    .du-row.hit { animation: duhit 2.4s ease-out 1; }
+    @keyframes duhit { 0% { background: rgba(214,178,70,0.55); } 100% { background: transparent; } }
+    .d-search { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+    .d-search input { flex: 1; min-width: 0; background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border); border-radius: 6px; color: var(--pt-text-primary); font: 400 11px ui-monospace, monospace; padding: 6px 9px; }
+    .d-search button { background: #1b2430; color: var(--pt-text-secondary); border: 1px solid var(--pt-border); border-radius: 6px; font-size: 11px; padding: 6px 12px; cursor: pointer; }
+    .d-search button:hover { color: var(--pt-text-primary); }
+    .d-search .msg { font: 400 11px ui-monospace, monospace; color: var(--pt-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
+    .d-search .msg .full { color: var(--pt-accent-blue); cursor: pointer; }
     .du-barwrap { background: var(--pt-bg-strip, #1a2230); border-radius: 4px; height: 18px; overflow: hidden; display: flex; }
     .du-score { font: 700 14px ui-monospace, monospace; color: #fff; text-align: right; }
     .du-num { font: 600 11px ui-monospace, monospace; color: var(--pt-text-primary); text-align: right; }
@@ -203,6 +215,12 @@ const DELEGATORS_HTML = `
         <span title="Current stake, weighted so dust ≈ 0 and whales saturate - gold bar segment."><span class="sw loy-sw-stk"></span>stake-weight</span>
         <span title="Loyalty = tenure-rank × stake-weight × defection penalty (×0.25 if moved ≥50% to a rival) × reduction penalty (recent big withdrawal, fades ~6mo).">score = tenure × stake-weight × penalties ⓘ</span>
       </div>
+      <div class="d-search">
+        <input id="d-search-input" type="text" placeholder="Paste a stake address to find and jump to it\u2026" spellcheck="false" autocomplete="off">
+        <button id="d-search-go" type="button">Search</button>
+        <button id="d-search-clear" type="button">Clear</button>
+        <span class="msg" id="d-search-msg"></span>
+      </div>
       <div class="pt-tbl-wrap loy-wrap" id="d-table"></div>
     </div>
   </div>`;
@@ -210,6 +228,53 @@ const DELEGATORS_HTML = `
 const fmtAda = (n) => n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const fmtAdaFull = (n) => n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
 const shortStake = (s) => !s ? '—' : `${s.slice(0, 12)}…${s.slice(-6)}`;
+
+// Copy text to clipboard, with a brief check-mark on the button that fired.
+function copyStake(text, btn) {
+  const flash = () => { if (!btn) return; const p = btn.innerHTML; btn.innerHTML = '\u2713 copied'; btn.classList.add('copied'); setTimeout(() => { btn.innerHTML = p; btn.classList.remove('copied'); }, 1100); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash).catch(() => fallbackCopy(text, flash));
+    } else { fallbackCopy(text, flash); }
+  } catch { fallbackCopy(text, flash); }
+}
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    done && done();
+  } catch (e) { console.warn('[delegators] copy failed:', e); }
+}
+
+// Find a stake address in the current (sorted/filtered) view, jump to its page,
+// scroll it into view and pulse it. Falls back to a helpful message if the
+// address is hidden by the dust filter or genuinely absent.
+function jumpToStake(raw) {
+  const msg = document.getElementById('d-search-msg');
+  const q = (raw || '').trim().toLowerCase();
+  if (!q) { if (msg) msg.textContent = ''; return; }
+  let i = _duView.findIndex((r) => r.stake && r.stake.toLowerCase() === q);
+  if (i < 0) i = _duView.findIndex((r) => r.stake && r.stake.toLowerCase().includes(q));
+  if (i < 0) {
+    const inAll = _duRows.some((r) => r.stake && r.stake.toLowerCase().includes(q));
+    if (msg) msg.textContent = inAll
+      ? 'That delegator is hidden by the "Hide < 5 ₳" filter — untick it to see them.'
+      : 'No delegator matches that address.';
+    return;
+  }
+  _duPage = Math.floor(i / LOY_MAX_ROWS);
+  if (_duDrawPage) _duDrawPage();
+  const wrap = document.getElementById('d-table');
+  const full = _duView[i].stake;
+  const row = wrap && wrap.querySelector('.du-row[data-stake="' + full + '"]');
+  if (row) {
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    row.classList.remove('hit'); void row.offsetWidth; row.classList.add('hit');
+  }
+  if (msg) msg.innerHTML = 'Found at rank ' + (i + 1) + ': <span class="full" data-copy="' + full + '" title="Click to copy">' + full + '</span>';
+}
 
 function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
 
@@ -436,7 +501,7 @@ function unifiedRowHtml(r, idx, totalStakeLov, ownerSet) {
   if (isMe) mark = '<span class="me">you</span>';
   return `<div class="du-row" data-stake="${r.stake}">
     <span class="du-rank${idx < 3 ? ' top' : ''}">${idx + 1}</span>
-    <span class="du-addr" title="${r.stake}\nClick for full stake history">${shortStake(r.stake)}${mark}</span>
+    <span class="du-addr" title="${r.stake}\nClick for full stake history"><span class="du-addr-t">${shortStake(r.stake)}${mark}</span><button class="du-copy" type="button" data-copy="${r.stake}" title="Copy full stake address">\u29C9 copy</button></span>
     ${bar}
     <span class="du-score" title="${tipScore}">${hasLoy ? r.loyalty.toFixed(0) : '\u2014'}</span>
     <span class="du-num" title="${tipTen}">${hasLoy ? tenureLabel(r.tenure) : '\u2014'}</span>
@@ -453,6 +518,8 @@ let _duSort = 'loyalty'; // 'loyalty' | 'stake'
 let _duOwners = new Set();
 let _duTotalStake = 0;
 let _duPage = 0;         // current page (paginated, replace-style)
+let _duView = [];        // last-rendered sorted/filtered view (for search-jump)
+let _duDrawPage = null;  // active drawPage() closure (jump-to-page)
 
 function renderUnified() {
   const wrap = document.getElementById('d-table');
@@ -462,6 +529,7 @@ function renderUnified() {
   if (_duSort === 'stake') view.sort((a, b) => (b.liveStakeLovelace || 0) - (a.liveStakeLovelace || 0));
   else view.sort((a, b) => (b.loyalty ?? -1) - (a.loyalty ?? -1));
 
+  _duView = view;
   const hidden = _duRows.length - view.length;
   const who = registry.describe(DataKind.DELEGATOR_LIST);
   setText('d-meta', `${view.length} shown${hidden ? ` \u00b7 ${hidden} dust hidden` : ''} \u00b7 sorted by ${_duSort} \u00b7 source: ${who?.name ?? '\u2014'}`);
@@ -489,6 +557,9 @@ function renderUnified() {
     wrap.querySelectorAll('.du-row[data-stake]').forEach((el) => {
       el.addEventListener('click', () => openDeepDive(el.getAttribute('data-stake')));
     });
+    wrap.querySelectorAll('.du-copy[data-copy]').forEach((b) => {
+      b.addEventListener('click', (e) => { e.stopPropagation(); copyStake(b.getAttribute('data-copy'), b); });
+    });
     wrap.scrollTop = 0;
     // page bar
     const panel = wrap.closest('.pt-panel') || wrap.parentElement;
@@ -506,6 +577,7 @@ function renderUnified() {
       bar.querySelector('#du-next')?.addEventListener('click', () => { if (_duPage < pages - 1) { _duPage++; drawPage(); } });
     }
   };
+  _duDrawPage = drawPage;
   drawPage();
 }
 
@@ -638,6 +710,16 @@ export async function mountDelegators(canvas) {
 
   const dustEl = document.getElementById('d-dust');
   if (dustEl) dustEl.addEventListener('change', () => { _duPage = 0; renderUnified(); });
+
+  // Search-and-jump.
+  const sInput = document.getElementById('d-search-input');
+  const sGo = document.getElementById('d-search-go');
+  const sClear = document.getElementById('d-search-clear');
+  const sMsg = document.getElementById('d-search-msg');
+  if (sGo) sGo.addEventListener('click', () => jumpToStake(sInput?.value));
+  if (sInput) sInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') jumpToStake(sInput.value); });
+  if (sClear) sClear.addEventListener('click', () => { if (sInput) sInput.value = ''; if (sMsg) sMsg.textContent = ''; });
+  if (sMsg) sMsg.addEventListener('click', (e) => { const f = e.target.closest('[data-copy]'); if (f) copyStake(f.getAttribute('data-copy'), null); });
 
   // Sort buttons.
   const btnLoy = document.getElementById('sort-loyalty');

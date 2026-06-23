@@ -18,6 +18,7 @@ import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getSession } from '../data/session.js';
 import { invoke } from '../data/tauri.js';
+import { forceRefreshHistory } from '../data/read-model.js';
 import { getUsage } from '../data/koios-meter.js';
 import { hasKoiosToken } from '../data/koios-token.js';
 
@@ -209,6 +210,15 @@ function sourceSignature() {
   return parts.join('|');
 }
 
+async function reloadHistoryFlow() {
+  const btn = document.querySelector('#ds-reload-hist');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refilling...'; }
+  try { await forceRefreshHistory(); }
+  catch (e) { console.warn('reload history failed:', e); }
+  // The enrich pass keeps filling over the next live ticks; reset the label.
+  setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Reload history'; } }, 3000);
+}
+
 async function clearCacheFlow() {
   const ok = window.confirm(
     'Clear all cached data?\n\n' +
@@ -255,7 +265,7 @@ function draw(canvas) {
     `<div class="ds-wrap">` +
       `<div class="ds-head"><h2>Data sources</h2>` +
       `<p>Where each part of PoolTerminal gets its data, and what needs a particular source. ` +
-      `Change sources in the setup wizard or Settings.</p><button id="ds-clear-cache" class="ds-clear-btn" type="button" style="margin-top:10px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Clear cache</button></div>` +
+      `Change sources in the setup wizard or Settings.</p><button id="ds-clear-cache" class="ds-clear-btn" type="button" style="margin-top:10px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Clear cache</button><button id="ds-reload-hist" class="ds-clear-btn" type="button" style="margin-top:10px;margin-left:8px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Reload history</button></div>` +
       `<div class="ds-grid">` +
         // top-left: status
         `<div class="ds-tile">` +
@@ -285,6 +295,8 @@ function draw(canvas) {
     `</div>`;
   const _cc = canvas.querySelector('#ds-clear-cache');
   if (_cc) _cc.addEventListener('click', clearCacheFlow);
+  const _rh = canvas.querySelector('#ds-reload-hist');
+  if (_rh) _rh.addEventListener('click', reloadHistoryFlow);
 }
 
 export function unmountDataSources() {

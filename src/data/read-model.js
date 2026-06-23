@@ -401,6 +401,23 @@ export async function refreshIdealFiller() {
   }
 }
 
+/**
+ * Manually re-arm the history enrich pass (ideal + leader rewards).
+ *
+ * refreshIdealFiller() latches itself "done" once it sees no gaps. A transient
+ * Koios null can leave a field blank, and the latch then stops it retrying until
+ * a full app reload - which is why gaps used to need a reload to fill. This
+ * clears the latch (and throttle) and kicks one pass; the periodic caller in
+ * live.js then keeps refilling on each tick until no gaps remain. Backs the
+ * Data-tab "Reload history" button and the console command.
+ */
+export async function forceRefreshHistory() {
+  _idealFillDone = false;
+  _idealFillAt = 0;
+  console.log('[read-model] history enrich re-armed (manual reload) - refilling gaps');
+  try { await refreshIdealFiller(); } catch (e) { console.warn('[read-model] forceRefreshHistory:', e?.message ?? e); }
+}
+
 // ---- Recent refresh --------------------------------------------------------
 // pool_history LAGS (it omits the last epoch or two), but pool_blocks is
 // near-real-time. So for recent CLOSED epochs we take the block count from
@@ -411,11 +428,12 @@ export async function refreshIdealFiller() {
 const RECENT_MS = 5 * 60 * 1000;
 let _recentAt = 0;
 let _recentInFlight = false;
+let _activeHistorySource = null;   // the source the dispatcher is REALLY using for history
 
 export async function refreshRecent(currentEpoch) {
   if (!KOIOS_ENABLED) return;
-  if (DATA_SOURCE === 'dbsync') return;   // db-sync keeps recent epochs fresh — no Koios recent-refresh needed
-  if (!_backfillDone || _recentInFlight || !currentEpoch) return;
+  if (_activeHistorySource === 'dbsync') return;   // db-sync's own recent refresh handles the tail
+  if ((!_backfillDone && !_koiosBackfillDone) || _recentInFlight || !currentEpoch) return;
   const now = Date.now();
   if (_recentAt && now - _recentAt < RECENT_MS) return;
   _recentInFlight = true;
@@ -839,6 +857,33 @@ async function backfillFromDbsync(currentEpoch) {
   }
 }
 
+// ---- db-sync recent-epoch refresh ------------------------------------------
+// backfillFromDbsync runs ONCE; the just-ended epoch (currentEpoch-1) is usually
+// not settled at that moment, so its row never appears and the lifetime block
+// total goes stale. This re-fetches the last two CLOSED epochs from db-sync each
+// cycle (local, cheap) so the just-ended epoch shows its blocks immediately
+// (rewards pending) and self-heals to complete once db-sync calculates them — no
+// manual reload. It stops at currentEpoch-1 on purpose: the CURRENT epoch is
+// owned by the live block-production path (Koios, source-agnostic), so NOW and
+// History always agree and never fight over the same row.
+let _recentDbsyncAt = 0;
+const RECENT_DBSYNC_MS = 60 * 1000;   // re-check the recent tail once a minute
+async function refreshRecentDbsync(currentEpoch) {
+  if (!currentEpoch || currentEpoch < 2) return;
+  const now = Date.now();
+  if (now - _recentDbsyncAt < RECENT_DBSYNC_MS) return;
+  _recentDbsyncAt = now;
+  try {
+    if (!(await ensureDbsync())) return;
+    const from = Math.max(1, currentEpoch - 2);
+    const to = currentEpoch - 1;          // exclude current epoch (live path owns it)
+    const rows = await dbsync.fetchHistory(from, to);
+    for (const r of rows) await cachePutEpoch(r.epoch, r);
+  } catch (e) {
+    console.warn('[dbsync] recent refresh failed:', e.message ?? e);
+  }
+}
+
 // Network active stake per epoch — cached forever in meta (history never
 // changes). Kept for any single-epoch callers; the bulk path below is used for
 // the history ideal fill.
@@ -904,11 +949,15 @@ export async function refreshHistory(currentEpoch) {
   // choice). When present it is preferred and backfills the richer history.
   const dbOk = await ensureDbsync();
   if (dbOk) {
+    _activeHistorySource = 'dbsync';
     await backfillFromDbsync(currentEpoch);
-    dbsyncIdealFiller(currentEpoch);   // fire-and-forget; self-throttled
+    dbsyncIdealFiller(currentEpoch);     // fire-and-forget; self-throttled
+    refreshRecentDbsync(currentEpoch);   // fire-and-forget; keeps the recent tail (637 etc.) fresh
   } else if (koiosOk) {
+    _activeHistorySource = 'koios';
     await backfillFromKoios(currentEpoch);
   } else if (await ensureBlockfrost()) {
+    _activeHistorySource = 'blockfrost';
     await backfillFromBlockfrost(currentEpoch);
   }
 }

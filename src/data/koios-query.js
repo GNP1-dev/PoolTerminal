@@ -28,6 +28,7 @@
  */
 
 import { invoke } from './tauri.js';
+import { withKoiosAuth } from './koios-token.js';
 import { DataKind, registry } from './capabilities.js';
 import * as meter from './koios-meter.js';
 
@@ -44,7 +45,7 @@ async function runCmd(command) {
   // daily cap), make no Koios call at all - return empty so callers fall back.
   if (meter.isPaused()) return '';
   meter.recordCall();
-  const r = await invoke('ssh_run', { command });
+  const r = await invoke('ssh_run', { command: withKoiosAuth(command) });
   const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
   // Detect Koios tier-limit response and auto-pause (captures the real count).
   if (meter.looksLikeLimit(out)) return '';

@@ -276,6 +276,76 @@ function splitEnvPath(envFile) {
     : { dir: envFile.slice(0, idx), name: envFile.slice(idx + 1) };
 }
 
+/**
+ * Resume a live session WITHOUT reconnecting.
+ *
+ * The SSH session lives in the Rust process and survives a webview/JS reload,
+ * but the JS-side env state (the paths live.js needs) is wiped on reload. So if
+ * the underlying connection is still alive, re-run the env probe over the
+ * EXISTING session (no auth, no 2FA) and go straight live. Returns true if it
+ * resumed; false means the caller should fall back to the connect screen.
+ *
+ * NOTE: the probe command below is intentionally kept identical to the one in
+ * showConnectModal's connect handler. Keep the two in sync.
+ */
+export async function resumeLive(cfg, onDone) {
+  if (!cfg || !cfg.transport || !cfg.envFile) return false;
+  setTransport(cfg.transport);
+
+  // Is the underlying connection still alive? Local mode runs ON the node, so a
+  // successful local_probe means alive; SSH mode depends on the Rust session.
+  let alive = false;
+  try {
+    alive = cfg.transport === 'local'
+      ? await invoke('local_probe')
+      : await invoke('ssh_is_connected');
+  } catch { alive = false; }
+  if (!alive) return false;
+
+  try {
+    const { dir: envDir, name: envName } = splitEnvPath(cfg.envFile);
+    const probeCmd =
+      `cd ${envDir} && { source ./${envName} offline >/dev/null 2>&1; ` +
+      `echo "__PROBE_OK__"; ` +
+      `echo "CCLI=$CCLI"; ` +
+      `echo "CARDANO_NODE_SOCKET_PATH=$CARDANO_NODE_SOCKET_PATH"; ` +
+      `echo "CNODE_HOME=$CNODE_HOME"; ` +
+      `echo "CNCLI=$CNCLI"; ` +
+      `echo "CNCLI_DB=$CNCLI_DB"; ` +
+      `echo "NETWORK_NAME=$NETWORK_NAME"; ` +
+      `echo "NETWORK_IDENTIFIER=$NETWORK_IDENTIFIER"; ` +
+      `echo "POOL_TICKER=$POOL_TICKER"; ` +
+      `echo "POOL_ID=$POOL_ID"; ` +
+      `echo "POOL_NAME=$POOL_NAME"; ` +
+      `echo "SHELLEY_GENESIS_START_SEC=$SHELLEY_GENESIS_START_SEC"; ` +
+      `echo "SHELLEY_TRANS_EPOCH=$SHELLEY_TRANS_EPOCH"; ` +
+      `echo "BYRON_EPOCH_LENGTH=$BYRON_EPOCH_LENGTH"; ` +
+      `echo "EPOCH_LENGTH=$EPOCH_LENGTH"; }`;
+    const probeOut = unwrapSsh(await invoke('ssh_run', { command: probeCmd }));
+    const envVars = parseEnvProbe(probeOut);
+    if (!probeOut.includes('__PROBE_OK__') || !envVars.CCLI) return false;
+
+    if (!envVars.CNCLI_DB && envVars.CNODE_HOME) {
+      envVars.CNCLI_DB = `${envVars.CNODE_HOME}/guild-db/cncli/cncli.db`;
+    }
+    if (!envVars.CARDANO_NODE_SOCKET_PATH && envVars.CNODE_HOME) {
+      envVars.CARDANO_NODE_SOCKET_PATH = `${envVars.CNODE_HOME}/sockets/node.socket`;
+    }
+    if (!envVars.CARDANO_NODE_SOCKET_PATH) return false;
+    if (!envVars.NETWORK_IDENTIFIER) envVars.NETWORK_IDENTIFIER = '--mainnet';
+
+    markConnected(cfg, envVars);
+    resetNowLoading();
+    setMode('live');
+    console.log('[resume] reused existing session, env re-probed OK');
+    if (onDone) onDone({ mode: 'live', envVars });
+    return true;
+  } catch (e) {
+    console.warn('[resume] could not resume over existing session:', e?.message || e);
+    return false;
+  }
+}
+
 export function showConnectModal(onDone) {
   const wrap = document.createElement('div');
   wrap.innerHTML = MODAL_HTML;

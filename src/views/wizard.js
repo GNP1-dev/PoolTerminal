@@ -22,6 +22,7 @@
 import { DBSYNC_TESTED_SCHEMA as schemaTested, initDbsync } from '../data/dbsync-query.js';
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
+import { isConnected, getSession } from '../data/session.js';
 import { applyBlockfrostKey } from '../data/read-model.js';
 import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
 
@@ -258,17 +259,31 @@ const STEPS = [
       const intervalOpts = POLL_LADDER_MS
         .map((ms) => `<option value="${ms}" ${ms === pollMs ? 'selected' : ''}>${fmtInterval(ms)}</option>`).join('');
       const tierSel = (t) => (tier === t ? 'selected' : '');
-      return `
-      <p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
-      notifications use <span class="wz-src wz-koios">Koios</span>, so the check rate is set to stay within
-      its limits - it suggests a safe rate.</p>
-      <div class="wz-field"><label>Koios usage tier</label>
+      // Which source will answer live delegator notifications (db-sync > Blockfrost > Koios).
+      const notifSource = wiz.useDbsync ? 'dbsync' : (wiz.useBlockfrost ? 'blockfrost' : 'koios');
+      const intro = notifSource === 'dbsync'
+        ? `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
+           notifications read your <span class="wz-src wz-dbsync">db-sync</span> database directly, so there are
+           no API limits - pick any check rate you like.</p>`
+        : notifSource === 'blockfrost'
+        ? `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
+           notifications use <span class="wz-src wz-bf">Blockfrost</span> (50,000 calls/day on the free tier), so
+           the check rate is set to stay within budget - it suggests a safe rate.</p>`
+        : `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
+           notifications use <span class="wz-src wz-koios">Koios</span>, so the check rate is set to stay within
+           its limits - it suggests a safe rate.</p>`;
+      const tierField = notifSource === 'koios'
+        ? `<div class="wz-field"><label>Koios usage tier</label>
         <select id="wz-n-tier">
           <option value="free" ${tierSel('free')}>Free - no key - 5,000 calls/day</option>
           <option value="token" ${tierSel('token')}>Registered token - 50,000 calls/day</option>
         </select>
         <div class="wz-opt">A free Koios token (from koios.rest) lets you check more often. Leave on Free if you don't have one.</div>
-      </div>
+      </div>`
+        : '';
+      return `
+      ${intro}
+      ${tierField}
       <div class="wz-field"><label>Check for changes every</label>
         <div class="wz-row" style="align-items:center">
           <select id="wz-n-interval" style="flex:0 0 130px">${intervalOpts}</select>
@@ -434,6 +449,14 @@ export function showSetupWizard(opts = {}) {
   if (document.getElementById('wz-modal')) return;
   const onComplete = typeof opts.onComplete === 'function' ? opts.onComplete : null;
   const wiz = Object.assign(freshState(), opts._resume || {});
+  // If a live session already exists (e.g. re-running the wizard from the
+  // running app), pre-fill the connect step from it so we don't force a
+  // needless reconnect/2FA. POOL_ID is already captured in the session.
+  if (!wiz._connected && isConnected()) {
+    wiz._connected = true;
+    const _sess = getSession();
+    wiz.poolHex = wiz.poolHex || (_sess && _sess.envVars && _sess.envVars.POOL_ID) || null;
+  }
   let idx = Number.isInteger(opts._startIndex) ? opts._startIndex : 0;
 
   const wrap = document.createElement('div');
@@ -600,25 +623,35 @@ export function showSetupWizard(opts = {}) {
         const tier = tierEl ? tierEl.value : 'free';
         const intEl = modal.querySelector('#wz-n-interval');
         const intervalMs = intEl ? Number(intEl.value) : getNotifSettings().pollMs;
-        const source = 'koios';
+        const source = wiz.useDbsync ? 'dbsync' : (wiz.useBlockfrost ? 'blockfrost' : 'koios');
+        const srcName = source === 'dbsync' ? 'db-sync' : source === 'blockfrost' ? 'Blockfrost' : 'Koios';
         const count = wiz._delegCount || 0;
         const sug = suggestPollMs({ delegatorCount: count, source, koiosTier: tier });
         const reasonEl = modal.querySelector('#wz-n-reason');
         if (reasonEl) {
-          reasonEl.textContent = count > 0
-            ? `Suggested ${fmtInterval(sug.ms)} - ${sug.reason}`
-            : `Suggested ${fmtInterval(sug.ms)} as a safe starting point. This fine-tunes once connected, since it depends on your delegator count.`;
+          if (source === 'dbsync') {
+            reasonEl.textContent = sug.reason;   // unlimited - independent of delegator count
+          } else {
+            reasonEl.textContent = count > 0
+              ? `Suggested ${fmtInterval(sug.ms)} - ${sug.reason}`
+              : `Suggested ${fmtInterval(sug.ms)} as a safe starting point. This fine-tunes once connected, since it depends on your delegator count.`;
+          }
         }
         const sBtn = modal.querySelector('#wz-n-suggest');
         if (sBtn) sBtn.dataset.ms = String(sug.ms);
         const usageEl = modal.querySelector('#wz-n-usage');
         if (usageEl) {
-          if (count > 0) {
+          if (source === 'dbsync') {
+            usageEl.textContent = 'db-sync reads your own database - no API budget to worry about.';
+            usageEl.classList.remove('wz-warn');
+          } else if (count > 0) {
             const u = pollUsage({ ms: intervalMs, delegatorCount: count, source, koiosTier: tier });
-            let t = `At ${fmtInterval(intervalMs)}: ~${u.callsPerDay.toLocaleString()} Koios calls/day of ${u.budget.toLocaleString()} allowed.`;
-            if (u.breaches) t += ' Over budget - choose a longer interval or a registered token.';
+            let t = `At ${fmtInterval(intervalMs)}: ~${u.callsPerDay.toLocaleString()} ${srcName} calls/day of ${u.budget.toLocaleString()} allowed.`;
+            if (u.breaches) t += source === 'koios'
+              ? ' Over budget - choose a longer interval, or use a registered token.'
+              : ' Over budget - choose a longer interval, or use db-sync for unlimited live updates.';
             usageEl.textContent = t; usageEl.classList.toggle('wz-warn', u.breaches);
-          } else { usageEl.textContent = ''; }
+          } else { usageEl.textContent = ''; usageEl.classList.remove('wz-warn'); }
         }
       };
       ['#wz-n-tier', '#wz-n-interval'].forEach((id) => { const el = modal.querySelector(id); if (el) el.addEventListener('change', recompute); });

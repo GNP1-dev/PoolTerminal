@@ -30,6 +30,7 @@
  */
 
 import { invoke } from './tauri.js';
+import { withKoiosAuth } from './koios-token.js';
 import { DataKind, registry } from './capabilities.js';
 import * as meter from './koios-meter.js';
 
@@ -52,7 +53,7 @@ let _ready = false;
 async function runCmd(command) {
   if (meter.isPaused()) return '';
   meter.recordCall();
-  const r = await invoke('ssh_run', { command });
+  const r = await invoke('ssh_run', { command: withKoiosAuth(command) });
   const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
   if (meter.looksLikeLimit(out)) return '';
   return out;

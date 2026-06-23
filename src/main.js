@@ -32,7 +32,7 @@ import { mountDataSources, unmountDataSources } from './views/data-sources.js';
 import { mountAbout, unmountAbout } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
 import { mountDelegators, unmountDelegators } from './views/delegators.js';
-import { showConnectModal } from './views/connect.js';
+import { showConnectModal, resumeLive } from './views/connect.js';
 import { showSettingsModal } from './views/settings.js';
 import { showSetupWizard } from './views/wizard.js';
 import { nodeExec } from './data/tauri.js';
@@ -387,6 +387,11 @@ window.addEventListener('DOMContentLoaded', () => {
   if (!cfg || !cfg.transport) {
     showSetupWizard({ onComplete: startLive });
   } else {
-    showConnectModal(() => startLive());
+    // The SSH session lives in the Rust process and survives a webview/JS reload.
+    // If it's still alive, resume live over it (re-probe env, no 2FA) rather than
+    // forcing a reconnect. Only a real Rust restart (session gone) needs connect.
+    resumeLive(cfg, () => startLive()).then((resumed) => {
+      if (!resumed) showConnectModal(() => startLive());
+    });
   }
 });

@@ -17,6 +17,9 @@
 import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getSession } from '../data/session.js';
+import { invoke } from '../data/tauri.js';
+import { getUsage } from '../data/koios-meter.js';
+import { hasKoiosToken } from '../data/koios-token.js';
 
 // Friendly colour class from a source id (handles '-live' suffix).
 function badgeClass(id) {
@@ -89,6 +92,16 @@ function summaryHtml(live) {
   const dbsyncOn = dbsync && safeReach(dbsync);
   const dbsyncVer = dbsyncOn ? safeCall(() => dbsync.version()) : null;
   const koiosOn = has('koios') || has('koios-live');
+  const koiosTok = (() => { try { return hasKoiosToken(); } catch { return false; } })();
+  const koiosUse = (() => { try { return getUsage(); } catch { return null; } })();
+  const koiosTier = koiosTok ? 'Registered API' : 'Public API';
+  const koiosStatus = !koiosOn
+    ? 'Unavailable'
+    : !koiosUse
+      ? koiosTier
+      : koiosUse.paused
+        ? `Paused - ${koiosUse.count.toLocaleString()} / ${koiosUse.limit.toLocaleString()}`
+        : `${koiosTier} - ${koiosUse.count.toLocaleString()} / ${koiosUse.limit.toLocaleString()} today`;
   const bf = registry.all().find((s) => s.id === 'blockfrost');
   const bfOn = bf && safeReach(bf);
 
@@ -103,7 +116,7 @@ function summaryHtml(live) {
   return `<div class="ds-chips">` +
     chip('ds-node', 'Node', live ? (transport || 'Connected') : 'Not connected', live) +
     chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}` : 'Not configured', dbsyncOn) +
-    chip('ds-koios', 'Koios', koiosOn ? 'Available (public API)' : 'Unavailable', koiosOn) +
+    chip('ds-koios', 'Koios', koiosStatus, koiosOn) +
     chip('ds-bf', 'Blockfrost', bfOn ? 'Active' : 'Not configured', bfOn) +
   `</div>`;
 }
@@ -192,7 +205,27 @@ function sourceSignature() {
     try { const d = registry.describe(k); id = d ? d.id : '-'; } catch { id = '-'; }
     parts.push(id);
   }
+  try { const ku = getUsage(); parts.push('k' + ku.count + ':' + ku.limit + (ku.paused ? ':p' : '')); } catch { parts.push('k-'); }
   return parts.join('|');
+}
+
+async function clearCacheFlow() {
+  const ok = window.confirm(
+    'Clear all cached data?\n\n' +
+    'This empties the local history, delegator and loyalty cache. Your connection ' +
+    'and source choice are kept. The active source then rebuilds the cache fresh.'
+  );
+  if (!ok) return;
+  const btn = document.querySelector('#ds-clear-cache');
+  if (btn) { btn.disabled = true; btn.textContent = 'Clearing...'; }
+  try {
+    await invoke('cache_clear_all');
+    if (btn) btn.textContent = 'Cleared - reloading...';
+    setTimeout(() => location.reload(), 400);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Clear cache'; }
+    window.alert('Clear cache failed: ' + (e && e.message ? e.message : e));
+  }
 }
 
 export function mountDataSources(canvas) {
@@ -222,7 +255,7 @@ function draw(canvas) {
     `<div class="ds-wrap">` +
       `<div class="ds-head"><h2>Data sources</h2>` +
       `<p>Where each part of PoolTerminal gets its data, and what needs a particular source. ` +
-      `Change sources in the setup wizard or Settings.</p></div>` +
+      `Change sources in the setup wizard or Settings.</p><button id="ds-clear-cache" class="ds-clear-btn" type="button" style="margin-top:10px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Clear cache</button></div>` +
       `<div class="ds-grid">` +
         // top-left: status
         `<div class="ds-tile">` +
@@ -250,6 +283,8 @@ function draw(canvas) {
         `</div>` +
       `</div>` +
     `</div>`;
+  const _cc = canvas.querySelector('#ds-clear-cache');
+  if (_cc) _cc.addEventListener('click', clearCacheFlow);
 }
 
 export function unmountDataSources() {

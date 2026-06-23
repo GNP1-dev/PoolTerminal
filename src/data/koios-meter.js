@@ -17,9 +17,22 @@
 const STORE_KEY = 'pt.koios.meter.v1';
 const PAUSE_KEY = 'pt.koios.paused.v1';
 
+// Free-tier defaults (no token). The LIVE values come from koiosLimits() below,
+// which is tier-aware; these are kept for reference.
 export const KOIOS_DAILY_LIMIT = 5000;   // free no-key tier
 export const KOIOS_WARN_AT     = 4000;   // amber warning threshold (80%)
 export const KOIOS_HARD_STOP   = 4900;   // auto-pause threshold (leave headroom)
+
+import { hasKoiosToken } from './koios-token.js';
+
+// Tier-aware daily limits, re-evaluated on each read so they adjust the moment a
+// token is added or removed. Free (no token) = 5,000/day; registered token =
+// 50,000/day. Hard-stop sits a touch under each ceiling for headroom.
+export function koiosLimits() {
+  return hasKoiosToken()
+    ? { limit: 50000, warnAt: 40000, hardStop: 49000 }
+    : { limit: 5000,  warnAt: 4000,  hardStop: 4900 };
+}
 
 function todayUtc() {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -44,8 +57,8 @@ export function recordCall(n = 1) {
   const o = read();
   o.count += n;
   write(o);
-  // Auto-pause if we cross the hard stop, so a free-tier user cannot blow the cap.
-  if (o.count >= KOIOS_HARD_STOP && !isPaused()) {
+  // Auto-pause if we cross the hard stop, so we never blow the daily cap.
+  if (o.count >= koiosLimits().hardStop && !isPaused()) {
     setPaused(true, 'auto: approaching daily limit');
   }
   return o.count;
@@ -67,11 +80,11 @@ export function record429(reportedCount = null) {
 export function getUsage() {
   const o = read();
   const count = o.count;
-  const limit = KOIOS_DAILY_LIMIT;
+  const { limit, warnAt } = koiosLimits();
   const pct = Math.min(100, Math.round((count / limit) * 100));
   let state = 'ok';
   if (count >= limit || isPaused()) state = 'over';
-  else if (count >= KOIOS_WARN_AT) state = 'warn';
+  else if (count >= warnAt) state = 'warn';
   return {
     date: o.date,
     count,

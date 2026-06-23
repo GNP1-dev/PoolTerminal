@@ -71,7 +71,7 @@ const DBSYNC_CONFIG = { database: 'cexplorer' };
 // Temporarily OFF while the public free-tier cooldown clears. This is also the
 // first piece of the planned transport selector (node / host / off) — flip to
 // true (or wire to a setting) to re-enable.
-const KOIOS_ENABLED = false;  // TEMP: off for Blockfrost test, restore to true for Koios call-volume work
+const KOIOS_ENABLED = true;  // TEMP: off for Blockfrost test, restore to true for Koios call-volume work
 
 // ============================================================
 // bech32 (pool id hex → pool1...) — portable, offline, no deps
@@ -414,6 +414,7 @@ let _recentInFlight = false;
 
 export async function refreshRecent(currentEpoch) {
   if (!KOIOS_ENABLED) return;
+  if (DATA_SOURCE === 'dbsync') return;   // db-sync keeps recent epochs fresh — no Koios recent-refresh needed
   if (!_backfillDone || _recentInFlight || !currentEpoch) return;
   const now = Date.now();
   if (_recentAt && now - _recentAt < RECENT_MS) return;
@@ -423,10 +424,12 @@ export async function refreshRecent(currentEpoch) {
     const bech32 = ensurePoolBech32();
     if (!bech32) return;
 
-    const hist = await koios.getPoolHistory(bech32, { limit: 8 });
+    const hist = await koios.getPoolHistory(bech32, { limit: 4 });
     const byEpoch = new Map(hist.map((h) => [h.epoch, h]));
 
-    for (let e = currentEpoch - 1; e >= currentEpoch - 6; e--) {
+    // Refresh only the last 2 epochs (was 6). Older epochs are settled and
+    // already cached by the backfill; re-fetching them every cycle was the storm.
+    for (let e = currentEpoch - 1; e >= currentEpoch - 2; e--) {
       const blocks = await koios.getEpochBlockCount(bech32, e);   // finalised on-chain
       const h = byEpoch.get(e);
       if (h) {
@@ -437,8 +440,15 @@ export async function refreshRecent(currentEpoch) {
         if (row.ideal == null) row.ideal = await computeIdeal(row);
         const addr = await ensureRewardAddr();
         if (addr) {
-          const lr = await koios.getLeaderReward(addr, e);   // null if not published yet
-          if (lr != null) row.leaderReward = lr;
+          // Reuse a cached leader reward if we already have it — saves a Koios call.
+          const cachedRow = (await cacheGetEpochsRaw(e, e))[0];
+          const cachedLr = cachedRow && cachedRow.data ? cachedRow.data.leaderReward : undefined;
+          if (cachedLr != null) {
+            row.leaderReward = cachedLr;
+          } else {
+            const lr = await koios.getLeaderReward(addr, e);   // null if not published yet
+            if (lr != null) row.leaderReward = lr;
+          }
         }
         await cachePutEpoch(e, row);
       } else {
@@ -455,7 +465,7 @@ export async function refreshRecent(currentEpoch) {
         });
       }
     }
-    console.log(`[read-model] recent refresh: epochs ${currentEpoch - 6}–${currentEpoch - 1} (pool_blocks overlay)`);
+    console.log(`[read-model] recent refresh: epochs ${currentEpoch - 2}–${currentEpoch - 1} (pool_blocks overlay)`);
   } catch (err) {
     console.warn('[read-model] recent refresh failed:', err.message ?? err);
   } finally {

@@ -694,3 +694,30 @@ pub fn cache_get_notif_events(
     }
     Ok(out)
 }
+
+
+/// Clear ALL cached rows across every cache table, in a single transaction.
+/// Empties the rows but keeps the schema and the open DB connection, so the
+/// app does not need a restart. Backs the "Clear cache" button on the Data
+/// sources screen.
+#[tauri::command]
+pub fn cache_clear_all(state: tauri::State<'_, CacheState>) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for table in [
+        "meta",
+        "epoch_snapshots",
+        "samples",
+        "delegator_stake",
+        "delegator_loyalty",
+        "notif_delegator_snapshot",
+        "notif_events",
+    ] {
+        tx.execute(&format!("DELETE FROM {}", table), [])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    // Reclaim space; non-fatal if it cannot run (e.g. busy WAL).
+    let _ = conn.execute("VACUUM", []);
+    Ok(())
+}

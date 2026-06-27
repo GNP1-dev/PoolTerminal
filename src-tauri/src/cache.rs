@@ -701,6 +701,20 @@ pub fn cache_get_notif_events(
 /// app does not need a restart. Backs the "Clear cache" button on the Data
 /// sources screen.
 #[tauri::command]
+pub fn cache_clear_notif_events(
+    state: tauri::State<'_, CacheState>,
+    pool_id: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM notif_events WHERE pool_id = ?1",
+        rusqlite::params![pool_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn cache_clear_all(state: tauri::State<'_, CacheState>) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;

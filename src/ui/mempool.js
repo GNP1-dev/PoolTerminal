@@ -91,8 +91,10 @@ function buildBlockMarkers() {
 function getMaxBytes() {
   if (history.length === 0) return MAX_BLOCK_BODY;
   const peak = Math.max(...history.map((s) => s.bytes));
-  // Always show at least one block's capacity for visual context.
-  return Math.max(peak * 1.1, MAX_BLOCK_BODY * 0.5);
+  // Scale in whole-block (100%) steps: 0-100% normally, stepping up to
+  // 200%, 300%, ... as the mempool fills past a block body.
+  const blocks = Math.max(1, Math.ceil(peak / MAX_BLOCK_BODY));
+  return blocks * MAX_BLOCK_BODY;
 }
 
 function computeStats() {
@@ -165,18 +167,19 @@ function renderSparkline(currentBytes) {
     `</defs>`
   );
 
-  // Horizontal gridlines at 25/50/75% of the visible scale
-  for (const f of [0.25, 0.5, 0.75]) {
-    const y = SPARK_H * (1 - f);
-    parts.push(`<line x1="0" y1="${y}" x2="${SPARK_W}" y2="${y}" class="pt-mp-grid"/>`);
+  // Horizontal guidelines + bold % labels at each 100% (one-block) boundary.
+  const scaleBlocks = Math.round(maxVal / MAX_BLOCK_BODY);
+  if (scaleBlocks <= 2) {
+    for (let b = 0; b < scaleBlocks; b++) {
+      const yh = SPARK_H * (1 - (b + 0.5) / scaleBlocks);
+      parts.push(`<line x1="0" y1="${yh.toFixed(1)}" x2="${SPARK_W}" y2="${yh.toFixed(1)}" class="pt-mp-grid" stroke-dasharray="3 4"/>`);
+    }
   }
-
-  // One-block-capacity reference line (helps eye-pick when we're over a block)
-  if (blockCapacityY >= 0 && blockCapacityY <= SPARK_H) {
-    parts.push(
-      `<line x1="0" y1="${blockCapacityY.toFixed(1)}" ` +
-      `x2="${SPARK_W}" y2="${blockCapacityY.toFixed(1)}" class="pt-mp-capline"/>`
-    );
+  for (let b = 1; b <= scaleBlocks; b++) {
+    const y = b === scaleBlocks ? 0.8 : SPARK_H * (1 - b / scaleBlocks);
+    const cls = b === 1 ? 'pt-mp-capline' : 'pt-mp-grid';
+    parts.push(`<line x1="0" y1="${y.toFixed(1)}" x2="${SPARK_W}" y2="${y.toFixed(1)}" class="${cls}"/>`);
+    parts.push(`<text x="5" y="${Math.max(12, y + 12).toFixed(1)}" style="fill:#aebfe0;font-size:11px;font-weight:600;font-family:ui-monospace,monospace;opacity:.92">${b * 100}%</text>`);
   }
 
   // Block-boundary markers
@@ -200,12 +203,77 @@ function renderSparkline(currentBytes) {
   svg.innerHTML = parts.join('');
 }
 
+// --- persistent mempool high-water marks (5m / 1h / 24h / all-time) ---
+const PEAKS_KEY = 'pt.mempool.peaks.v1';
+let peaks = null;
+let peaksLoaded = false;
+let lastPeakSave = 0;
+
+function loadPeaks() {
+  if (peaksLoaded) return;
+  peaksLoaded = true;
+  peaks = { allTime: { pct: 0, t: 0 }, mins: {} };
+  try {
+    const raw = localStorage.getItem(PEAKS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && typeof p === 'object') {
+        if (p.allTime && typeof p.allTime.pct === 'number') peaks.allTime = p.allTime;
+        if (p.mins && typeof p.mins === 'object') peaks.mins = p.mins;
+      }
+    }
+  } catch (e) { /* ignore corrupt/absent */ }
+  prunePeaks();
+}
+
+function prunePeaks() {
+  const cutoff = Math.floor((Date.now() - 24 * 3600 * 1000) / 60000);
+  for (const k of Object.keys(peaks.mins)) {
+    if (Number(k) < cutoff) delete peaks.mins[k];
+  }
+}
+
+function savePeaks() {
+  const now = Date.now();
+  if (now - lastPeakSave < 5000) return;
+  lastPeakSave = now;
+  try { localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks)); } catch (e) { /* ignore */ }
+}
+
+function recordPeak(pct) {
+  loadPeaks();
+  if (!isFinite(pct) || pct <= 0) return;
+  const now = Date.now();
+  let changed = false;
+  if (pct > (peaks.allTime.pct || 0)) { peaks.allTime = { pct, t: now }; changed = true; }
+  const m = Math.floor(now / 60000);
+  if (pct > (peaks.mins[m] || 0)) { peaks.mins[m] = pct; changed = true; }
+  prunePeaks();
+  if (changed) savePeaks();
+}
+
+function maxOverMins(windowMs) {
+  loadPeaks();
+  const cutoff = Math.floor((Date.now() - windowMs) / 60000);
+  let max = 0;
+  for (const [k, v] of Object.entries(peaks.mins)) {
+    if (Number(k) >= cutoff && v > max) max = v;
+  }
+  return max;
+}
+
 function renderStats() {
   const { net, throughput, avg, peak } = computeStats();
   byId('mp-stat-net').textContent        = fmtNet(net);
   byId('mp-stat-throughput').textContent = fmtThroughput(throughput);
   byId('mp-stat-avg').textContent        = avg ? fmtBytes(avg) : '—';
   byId('mp-stat-peak').textContent       = fmtBytes(peak);
+  const fmtP = v => v > 0 ? Math.round(v) + '%' : '\u2014';
+  const e5 = byId('mp-peak-5m'); if (e5) e5.textContent = fmtP(maxOverMins(5 * 60000));
+  const e1 = byId('mp-peak-1h'); if (e1) e1.textContent = fmtP(maxOverMins(60 * 60000));
+  const e24 = byId('mp-peak-24h'); if (e24) e24.textContent = fmtP(maxOverMins(24 * 3600 * 1000));
+  const ea = byId('mp-peak-all');
+  if (ea) { const ath = peaks ? (peaks.allTime.pct || 0) : 0; ea.textContent = fmtP(ath); if (peaks && peaks.allTime.t) ea.title = 'reached ' + new Date(peaks.allTime.t).toLocaleString(); }
 }
 
 function ensureBody() {
@@ -220,6 +288,13 @@ function ensureBody() {
       `<div class="pt-mp-stat"><div class="pt-mp-stat-label">Throughput</div><div class="pt-mp-stat-val" id="mp-stat-throughput">—</div></div>` +
       `<div class="pt-mp-stat"><div class="pt-mp-stat-label">Avg tx</div><div class="pt-mp-stat-val" id="mp-stat-avg">—</div></div>` +
       `<div class="pt-mp-stat"><div class="pt-mp-stat-label">Peak (5m)</div><div class="pt-mp-stat-val" id="mp-stat-peak">—</div></div>` +
+    `</div>` +
+    `<div class="pt-mp-peaks" style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:8px;padding-top:7px;border-top:1px solid rgba(135,165,215,.18);font-size:10.5px;white-space:nowrap;">` +
+      `<span style="color:#6f7d99;letter-spacing:.5px;">MAX %</span>` +
+      `<span style="color:#6f7d99;">5m&nbsp;<b id="mp-peak-5m" style="color:#36e0d4;font-family:ui-monospace,monospace;font-weight:700;">—</b></span>` +
+      `<span style="color:#6f7d99;">1h&nbsp;<b id="mp-peak-1h" style="color:#5dff9b;font-family:ui-monospace,monospace;font-weight:700;">—</b></span>` +
+      `<span style="color:#6f7d99;">24h&nbsp;<b id="mp-peak-24h" style="color:#ffc24a;font-family:ui-monospace,monospace;font-weight:700;">—</b></span>` +
+      `<span style="color:#6f7d99;">all&nbsp;<b id="mp-peak-all" style="color:#ff7a4c;font-family:ui-monospace,monospace;font-weight:700;">—</b></span>` +
     `</div>`;
 }
 
@@ -233,6 +308,7 @@ export function renderMempool(mp, opts = {}) {
   if (!countEl) return;
 
   const pct = (mp.totalBytes / MAX_BLOCK_BODY) * 100;
+  recordPeak(pct);
   const trackPct = Math.min((pct / MAX_SCALE) * 100, 100);
   const { fill, txt } = colorsFor(pct);
   const left = mp.txCount === 0 ? 'empty' : `${mp.txCount} tx · ${fmtBytes(mp.totalBytes)}`;

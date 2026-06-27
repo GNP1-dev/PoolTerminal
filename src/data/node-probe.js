@@ -52,7 +52,8 @@ export async function probeNode() {
     `NODE_PORT=$(echo "$ARGS" | grep -oP -- '--port[= ]+\\K[0-9]+'); ` +
     // Any TCP listener owned by this PID that isn't the node port = Prometheus
     `PROM_PORT=$(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NODE_PORT$" | head -1); ` +
-    `echo "PROM_PORT=$PROM_PORT"`;
+    `echo "PROM_PORT=$PROM_PORT"; ` +
+    `ETIMES=$(ps -o etimes= -p "$PID" 2>/dev/null | tr -d ' '); echo "ETIMES=$ETIMES"`;
 
   let out;
   try {
@@ -66,6 +67,8 @@ export async function probeNode() {
   const pid = parseInt(kv.PID || '', 10) || null;
   const args = kv.ARGS || '';
   const promPort = parseInt(kv.PROM_PORT || '', 10) || null;
+  const etimes = parseInt(kv.ETIMES || '', 10);
+  const nodeStartUnix = Number.isFinite(etimes) && etimes > 0 ? Math.floor(Date.now() / 1000) - etimes : null;
 
   if (!pid || !args) {
     console.warn('[node-probe] could not identify cardano-node PID for socket', socket);
@@ -88,8 +91,41 @@ export async function probeNode() {
     vrfSkeyPath:  vrfMatch    ? vrfMatch[1]    : null,
     configPath:   configMatch ? configMatch[1] : null,
     prometheusPort: promPort,
+    nodeStartUnix,
     args,
   };
+
+  // Op cert counters (BP only) - copy gLiveView: kes-period-info gives the
+  // on-disk and on-chain (node protocol state) counters. Healthy when disk
+  // equals chain or is exactly one ahead (rotated, not yet minted with).
+  result.opCertDisk = null;
+  result.opCertChain = null;
+  result.kesExpiry = null;
+  if (result.role === 'BP' && result.opCertPath) {
+    try {
+      const e2 = getSession().envVars || {};
+      const ccli = e2.CCLI || 'cardano-cli';
+      const net = e2.NETWORK_IDENTIFIER || '--mainnet';
+      const sock = e2.CARDANO_NODE_SOCKET_PATH || socket;
+      const oc = result.opCertPath.replace(/'/g, "'\\''");
+      const kesCmd =
+        `CARDANO_NODE_SOCKET_PATH='${sock.replace(/'/g, "'\\''")}' ${ccli} query kes-period-info ${net} ` +
+        `--socket-path '${sock.replace(/'/g, "'\\''")}' --op-cert-file '${oc}' --output-json 2>/dev/null`;
+      const kesOut = await runCmd(kesCmd);
+      // cli prints checkmark validation lines before the JSON; slice from first '{'.
+      const jStart = kesOut.indexOf('{');
+      if (jStart >= 0) {
+        const kp = JSON.parse(kesOut.slice(jStart));
+        const d = kp.qKesOnDiskOperationalCertificateNumber;
+        const c = kp.qKesNodeStateOperationalCertificateNumber;
+        result.opCertDisk  = Number.isFinite(d) ? d : null;
+        result.opCertChain = Number.isFinite(c) ? c : null;
+        result.kesExpiry   = kp.qKesKesKeyExpiry || null;
+      }
+    } catch (err) {
+      console.warn('[node-probe] kes-period-info failed:', err.message ?? err);
+    }
+  }
 
   console.log(
     `[node-probe] pid=${result.pid} role=${result.role} ` +
@@ -97,7 +133,8 @@ export async function probeNode() {
     `topology=${result.topologyPath} ` +
     `opcert=${result.opCertPath || 'none'} ` +
     `vrf=${result.vrfSkeyPath || 'none'} ` +
-    `config=${result.configPath || 'none'}`
+    `config=${result.configPath || 'none'} ` +
+    `opcert=${result.opCertDisk ?? '?'}/${result.opCertChain ?? '?'} (disk/chain)`
   );
 
   return result;

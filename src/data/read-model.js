@@ -1321,15 +1321,44 @@ export async function refreshNotifications(currentEpoch) {
       }
     }
 
-    // Classify joins: brand-new vs redelegated IN from another pool. One batched
-    // prior-pool lookup; on failure every joiner degrades to a plain 'join'.
+    // Classify joins: returning (we have our own record of them leaving us) >
+    // redelegated IN from another pool (Koios prior-pool) > brand-new.
     if (joins.length) {
       let origins = new Map();
       try { origins = await koios.getAccountsPriorPool(joins.map((j) => j.stake), ensurePoolBech32()); }
       catch (e) { console.warn('[notif] join origin lookup failed:', e.message ?? e); }
+      // Returning-delegator memory: scan our OWN persisted feed for the pool each
+      // stake last left us for. Koios account_history is epoch-grained and can't
+      // see a same-epoch round-trip (GNP1 -> X -> GNP1); our feed recorded the
+      // leave, so we can still name the pool they came back from.
+      const leftTo = new Map();
+      try {
+        const recent = await cacheGetNotifEvents(1000);   // newest-first
+        for (const ev of recent) {
+          if (!ev || !ev.stake || leftTo.has(ev.stake)) continue;
+          if (ev.type === 'leave_redelegated' || ev.type === 'leave' || ev.type === 'leave_to_wallet') {
+            leftTo.set(ev.stake, { pool: ev.detail?.toPool || null, ticker: ev.detail?.toTicker || null });
+          }
+        }
+      } catch (e) { console.warn('[notif] returning-delegator lookup failed:', e.message ?? e); }
       for (const j of joins) {
+        const ret = leftTo.get(j.stake);
         const from = origins.get(j.stake) || null;
-        if (from) {
+        if (ret) {
+          // Was ours before and has come back. Distinguish two cases:
+          //  - `from` confirmed by Koios prior-pool lookup -> true prior pool, trust it.
+          //  - only feed-memory matched -> we know they LEFT us once, but not where
+          //    they returned FROM (e.g. a same-epoch hop through other pools that
+          //    Koios's epoch-grained history can't see). Mark the origin uncertain
+          //    and DON'T assert the stale last-seen pool as the prior pool.
+          const detail = { amount: j.amount, epoch: currentEpoch ?? null };
+          if (from) {
+            detail.fromPool = from;
+          } else {
+            detail.originUncertain = true;   // true prior pool unknown on this source
+          }
+          events.push({ type: 'join_returning', stake: j.stake, detail });
+        } else if (from) {
           events.push({ type: 'join_redelegated', stake: j.stake,
                         detail: { amount: j.amount, fromPool: from, epoch: currentEpoch ?? null } });
         } else {
@@ -1397,6 +1426,19 @@ export async function refreshNotifications(currentEpoch) {
 /** Newest-first event feed for the NOTIFICATIONS view. */
 export async function getNotifications(limit = 200) {
   return cacheGetNotifEvents(limit);
+}
+
+/** Clear the visible notification feed (events) WITHOUT touching the baseline or
+ *  delegator snapshot — so monitoring continues forward from now and the next
+ *  poll won't re-emit "joins" for every existing delegator. Returns true on success. */
+export async function clearNotifications() {
+  try {
+    await invoke('cache_clear_notif_events', { poolId: poolHex() });
+    return true;
+  } catch (e) {
+    console.warn('[read-model] clearNotifications failed:', e.message ?? e);
+    return false;
+  }
 }
 
 // ============================================================

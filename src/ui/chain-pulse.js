@@ -60,6 +60,19 @@ let activeComplexes = [];
 let rafId = null;
 let lastData = null;
 let currentWindow = 300;
+
+/** The currently-selected poll window, in seconds (for external gauges). */
+export function getActiveWindow() { return currentWindow; }
+
+/** Chain density as a percent (blocks/sec * 100) over an arbitrary window w
+ *  (seconds), computed live from recentBlockTimes. Returns 0 if no data. */
+export function densityPctForWindow(w) {
+  const times = (lastData && lastData.recentBlockTimes) || [];
+  if (!w || w <= 0) return 0;
+  const now = Date.now() / 1000;
+  const count = times.filter((t) => now - t <= w).length;
+  return (count / w) * 100;
+}
 let optimisticTimes = [];
 let densityFrameCounter = 0;
 

@@ -15,9 +15,9 @@
   --pt-bg-row-hover:     #1A2030;
 
   /* ---------- Borders ---------- */
-  --pt-border:           #1F2937;
-  --pt-border-width:     0.5px;
-  --pt-border-line:      0.5px solid #1F2937;
+  --pt-border:           #4A608A;
+  --pt-border-width:     1px;
+  --pt-border-line:      1px solid #4A608A;
 
   /* ---------- Accents (Cardano blue family) ---------- */
   --pt-accent-blue:        #4A8FE7;
@@ -32,17 +32,17 @@
   --pt-status-flash-down:  rgba(239, 68, 68, 0.18);
 
   /* ---------- Text ---------- */
-  --pt-text-primary:       #E5E7EB;
-  --pt-text-secondary:     #9CA3AF;
-  --pt-text-muted:         #6B7280;
-  --pt-text-disabled:      #374151;
+  --pt-text-primary:       #F2F5F9;
+  --pt-text-secondary:     #C4CCD8;
+  --pt-text-muted:         #97A0B0;
+  --pt-text-disabled:      #5C6878;
 
   /* ---------- Typography ---------- */
   --pt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --pt-font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
 
   /* Type scale */
-  --pt-text-label:       11px;
+  --pt-text-label:       12px;
   --pt-text-data:        11px;
   --pt-text-data-mid:    13px;
   --pt-text-data-large:  22px;

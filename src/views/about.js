@@ -11,7 +11,7 @@
 import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 
-const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.1.0';
 
 function safeReach(s) { try { return s.reachable(); } catch { return false; } }
 

@@ -625,6 +625,7 @@ const PROVIDES = [
   DataKind.EPOCH_IDEAL,
   DataKind.POOL_PARAMS,
   DataKind.DELEGATOR_LIST_LIVE,
+  DataKind.DELEGATOR_STAKE_HISTORY,
 ];
 
 /** DELEGATOR_LIST_LIVE — current delegators for the notification poller.
@@ -654,6 +655,23 @@ async function getDelegatorListLive() {
   }));
 }
 
+/** DELEGATOR_STAKE_HISTORY - per-epoch active-stake series, reshaped from the
+ *  internal cache-aware fetch. Epoch-grained (no intra-epoch events). */
+async function getStakeHistoryDetail(stake, currentEpoch) {
+  if (!stake) return null;
+  const hist = await getDelegatorStakeHistory(stake, currentEpoch);   // [{epoch, poolId, amount}]
+  const rows = Array.isArray(hist) ? hist.slice().sort((a, b) => a.epoch - b.epoch) : [];
+  const epochs = [];
+  let prev = null;
+  for (const r of rows) {
+    const bal = lovelaceToAda(r.amount);
+    const delta = (prev == null || bal == null) ? null : (bal - prev);
+    epochs.push({ epoch: r.epoch, stake: bal, delta, runningBalance: bal });
+    prev = bal;
+  }
+  return { stake, source: 'blockfrost', granularity: 'epoch', epochs, events: [] };
+}
+
 export const blockfrostSource = {
   id: 'blockfrost',
   label: 'Blockfrost',
@@ -668,6 +686,7 @@ export const blockfrostSource = {
       case DataKind.DELEGATOR_LIST_LIVE: return getDelegatorListLive();
       case DataKind.DELEGATOR_LOYALTY: return getDelegatorLoyalty();
       case DataKind.DELEGATOR_DETAIL:  return getDelegatorDetail(params.stake, params.currentEpoch);
+      case DataKind.DELEGATOR_STAKE_HISTORY: return getStakeHistoryDetail(params.stake, params.currentEpoch);
       case DataKind.POOL_LIFECYCLE:    return getPoolLifecycle();
       case DataKind.EPOCH_BLOCKS:
       case DataKind.EPOCH_STAKE:

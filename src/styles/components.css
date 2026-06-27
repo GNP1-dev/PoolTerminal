@@ -119,12 +119,12 @@
   border-bottom: var(--pt-border-line);
 }
 .pt-panel-title {
-  color: var(--pt-text-secondary);
+  color: var(--pt-accent-blue-bright);
   font-family: var(--pt-font-sans);
   font-size: var(--pt-text-label);
   letter-spacing: var(--pt-tracking-label);
   text-transform: uppercase;
-  font-weight: 500;
+  font-weight: 600;
 }
 .pt-panel-meta {
   font-family: var(--pt-font-mono);

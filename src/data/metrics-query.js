@@ -81,6 +81,12 @@ export async function queryMetrics() {
     blocksForged:         readMetric(out, 'cardano_node_metrics_blocksForged_int'),     // BP: blocks made
     cannotForge:          readMetric(out, 'cardano_node_metrics_nodeCannotForge_int'),  // BP: forge failures
     slotsMissed:          readMetric(out, 'cardano_node_metrics_slotsMissed_int'),      // BP: missed leader slots
+
+    // --- BLOCK PROPAGATION (gLiveView-style) ---
+    blockDelayCdfOne:     readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfOne_real'),   // frac <1s
+    blockDelayCdfThree:   readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfThree_real'), // frac <3s
+    blockDelayCdfFive:    readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfFive_real'),  // frac <5s
+    blockDelayLast:       readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_real'),          // last block delay (s)
   };
 
   lastMetrics = result;

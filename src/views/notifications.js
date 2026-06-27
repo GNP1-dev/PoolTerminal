@@ -19,7 +19,7 @@
  */
 
 import { fmtAda, shortStake, getOwnPoolTicker } from '../ui/notif-format.js';
-import { getNotifications } from '../data/read-model.js';
+import { getNotifications, clearNotifications } from '../data/read-model.js';
 
 // Copy text to the clipboard with a brief check-mark on the button that fired.
 function copyStake(text, btn) {
@@ -116,7 +116,9 @@ function flowHtml(ev) {
     case 'join_redelegated':
       return otherPill(d.fromTicker || shortPool(d.fromPool)) + conn + homePill(own, 'in');
     case 'join_returning':
-      return otherPill(d.fromTicker || shortPool(d.fromPool)) + conn + homePill(own, 'in');
+      return (d.originUncertain
+        ? neutralPill('unknown')
+        : otherPill(d.fromTicker || shortPool(d.fromPool))) + conn + homePill(own, 'in');
     case 'join':
       return neutralPill('new') + conn + homePill(own, 'in');
     case 'leave_redelegated':
@@ -176,12 +178,18 @@ function metaHtml(ev) {
 function rowHtml(ev, i) {
   const t = TYPE[ev.type] || { cls: 'nf-join', glyph: '\u2022', title: ev.type || 'Change', tag: null };
   const delay = i < 12 ? ` style="animation-delay:${i * 35}ms"` : '';
-  const tag = t.tag ? `<span class="nf-tag">${esc(t.tag)}</span>` : '';
+  // Returning delegator whose true prior pool we can't see on this source: relabel
+  // honestly and hint that db-sync resolves the full transfer chain.
+  const uncertain = ev.type === 'join_returning' && ev.detail && ev.detail.originUncertain;
+  const title = uncertain ? 'Returning Former Delegator' : t.title;
+  const tag = uncertain
+    ? `<span class="nf-tag nf-tag-hint" title="The intermediate pool isn't visible from the current source. db-sync records every delegation certificate and resolves the full transfer history.">\u21BA Returning \u00b7 connect db-sync for full history</span>`
+    : (t.tag ? `<span class="nf-tag">${esc(t.tag)}</span>` : '');
   return (
     `<div class="nf-row ${t.cls}"${delay}>` +
       `<div class="nf-med">${t.glyph}</div>` +
       `<div class="nf-body">` +
-        `<div class="nf-titleline"><span class="nf-title">${esc(t.title)}</span>${tag}</div>` +
+        `<div class="nf-titleline"><span class="nf-title">${esc(title)}</span>${tag}</div>` +
         `<div class="nf-flow">${flowHtml(ev)}</div>` +
         `<div class="nf-meta">${metaHtml(ev)}</div>` +
       `</div>` +
@@ -211,6 +219,7 @@ function summaryHtml(events) {
         chip('nf-up', 'stake +', up) +
         chip('nf-down', 'stake \u2212', down) +
         chip('nf-leave', 'left', left) +
+        `<button class="nf-clear" type="button" title="Clear the activity history. Monitoring continues; only the displayed list is wiped.">Clear history</button>` +
       `</div>` +
     `</div>`
   );
@@ -226,7 +235,13 @@ function ensureStyle() {
     .nf-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; flex: 0 0 auto; }
     .nf-h1 { font-size: 17px; font-weight: 800; letter-spacing: 0.2px; color: var(--pt-text-primary, #e6edf3); }
     .nf-h2 { font-size: 12px; color: var(--pt-text-muted, #9aa7b4); margin-top: 2px; }
-    .nf-chips { display: flex; gap: 10px; flex-wrap: wrap; }
+    .nf-chips { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+    .nf-clear { align-self: stretch; padding: 6px 14px; border-radius: 9px; cursor: pointer;
+      font: 600 11px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.4px;
+      color: var(--pt-text-secondary, #C4CCD8); background: rgba(120,150,180,0.06);
+      border: 1px solid rgba(120,150,180,0.25); }
+    .nf-clear:hover { color: #ff7a6e; border-color: rgba(232,97,93,0.55); background: rgba(232,97,93,0.10); }
+    .nf-clear:disabled { opacity: 0.5; cursor: default; }
     .nf-chip { display: flex; flex-direction: column; align-items: center; min-width: 62px;
       padding: 6px 12px; border-radius: 9px; border: 1px solid var(--nf-edge, rgba(120,150,180,0.2)); background: var(--nf-fill, rgba(120,150,180,0.06)); }
     .nf-chip-n { font-size: 18px; font-weight: 800; line-height: 1; color: var(--nf-acc, #9aa7b4); font-variant-numeric: tabular-nums; }
@@ -263,6 +278,7 @@ function ensureStyle() {
     .nf-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
     .nf-titleline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
     .nf-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--nf-acc); }
+    .nf-tag-hint { background: rgba(123,176,245,0.12) !important; color: var(--pt-accent-blue-bright, #7BB0F5) !important; text-transform: none !important; letter-spacing: 0.01em !important; font-weight: 600 !important; cursor: help; }
     .nf-tag { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
       padding: 2px 7px; border-radius: 5px; background: var(--nf-acc); color: #07120c; }
 
@@ -354,6 +370,17 @@ async function render(canvas) {
       `</div>`;
 
   canvas.innerHTML = `<div class="nf-wrap">${summaryHtml(events)}${body}</div>`;
+
+  const clearBtn = canvas.querySelector('.nf-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      if (!window.confirm('Clear the delegation activity history?\n\nMonitoring continues \u2014 only the displayed list is wiped. New movements will appear from now on.')) return;
+      clearBtn.disabled = true; clearBtn.textContent = 'Clearing\u2026';
+      await clearNotifications();
+      unread = 0; setBadge(0);
+      render(canvas);
+    });
+  }
 
   const list = canvas.querySelector('.nf-list');
   if (list && !list._txWired) {

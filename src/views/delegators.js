@@ -64,9 +64,52 @@ const DELEGATORS_HTML = `
     .pt-delegators .pt-empty code { background: var(--pt-bg-strip); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
     .pt-delegators tbody tr { cursor: pointer; }
 
+    /* Loading overlay + staged progress bar */
+    .d-load { padding: 52px 32px 56px; max-width: 440px; margin: 28px auto; text-align: center; }
+    .d-load-title { font: 600 13px ui-monospace, monospace; color: var(--pt-text-secondary);
+      text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 18px; }
+    .d-load-stage { font: 400 11px ui-monospace, monospace; color: var(--pt-text-muted);
+      margin-bottom: 14px; min-height: 15px; }
+    .d-load-track { height: 9px; background: var(--pt-bg-strip); border: 0.5px solid var(--pt-border);
+      border-radius: 5px; overflow: hidden; }
+    .d-load-fill { height: 100%; width: 8%; border-radius: 5px;
+      background: linear-gradient(90deg, var(--pt-accent-blue), #6fb4ff);
+      box-shadow: 0 0 9px rgba(90,140,220,0.55); position: relative;
+      transition: width 0.45s cubic-bezier(.4,0,.2,1); }
+    .d-load-fill::after { content: ''; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.28), transparent);
+      animation: d-load-shimmer 1.15s linear infinite; }
+    @keyframes d-load-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    .d-load-pct { font: 600 10px ui-monospace, monospace; color: var(--pt-text-muted);
+      letter-spacing: 0.5px; margin-top: 9px; }
+
     /* Deep-dive modal */
     .dd-backdrop { position: fixed; inset: 0; background: rgba(5,8,12,0.72); backdrop-filter: blur(3px);
       display: flex; align-items: center; justify-content: center; z-index: 9000; }
+    .sh-split { display: flex; flex-direction: column; gap: 6px; }
+    .sh-top { }
+    .sh-tablewrap { max-height: 240px; overflow-y: auto; border: 1px solid rgba(70,90,120,0.25); border-radius: 6px; }
+    .sh-bottom { margin-top: 8px; }
+    .sh-chart { width: 100%; height: auto; display: block; }
+    .sh-line { fill: none; stroke: #7BB0F5; stroke-width: 1.6; }
+    .sh-area { fill: rgba(123,176,245,0.12); stroke: none; }
+    .sh-dot { fill: #7BB0F5; }
+    .sh-grid { stroke: rgba(70,90,120,0.25); stroke-width: 1; }
+    .sh-axis { fill: var(--pt-text-muted, #97A0B0); font: 9px ui-monospace, monospace; }
+    .sh-cur { fill: #7BB0F5; font: 600 10px ui-monospace, monospace; }
+    .sh-src { font: 11px ui-monospace, monospace; color: var(--pt-text-secondary, #C4CCD8); margin-bottom: 10px; }
+    .sh-subhead { font: 600 11px ui-monospace, monospace; color: var(--pt-accent-blue-bright, #7BB0F5); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 6px; }
+    .sh-dim { color: var(--pt-text-muted, #97A0B0); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .sh-table { width: 100%; border-collapse: collapse; font: 11px ui-monospace, monospace; }
+    .sh-table th { text-align: left; color: var(--pt-text-muted, #97A0B0); font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.5px; padding: 4px 8px; border-bottom: 1px solid var(--pt-border, #2b3440); position: sticky; top: 0; background: var(--pt-bg, #0d1117); }
+    .sh-table td { padding: 3px 8px; border-bottom: 1px solid rgba(70,90,120,0.18); color: var(--pt-text-primary, #F2F5F9); }
+    .sh-table .sh-ep { color: var(--pt-text-secondary, #C4CCD8); }
+    .sh-table .sh-bal { text-align: right; }
+    .sh-table .sh-delta { text-align: right; }
+    .sh-up { color: #46c46a; }
+    .sh-dn { color: #e8615d; }
+    .sh-d0 { color: var(--pt-text-muted, #97A0B0); }
+    .sh-tx { color: var(--pt-accent-blue, #4a9eff); cursor: help; }
     .dd-modal { background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border, #2b3440); border-radius: 10px;
       width: min(880px, 94vw); max-height: 88vh; overflow: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.6); }
     .dd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
@@ -139,10 +182,15 @@ const DELEGATORS_HTML = `
     .d-sortbtn:hover { color: var(--pt-text-primary); border-color: var(--pt-accent-blue); }
     .d-sortbtn.active { background: var(--pt-accent-blue); color: #fff; border-color: var(--pt-accent-blue); }
     /* Unified row: rank | addr | BIG bar | loyalty% | tenure | wt | penalties | stake | % */
-    .du-row { display: grid; grid-template-columns: 32px 150px 320px 64px 58px 48px 116px 92px 52px; align-items: center; gap: 10px;
+    .du-row { display: grid; grid-template-columns: 32px 150px 320px 64px 58px 48px 116px 92px 52px 150px; align-items: center; gap: 10px;
       padding: 7px 10px; border-bottom: 0.5px solid var(--pt-border); }
     .du-row.head { font: 700 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.6px; color: var(--pt-accent-blue); border-bottom: 1.5px solid var(--pt-border); position: sticky; top: 0; background: var(--pt-bg, #0d1117); z-index: 2; }
     .du-row:not(.head):hover { background: rgba(90,140,220,0.10); cursor: pointer; }
+    .du-actions { display: flex; gap: 5px; justify-content: flex-end; }
+    .du-actbtn { font: 600 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.4px;
+      color: var(--pt-accent-blue-bright, #7BB0F5); background: rgba(90,140,220,0.10);
+      border: 1px solid rgba(123,176,245,0.45); border-radius: 4px; padding: 3px 7px; cursor: pointer; white-space: nowrap; }
+    .du-actbtn:hover { background: rgba(123,176,245,0.22); border-color: rgba(123,176,245,0.8); }
     .du-rank { font: 700 12px ui-monospace, monospace; color: var(--pt-text-secondary); text-align: right; }
     .du-rank.top { color: var(--pt-accent-gold, #d6b246); }
     .du-addr { font: 400 11px ui-monospace, monospace; color: var(--pt-text-primary); display: flex; align-items: center; gap: 4px; min-width: 0; }
@@ -340,6 +388,161 @@ function renderJourney(runs) {
   return `<div class="dd-journey">${hops}</div>`;
 }
 
+function closeStakeHistory() {
+  const b = document.getElementById('sh-backdrop');
+  if (b) b.remove();
+}
+
+function shShell(stake) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div class="dd-backdrop" id="sh-backdrop">
+      <div class="dd-modal">
+        <div class="dd-head">
+          <div class="dd-title">Stake history<span class="addr">${stake}</span></div>
+          <button class="dd-close" id="sh-close">Close \u2715</button>
+        </div>
+        <div class="dd-body" id="sh-body">
+          <div class="dd-loading">Fetching stake history\u2026</div>
+        </div>
+      </div>
+    </div>`;
+  const node = wrap.firstElementChild;
+  document.body.appendChild(node);
+  node.addEventListener('click', (e) => { if (e.target === node) closeStakeHistory(); });
+  document.getElementById('sh-close')?.addEventListener('click', closeStakeHistory);
+  return node;
+}
+
+const _shAda = (n) => (n == null ? '\u2014' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+function _shDelta(n) {
+  if (n == null) return '<span class="sh-d0">\u2014</span>';
+  if (n > 0) return `<span class="sh-up">+${_shAda(n)}</span>`;
+  if (n < 0) return `<span class="sh-dn">${_shAda(n)}</span>`;
+  return '<span class="sh-d0">0</span>';
+}
+
+async function openStakeHistory(stake) {
+  shShell(stake);
+  let data = null;
+  try {
+    data = await registry.get(DataKind.DELEGATOR_STAKE_HISTORY, { stake, currentEpoch: _currentEpoch });
+  } catch (e) {
+    console.warn('[stakehist] fetch failed:', e.message ?? e);
+  }
+  const body = document.getElementById('sh-body');
+  if (!body) return;   // closed while loading
+  if (!data || !Array.isArray(data.epochs) || !data.epochs.length) {
+    body.innerHTML = '<div class="dd-loading">No stake history available for this delegator from the current source.</div>';
+    return;
+  }
+
+  const src = data.source || '\u2014';
+  const grain = data.granularity === 'epoch+intra'
+    ? 'per-epoch + intra-epoch'
+    : 'per-epoch (epoch-grained)';
+  const note = (data.granularity === 'epoch')
+    ? ' \u00b7 enable db-sync for intra-epoch tx detail'
+    : '';
+
+  // Per-epoch table, newest first.
+  const epochs = data.epochs.slice().reverse();
+  const rowsHtml = epochs.map((e) => `
+    <tr>
+      <td class="sh-ep">${e.epoch}</td>
+      <td class="sh-bal">${_shAda(e.runningBalance)} \u20b3</td>
+      <td class="sh-delta">${_shDelta(e.delta)}</td>
+    </tr>`).join('');
+
+  // Intra-epoch events (db-sync only), newest first.
+  let eventsHtml = '';
+  if (Array.isArray(data.events) && data.events.length) {
+    const evs = data.events.slice().reverse();
+    const evRows = evs.map((v) => {
+      const label = v.kind === 'reward' ? 'reward in'
+        : v.kind === 'withdrawal' ? 'withdrawal out'
+        : v.kind;
+      const amt = v.amount == null ? '\u2014'
+        : (v.amount > 0 ? `<span class="sh-up">+${_shAda(v.amount)}</span>`
+                        : `<span class="sh-dn">${_shAda(v.amount)}</span>`);
+      const tx = v.txHash ? `<span class="sh-tx" title="${v.txHash}">${v.txHash.slice(0, 12)}\u2026</span>` : '\u2014';
+      return `<tr><td class="sh-ep">${v.epoch ?? '\u2014'}</td><td>${label}</td><td class="sh-delta">${amt} \u20b3</td><td>${tx}</td></tr>`;
+    }).join('');
+    eventsHtml = `
+      <div class="sh-subhead">Intra-epoch movements <span class="sh-dim">(rewards &amp; withdrawals, exact from db-sync)</span></div>
+      <table class="sh-table">
+        <thead><tr><th>epoch</th><th>type</th><th>amount</th><th>tx</th></tr></thead>
+        <tbody>${evRows}</tbody>
+      </table>`;
+  }
+
+  const chart = _shSparkline(data.epochs);
+
+  body.innerHTML = `
+    <div class="sh-src">Source: <strong>${src}</strong> \u00b7 ${grain}${note}</div>
+    <div class="sh-split">
+      <div class="sh-top">
+        <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first)</span></div>
+        <div class="sh-tablewrap">
+          <table class="sh-table">
+            <thead><tr><th>epoch</th><th>balance</th><th>change</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+          ${eventsHtml}
+        </div>
+      </div>
+      <div class="sh-bottom">
+        <div class="sh-subhead">Running balance <span class="sh-dim">(all ${data.epochs.length} epochs, oldest \u2192 newest)</span></div>
+        ${chart}
+      </div>
+    </div>`;
+}
+
+/* Inline SVG line chart of running balance across all epochs. No chart library:
+ * builds a polyline + area fill scaled to the data, with min/current/max labels. */
+function _shSparkline(epochs) {
+  const pts = (epochs || []).filter((e) => e && e.runningBalance != null);
+  if (pts.length < 2) return '<div class="sh-dim" style="padding:8px">Not enough data to chart.</div>';
+
+  const W = 560, H = 200, PADL = 64, PADR = 14, PADT = 12, PADB = 26;
+  const iw = W - PADL - PADR, ih = H - PADT - PADB;
+
+  const xs = pts.map((p) => p.epoch);
+  const ys = pts.map((p) => p.runningBalance);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }                 // flat line guard
+  const pad = (yMax - yMin) * 0.08; yMin -= pad; yMax += pad;  // breathing room
+
+  const sx = (x) => PADL + ((x - xMin) / (xMax - xMin || 1)) * iw;
+  const sy = (y) => PADT + (1 - (y - yMin) / (yMax - yMin || 1)) * ih;
+
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${sx(p.epoch).toFixed(1)},${sy(p.runningBalance).toFixed(1)}`).join(' ');
+  const area = `${line} L${sx(xMax).toFixed(1)},${(PADT + ih).toFixed(1)} L${sx(xMin).toFixed(1)},${(PADT + ih).toFixed(1)} Z`;
+
+  const fmt = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const cur = ys[ys.length - 1];
+  const yTicks = [yMax, (yMax + yMin) / 2, yMin].map((v) => {
+    const yy = sy(v).toFixed(1);
+    return `<line x1="${PADL}" y1="${yy}" x2="${W - PADR}" y2="${yy}" class="sh-grid"/>` +
+           `<text x="${PADL - 6}" y="${(Number(yy) + 3).toFixed(1)}" class="sh-axis" text-anchor="end">${fmt(v)}</text>`;
+  }).join('');
+  const xTicks = [xMin, Math.round((xMin + xMax) / 2), xMax].map((v) => {
+    const xx = sx(v).toFixed(1);
+    return `<text x="${xx}" y="${H - 8}" class="sh-axis" text-anchor="middle">ep ${v}</text>`;
+  }).join('');
+
+  const lastX = sx(xMax).toFixed(1), lastY = sy(cur).toFixed(1);
+
+  return `<svg class="sh-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Running balance chart">
+    ${yTicks}${xTicks}
+    <path d="${area}" class="sh-area"/>
+    <path d="${line}" class="sh-line"/>
+    <circle cx="${lastX}" cy="${lastY}" r="3.2" class="sh-dot"/>
+    <text x="${Number(lastX) - 6}" y="${Number(lastY) - 8}" class="sh-cur" text-anchor="end">${fmt(cur)} \u20b3</text>
+  </svg>`;
+}
+
 async function openDeepDive(stake) {
   ddShell(stake);
   let detail = null;
@@ -509,6 +712,7 @@ function unifiedRowHtml(r, idx, totalStakeLov, ownerSet) {
     <span class="du-pen">${penCell}</span>
     <span class="du-stake" title="Current live stake">${fmtStakeShort(r.liveStake)} \u20b3</span>
     <span class="du-pct">${pct.toFixed(2)}%</span>
+    <span class="du-actions"><button class="du-actbtn du-deleg" type="button" data-stake="${r.stake}" title="Delegation history (pool movements)">Deleg</button><button class="du-actbtn du-stakehist" type="button" data-stake="${r.stake}" title="Stake history (per-epoch balance)">Stake</button></span>
   </div>`;
 }
 
@@ -522,6 +726,7 @@ let _duView = [];        // last-rendered sorted/filtered view (for search-jump)
 let _duDrawPage = null;  // active drawPage() closure (jump-to-page)
 
 function renderUnified() {
+  stopLoadCreep();
   const wrap = document.getElementById('d-table');
   if (!wrap) return;
   const dustOn = !!document.getElementById('d-dust')?.checked;
@@ -543,6 +748,7 @@ function renderUnified() {
     <span class="du-pen">penalties</span>
     <span class="du-stake">live stake</span>
     <span class="du-pct">% pool</span>
+    <span class="du-actions">history</span>
   </div>`;
 
   const PER = LOY_MAX_ROWS;
@@ -554,8 +760,11 @@ function renderUnified() {
     const slice = view.slice(start, start + PER);
     const body = slice.map((r, k) => unifiedRowHtml(r, start + k, _duTotalStake, _duOwners)).join('');
     wrap.innerHTML = head + body;
-    wrap.querySelectorAll('.du-row[data-stake]').forEach((el) => {
-      el.addEventListener('click', () => openDeepDive(el.getAttribute('data-stake')));
+    wrap.querySelectorAll('.du-deleg[data-stake]').forEach((b) => {
+      b.addEventListener('click', (e) => { e.stopPropagation(); openDeepDive(b.getAttribute('data-stake')); });
+    });
+    wrap.querySelectorAll('.du-stakehist[data-stake]').forEach((b) => {
+      b.addEventListener('click', (e) => { e.stopPropagation(); openStakeHistory(b.getAttribute('data-stake')); });
     });
     wrap.querySelectorAll('.du-copy[data-copy]').forEach((b) => {
       b.addEventListener('click', (e) => { e.stopPropagation(); copyStake(b.getAttribute('data-copy'), b); });
@@ -621,9 +830,58 @@ function renderTable(el, list, totalStake) {
   });
 }
 
+// ---- Loading overlay + staged progress -------------------------------------
+// Rendered into #d-table; the table render replaces it when data is ready.
+// The bar CREEPS from each checkpoint toward the next during every await, so it
+// never sits frozen — important on the first visit, where Blockfrost init can
+// take several seconds before any data arrives.
+let _loadTimer = null;
+let _loadCeil = 30;
+let _loadCur = 8;
+function _loadPaint(p) {
+  const v = Math.max(0, Math.min(100, p));
+  const fill = document.getElementById('d-load-fill');
+  const pc = document.getElementById('d-load-pct');
+  if (fill) fill.style.width = v + '%';
+  if (pc) pc.textContent = Math.round(v) + '%';
+}
+function stopLoadCreep() { if (_loadTimer) { clearInterval(_loadTimer); _loadTimer = null; } }
+function _startLoadCreep() {
+  stopLoadCreep();
+  _loadTimer = setInterval(() => {
+    const target = _loadCeil - 1;
+    if (_loadCur < target) { _loadCur += Math.max(0.25, (target - _loadCur) * 0.05); _loadPaint(_loadCur); }
+  }, 200);
+}
+function showDelegLoading() {
+  const wrap = document.getElementById('d-table');
+  if (!wrap) return;
+  wrap.innerHTML =
+    '<div class="d-load">' +
+      '<div class="d-load-title">Loading delegators</div>' +
+      '<div class="d-load-stage" id="d-load-stage">Connecting to sources\u2026</div>' +
+      '<div class="d-load-track"><div class="d-load-fill" id="d-load-fill"></div></div>' +
+      '<div class="d-load-pct" id="d-load-pct">8%</div>' +
+    '</div>';
+  _loadCur = 8; _loadCeil = 30;
+  _loadPaint(_loadCur);
+  _startLoadCreep();
+}
+// setLoadProgress(floor, stage, ceil): jump to `floor`, set the stage label, and
+// let the bar creep toward `ceil` while the next await runs.
+function setLoadProgress(floor, stage, ceil) {
+  if (floor != null && floor > _loadCur) _loadCur = floor;   // forward only
+  if (ceil != null) _loadCeil = ceil;
+  const st = document.getElementById('d-load-stage');
+  if (st && stage != null) st.textContent = stage;
+  _loadPaint(_loadCur);
+  if (!_loadTimer) _startLoadCreep();
+}
+
 export async function mountDelegators(canvas) {
   canvas.innerHTML = DELEGATORS_HTML;
   const root = canvas.querySelector('#pt-delegators');
+  showDelegLoading();   // paint immediately — before the first-visit Blockfrost init (can take seconds)
 
   // Optional Blockfrost enrichment — idempotent, no-op without a key.
   try { await readModel.ensureBlockfrost(); } catch { /* ignore */ }
@@ -640,9 +898,12 @@ export async function mountDelegators(canvas) {
   let live = null, list = [];
   try {
     if (registry.can(DataKind.POOL_LIVE)) {
+      setLoadProgress(34, 'Loading live pool stats\u2026', 44);
       try { live = await registry.get(DataKind.POOL_LIVE); } catch { live = null; }
     }
+    setLoadProgress(46, 'Fetching delegators\u2026', 86);
     list = await registry.get(DataKind.DELEGATOR_LIST);
+    setLoadProgress(88, 'Loading history\u2026', 92);
   } catch (e) {
     console.warn('[delegators] load failed:', e.message ?? e);
     renderEmpty(root);
@@ -743,7 +1004,9 @@ export async function mountDelegators(canvas) {
     setSort('stake');
   }
 
+  setLoadProgress(90, 'Scoring loyalty\u2026', 99);
   await buildUnified(false);
+  stopLoadCreep();
 }
 
-export function unmountDelegators() { closeDeepDive(); }
+export function unmountDelegators() { stopLoadCreep(); closeDeepDive(); }

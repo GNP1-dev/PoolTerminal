@@ -33,6 +33,7 @@
   color: var(--pt-accent-blue);
   font-weight: 700;
   letter-spacing: 0.5px;
+  font-size: 16px;
 }
 
 .pt-ticker-role {
@@ -116,7 +117,7 @@
 
 .pt-tab {
   padding: 10px 12px;
-  color: var(--pt-text-muted);
+  color: var(--pt-text-secondary);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   cursor: pointer;
@@ -131,6 +132,7 @@
 .pt-tab-active {
   color: var(--pt-accent-blue);
   border-bottom-color: var(--pt-accent-blue);
+  font-weight: 600;
 }
 
 /* ---------- View canvas ---------- */

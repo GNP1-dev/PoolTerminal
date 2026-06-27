@@ -367,7 +367,33 @@ export async function getPoolDelegators(poolBech32) {
       });
     }
 
-    if (arr.length < PAGE) break;   // short page = last page
+    if (arr.length < PAGE) {
+      // pagination truncation guard: a short page is USUALLY the last page, but
+      // a rate-limited / truncated response is also short. Confirm the end by
+      // probing the next offset; if it returns rows, this was a truncation and
+      // the membership set is incomplete -> discard the whole poll (treated as an
+      // outage upstream: no events, snapshot left intact). Never build a partial
+      // set, which fabricates phantom leave/return events.
+      const probeUrl =
+        `${KOIOS_BASE}/pool_delegators?_pool_bech32=${poolBech32}` +
+        `&order=amount.desc&offset=${offset + arr.length}&limit=1`;
+      try {
+        const probe = parseJson(await runCmd(`curl -sf --max-time ${CURL_MAX_TIME} '${probeUrl}'`), []);
+        if (Array.isArray(probe) && probe.length > 0) {
+          console.warn(
+            `[koios] pool_delegators truncated mid-pagination ` +
+            `(short page of ${arr.length} at offset ${offset}, but more rows exist) — ` +
+            `discarding poll to avoid phantom leave/return events`
+          );
+          return [];
+        }
+      } catch (err) {
+        // Couldn't confirm the end — be safe, discard rather than risk a partial set.
+        console.warn('[koios] pagination end-probe failed:', err.message, '— discarding poll');
+        return [];
+      }
+      break;   // probe confirmed empty: genuinely the last page
+    }
   }
 
   // CRITICAL: pool_delegators.amount is the epoch-BOUNDARY snapshot stake — it
@@ -638,11 +664,38 @@ export async function getDelegatorDetail(stake, _currentEpoch) {
   };
 }
 
+/**
+ * DELEGATOR_STAKE_HISTORY - per-epoch active-stake series from Koios
+ * account_history (epoch-grained; no intra-epoch events). One POST.
+ */
+export async function getDelegatorStakeHistory(stake) {
+  if (!stake) return null;
+  const body = JSON.stringify({ _stake_addresses: [stake] });
+  let hist = [];
+  try {
+    const r = await runCmd(`curl -sf --max-time ${CURL_MAX_TIME} -X POST '${KOIOS_BASE}/account_history' ` +
+      `-H 'content-type: application/json' -d '${shellEscape(body)}'`);
+    const arr = parseJson(r, []);
+    if (Array.isArray(arr) && arr.length && Array.isArray(arr[0].history)) hist = arr[0].history.slice();
+  } catch (e) { console.warn('[koios] stake-history account_history failed:', e.message); }
+  hist.sort((a, b) => (a.epoch_no || 0) - (b.epoch_no || 0));   // oldest first
+
+  const epochs = [];
+  let prev = null;
+  for (const h of hist) {
+    const bal = h.active_stake != null ? Number(h.active_stake) / 1e6 : null;
+    const delta = (prev == null || bal == null) ? null : (bal - prev);
+    epochs.push({ epoch: h.epoch_no, stake: bal, delta, runningBalance: bal });
+    prev = bal;
+  }
+  return { stake, source: 'koios', granularity: 'epoch', epochs, events: [] };
+}
+
 export const koiosLiveDelegatorsSource = {
   id: 'koios-live',
   label: 'Koios',
   isCli: false,
-  provides: () => (_liveReady ? [DataKind.DELEGATOR_LIST_LIVE, DataKind.POOL_LIVE, DataKind.DELEGATOR_LIST, DataKind.DELEGATOR_DETAIL] : []),
+  provides: () => (_liveReady ? [DataKind.DELEGATOR_LIST_LIVE, DataKind.POOL_LIVE, DataKind.DELEGATOR_LIST, DataKind.DELEGATOR_DETAIL, DataKind.DELEGATOR_STAKE_HISTORY] : []),
   reachable: () => _liveReady,
   version: () => null,
   get: async (kind, _params = {}) => {
@@ -655,6 +708,9 @@ export const koiosLiveDelegatorsSource = {
     }
     if (kind === DataKind.DELEGATOR_DETAIL) {
       return getDelegatorDetail(_params.stake, _params.currentEpoch);
+    }
+    if (kind === DataKind.DELEGATOR_STAKE_HISTORY) {
+      return getDelegatorStakeHistory(_params.stake);
     }
     if (kind === DataKind.POOL_LIVE) {
       if (!_liveBech32) return null;

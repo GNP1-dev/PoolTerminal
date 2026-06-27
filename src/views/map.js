@@ -55,11 +55,11 @@ const MAP_HTML = `
 <div class="pt-map">
   <style>
     .pt-map { display: grid; grid-template-columns: 1fr 280px; gap: 12px; height: 100%; padding: 4px; box-sizing: border-box; }
-    .pt-map-canvas { background: #0a0f16; border: 1px solid rgba(110,140,180,0.25); border-radius: 6px; overflow: hidden; min-height: 0; }
+    .pt-map-canvas { background: #0a0f16; border: 2px solid rgba(150,182,235,0.5); border-radius: 6px; overflow: hidden; min-height: 0; }
     .pt-map-canvas svg { width: 100%; height: 100%; display: block; }
     .pt-map-side { display: flex; flex-direction: column; gap: 10px; font: 400 12px ui-monospace, monospace; color: #c8d4e0; overflow-y: auto; }
-    .pt-map-card { background: rgba(20,30,45,0.6); border: 1px solid rgba(110,140,180,0.2); border-radius: 6px; padding: 10px 12px; }
-    .pt-map-card h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #7a90a8; font-weight: 600; }
+    .pt-map-card { background: rgba(20,30,45,0.6); border: 1px solid rgba(150,182,235,0.45); border-radius: 6px; padding: 10px 12px; }
+    .pt-map-card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--pt-accent-blue-bright, #7BB0F5); font-weight: 600; }
     .pt-map-stat { display: flex; justify-content: space-between; padding: 2px 0; }
     .pt-map-stat .v { color: #e8f0f8; font-weight: 600; }
     .pt-map-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
@@ -68,7 +68,7 @@ const MAP_HTML = `
     .pt-map-row .ct { color: #e8f0f8; font-weight: 600; }
     .pt-map-bar { height: 4px; border-radius: 2px; background: rgba(110,140,180,0.15); margin-top: 3px; overflow: hidden; }
     .pt-map-bar > i { display: block; height: 100%; }
-    .pt-map-meta { color: #7a90a8; font-size: 11px; }
+    .pt-map-meta { color: var(--pt-text-muted, #97A0B0); font-size: 11px; }
   </style>
   <div class="pt-map-canvas"><svg id="map-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"></svg></div>
   <div class="pt-map-side">

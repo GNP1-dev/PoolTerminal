@@ -457,6 +457,7 @@ const PROVIDES = [
   DataKind.EPOCH_BLOCKS, DataKind.EPOCH_STAKE, DataKind.EPOCH_DELEGATORS,
   DataKind.EPOCH_REWARDS, DataKind.EPOCH_IDEAL, DataKind.POOL_PARAMS,
   DataKind.DELEGATOR_LOYALTY, DataKind.DELEGATOR_LIST, DataKind.DELEGATOR_DETAIL,
+  DataKind.DELEGATOR_STAKE_HISTORY,
 ];
 
 let _ourBech32 = null;
@@ -553,6 +554,65 @@ async function getDelegatorDetail(stake, _currentEpoch) {
   };
 }
 
+/**
+ * DELEGATOR_STAKE_HISTORY - per-epoch active-stake series for one delegator,
+ * plus intra-epoch tx-level movements (db-sync exclusive). Source-agnostic shape
+ * so the modal renders the same regardless of provider; Koios/Blockfrost return
+ * epochs only (no events).
+ */
+async function getDelegatorStakeHistory(stake) {
+  if (!_ready || !stake) return null;
+  const esc = String(stake).replace(/'/g, "''");
+
+  // Per-epoch active stake (oldest -> newest). Sums across pools so the figure is
+  // the delegator's TOTAL active stake each epoch, not just our pool's slice.
+  const rows = await pgQuery(_cfg, `
+    SELECT es.epoch_no::text AS epoch, SUM(es.amount)::text AS amount
+    FROM epoch_stake es
+    JOIN stake_address sa ON sa.id = es.addr_id
+    WHERE sa.view = '${esc}'
+    GROUP BY es.epoch_no
+    ORDER BY es.epoch_no ASC`);
+
+  const epochs = [];
+  let prev = null;
+  for (const r of rows) {
+    const bal = lovelaceToAda(r.amount);
+    const delta = (prev == null || bal == null) ? null : (bal - prev);
+    epochs.push({ epoch: Number(r.epoch), stake: bal, delta, runningBalance: bal });
+    prev = bal;
+  }
+
+  // Intra-epoch events: rewards (in), withdrawals (out), (de)registration.
+  // Exact from dedicated tables — no UTxO reconstruction.
+  const events = [];
+  try {
+    const rw = await pgQuery(_cfg, `
+      WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}')
+      SELECT 'reward' AS kind, r.earned_epoch::text AS epoch, r.amount::text AS amount, NULL AS txhash
+      FROM reward r WHERE r.addr_id = (SELECT id FROM a)
+      UNION ALL
+      SELECT 'withdrawal' AS kind, e.no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
+      FROM withdrawal w
+      JOIN tx ON tx.id = w.tx_id
+      JOIN block b ON b.id = tx.block_id
+      JOIN epoch e ON e.no = b.epoch_no
+      WHERE w.addr_id = (SELECT id FROM a)
+      ORDER BY epoch ASC`);
+    for (const r of rw) {
+      const amt = lovelaceToAda(r.amount);
+      events.push({
+        epoch: numOrNull(r.epoch),
+        kind: r.kind,
+        amount: r.kind === 'withdrawal' ? (amt == null ? null : -amt) : amt,
+        txHash: r.txhash || null,
+      });
+    }
+  } catch (e) { console.warn('[dbsync] stake-history events failed:', e.message ?? e); }
+
+  return { stake, source: 'dbsync', granularity: 'epoch+intra', epochs, events };
+}
+
 export const dbsyncSource = {
   id: 'dbsync',
   label: 'db-sync',
@@ -574,6 +634,8 @@ export const dbsyncSource = {
         return getDelegatorList();
       case DataKind.DELEGATOR_DETAIL:
         return getDelegatorDetail(params.stake, params.currentEpoch);
+      case DataKind.DELEGATOR_STAKE_HISTORY:
+        return getDelegatorStakeHistory(params.stake);
       default:
         throw new Error(`db-sync source can't provide ${kind}`);
     }

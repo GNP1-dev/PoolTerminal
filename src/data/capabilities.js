@@ -40,6 +40,7 @@ export const DataKind = Object.freeze({
   DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators (epoch_stake snapshot): [{ stake, liveStake }]
   DELEGATOR_LIST_LIVE: 'DELEGATOR_LIST_LIVE', // live delegators, intra-epoch: [{ stake, liveStake, liveStakeLovelace, latestDelegTx, activeEpochNo }]
   DELEGATOR_DETAIL: 'DELEGATOR_DETAIL', // one delegator: balance, rewards, tenure, drep, pool trail
+  DELEGATOR_STAKE_HISTORY: 'DELEGATOR_STAKE_HISTORY', // one delegator: per-epoch active-stake series (+ intra-epoch tx detail on db-sync)
   DELEGATOR_LOYALTY: 'DELEGATOR_LOYALTY', // tenure leaderboard: [{ stake, tenure, sinceEpoch }]
   POOL_LIFECYCLE: 'POOL_LIFECYCLE',     // registration / metadata / retirement history
 });
@@ -63,6 +64,7 @@ const HISTORY_KINDS = new Set([
   // Deep-dive + delegator list: db-sync first (local, instant), Koios next,
   // Blockfrost last - all can serve them, db-sync is best when present.
   DataKind.DELEGATOR_DETAIL, DataKind.DELEGATOR_LIST,
+  DataKind.DELEGATOR_STAKE_HISTORY,
 ]);
 
 // Live-feed preference (NOTIFICATIONS): zero-config-first. Koios needs no key

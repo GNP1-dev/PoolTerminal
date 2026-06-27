@@ -140,10 +140,10 @@ function ensureStyle() {
     .ds-grid { flex: 1 1 auto; min-height: 0; display: grid;
       grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px; }
     .ds-tile { min-height: 0; display: flex; flex-direction: column;
-      background: rgba(120,150,190,0.04); border: 1px solid rgba(120,150,190,0.14);
+      background: rgba(120,150,190,0.04); border: 1px solid rgba(150,182,235,0.45);
       border-radius: 12px; padding: 12px 14px; box-sizing: border-box; }
-    .ds-tile-h { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
-      color: var(--pt-text-secondary, #b9c4d0); margin: 0 0 2px; flex: 0 0 auto; }
+    .ds-tile-h { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--pt-accent-blue-bright, #7BB0F5); margin: 0 0 2px; flex: 0 0 auto; }
     .ds-tile-sub { font-size: 11px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 9px; flex: 0 0 auto; line-height: 1.35; }
     /* Tile body scrolls internally only if its content is taller than the tile. */
     .ds-tile-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
@@ -153,7 +153,7 @@ function ensureStyle() {
     /* Status chips - stacked vertically inside the top-left tile. */
     .ds-chips { display: flex; flex-direction: column; gap: 8px; }
     .ds-chip { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 9px;
-      background: rgba(120,150,190,0.06); border: 1px solid rgba(120,150,190,0.2); }
+      background: rgba(120,150,190,0.06); border: 1px solid rgba(150,182,235,0.45); }
     .ds-chip-off { opacity: 0.55; }
     .ds-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
     .ds-chip-l { font-size: 13px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); }
@@ -162,7 +162,7 @@ function ensureStyle() {
     /* Feature rows - compacted for tile density. */
     .ds-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
       padding: 9px 11px; border-radius: 8px; background: rgba(120,150,190,0.04);
-      border: 1px solid rgba(120,150,190,0.12); margin-bottom: 7px; }
+      border: 1px solid rgba(150,182,235,0.4); margin-bottom: 7px; }
     .ds-row:last-child { margin-bottom: 0; }
     .ds-row-l { font-size: 13px; font-weight: 600; color: var(--pt-text-primary, #e6edf3); }
     .ds-row-d { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); margin-top: 2px; line-height: 1.4; }

@@ -19,6 +19,7 @@
 import * as readModel from '../data/read-model.js';
 import { getLastHost } from '../data/host-query.js';
 import { getLastMetrics } from '../data/metrics-query.js';
+import { getNodeProbe } from '../data/session.js';
 
 const LIVE_REFRESH_MS = 2000;     // hero + detail
 const SPARK_REFRESH_MS = 15000;   // re-pull samples + redraw
@@ -135,6 +136,7 @@ const HEALTH_HTML = `
 function updateLive(canvas) {
   const host = getLastHost();
   const m = getLastMetrics() || {};
+  const probe = getNodeProbe() || {};
   const set = (id, v, cls) => {
     const el = canvas.querySelector('#' + id);
     if (!el) return;
@@ -166,7 +168,7 @@ function updateLive(canvas) {
   const forgeBad = (cannot || 0) > 0 || (missed || 0) > 0;
   set('hl-forge', forgeBad ? 'CHECK' : (cannot == null ? '—' : 'OK'),
     forgeBad ? 'v-warn' : (cannot == null ? 'v-muted' : 'v-good'));
-  set('hl-forge-sub', cannot == null ? '—' : `forged ${forged ?? 0} · missed ${missed ?? 0}`);
+  set('hl-forge-sub', cannot == null ? '—' : `forged ${forged ?? 0} · missed ${missed ?? 0} (since node start)`);
 
   // Live detail grid
   const detail = canvas.querySelector('#hl-detail');
@@ -175,7 +177,10 @@ function updateLive(canvas) {
       ['Load 1m', host?.load1 ?? '—'],
       ['Load 5m', host?.load5 ?? '—'],
       ['Load 15m', host?.load15 ?? '—'],
-      ['Uptime', fmtDur(host?.uptimeSec)],
+      ['Host uptime', fmtDur(host?.uptimeSec)],
+      ['Node uptime', fmtDur(probe.nodeStartUnix ? (Date.now() / 1000 - probe.nodeStartUnix) : null)],
+      ['Node port', probe.port ?? '—'],
+      ['Metrics port', probe.prometheusPort ?? '—'],
       ['Swap used', host ? `${fmtPct(host.swapUsedPct, 1)} (${fmtBytes(host.swapUsed)})` : '—'],
       ['GC live', fmtBytes(m.gcLiveBytes)],
       ['GC heap', fmtBytes(m.gcHeapBytes)],
@@ -187,7 +192,7 @@ function updateLive(canvas) {
       ['Conns in/out', `${m.incomingConns ?? '—'} / ${m.outgoingConns ?? '—'}`],
       ['Slot', m.slotNum != null ? Number(m.slotNum).toLocaleString('en-US') : '—'],
       ['Block', m.blockNum != null ? Number(m.blockNum).toLocaleString('en-US') : '—'],
-      ['Forged', m.blocksForged ?? '—'],
+      ['Forged (since node start)', m.blocksForged ?? '—'],
     ];
     detail.innerHTML = rows.map(([k, v]) =>
       `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');

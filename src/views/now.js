@@ -441,7 +441,7 @@ function fadeOutLoading() {
 // Lifetime blocks = sum of adopted blocks across all tracked epochs (incl. the
 // current one). Read from the read-model history cache — portable (db-sync or
 // Koios), no extra API call. Updates the hero card when ready.
-async function refreshLifetimeBlocks() {
+export async function refreshLifetimeBlocks() {
   try {
     // Authoritative lifetime total from Koios pool_info.block_count (the exact
     // field gLiveView displays) - it counts the current and just-ended epochs,
@@ -454,7 +454,7 @@ async function refreshLifetimeBlocks() {
       if (sub) {
         const rows = await readModel.getEpochHistory(0, 9_999_999);
         const producing = Array.isArray(rows) ? rows.filter((r) => (r.adopted || 0) > 0).length : 0;
-        sub.textContent = producing ? `${producing} producing epochs` : 'lifetime';
+        sub.textContent = producing ? `${producing} epochs` : 'lifetime';
       }
       return;
     }
@@ -463,7 +463,7 @@ async function refreshLifetimeBlocks() {
     if (!Array.isArray(rows) || !rows.length) return;
     const total = rows.reduce((s, r) => s + (r && r.adopted ? Number(r.adopted) : 0), 0);
     if (el) el.textContent = total.toLocaleString();
-    if (sub) sub.textContent = `${rows.filter((r) => (r.adopted || 0) > 0).length} producing epochs`;
+    if (sub) sub.textContent = `${rows.filter((r) => (r.adopted || 0) > 0).length} epochs`;
   } catch { /* leave placeholder */ }
 }
 

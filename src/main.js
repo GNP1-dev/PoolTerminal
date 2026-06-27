@@ -26,10 +26,11 @@ import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
 } from './views/now.js';
+import { mountNow2, unmountNow2 } from './views/now2.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { mountDataSources, unmountDataSources } from './views/data-sources.js';
-import { mountAbout, unmountAbout } from './views/about.js';
+import { mountAbout, unmountAbout, APP_VERSION } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
 import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal, resumeLive } from './views/connect.js';
@@ -71,6 +72,7 @@ function labelFor(view) {
 function mountView(view) {
   const isHealth = view === 'health' || view === 'node-health';
   if (activeView === 'now' && view !== 'now') unmountNow();
+  if (activeView === 'now2' && view !== 'now2') unmountNow2();
   if ((activeView === 'health' || activeView === 'node-health') && !isHealth) unmountNodeHealth();
   if (activeView === "map" && view !== "map") unmountMap();
   if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
@@ -84,6 +86,10 @@ function mountView(view) {
     if (_lastPeers) {
       try { renderPeersPanel(_lastPeers); if (_lastPeers.peers) renderRelayMap(_lastPeers.peers); } catch { /* panel not ready */ }
     }
+    refreshUpcomingBlocks(dataSource()).catch(() => {});
+  } else if (view === 'now2') {
+    mountNow2(canvasEl);
+    if (_lastPeers) { try { renderPeersPanel(_lastPeers); } catch { /* not ready */ } }
     refreshUpcomingBlocks(dataSource()).catch(() => {});
   } else if (view === 'history') {
     mountHistory(canvasEl);
@@ -138,7 +144,7 @@ async function fastPollTick() {
     latestSnap = snap;
     lastFastError = null;
 
-    if (activeView === 'now') {
+    if (activeView === 'now' || activeView === 'now2') {
       updateNowFast(snap);
     }
 
@@ -162,7 +168,7 @@ async function fastPollTick() {
     lastPollTime = nowSec;
 
     // Mempool refresh every Nth second (background, doesn't gate this tick).
-    if (activeView === 'now' && nowSec - lastMempoolRefreshTime >= MEMPOOL_REFRESH_EVERY_S) {
+    if ((activeView === 'now' || activeView === 'now2') && nowSec - lastMempoolRefreshTime >= MEMPOOL_REFRESH_EVERY_S) {
       lastMempoolRefreshTime = nowSec;
       refreshMempool(dataSource(), latestSnap?.tipBlock).catch((e) =>
         console.warn('[mempool refresh] FAIL:', e.message)
@@ -172,7 +178,7 @@ async function fastPollTick() {
     // Upcoming-blocks refresh every minute — leadership schedule changes only
     // once per epoch in practice; we still re-poll for the new "next epoch"
     // schedule once the safe window opens.
-    if (activeView === 'now' && nowSec - lastUpcomingRefreshTime >= UPCOMING_REFRESH_EVERY_S) {
+    if ((activeView === 'now' || activeView === 'now2') && nowSec - lastUpcomingRefreshTime >= UPCOMING_REFRESH_EVERY_S) {
       lastUpcomingRefreshTime = nowSec;
       refreshUpcomingBlocks(dataSource()).catch((e) =>
         console.warn('[upcoming refresh] FAIL:', e.message)
@@ -360,7 +366,7 @@ window.addEventListener('DOMContentLoaded', () => {
       setPeerCounts(null, null);
       resetPeersPanel();
       resetRelayMap();
-      if (activeView === 'now') mountNow(canvasEl);
+      if (activeView === 'now') mountNow(canvasEl); else if (activeView === 'now2') mountNow2(canvasEl);
       runProbeAndPaintRole();
       fastPollTick();
     });
@@ -368,6 +374,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const settingsGear = document.getElementById('ttape-settings');
   if (settingsGear) settingsGear.addEventListener('click', () => showSettingsModal());
+  const brandVer = document.getElementById('ttape-appver');
+  if (brandVer) brandVer.textContent = 'v' + APP_VERSION;
 
   setMode('demo');
   paintMode();

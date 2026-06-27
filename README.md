@@ -8,7 +8,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
-> _Last updated: 23 June 2026_
+> _Last updated: 27 June 2026_
 
 ## What it is
 

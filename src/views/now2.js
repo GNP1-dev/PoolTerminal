@@ -23,6 +23,7 @@ import { getNodeProbe } from '../data/session.js';
 
 let _mirrorTimer = null;
 let _tick = 0;
+let _n2Ready = false;
 let _lastTip = null;
 const MP_FULL = 90112;   // bytes = one block body (mainnet maxBlockBodySize)
 
@@ -320,6 +321,16 @@ function renderProp() {
 
 function paintGauges() {
   const root = document;
+  // Lift the loading overlay once the first real data has arrived.
+  if (!_n2Ready) {
+    let haveData = false;
+    try { haveData = getLastMetrics() != null; } catch (e) { haveData = false; }
+    if (haveData) {
+      _n2Ready = true;
+      const ov = document.getElementById('n2-loading');
+      if (ov) { ov.classList.add('fade'); setTimeout(() => ov.remove(), 400); }
+    }
+  }
   // KES thermometer: days remaining out of ~90, colour-coded (green >30, amber 10-30, red <10)
   const kes = numFrom('hero-kes-val');
   if (kes != null) {
@@ -399,6 +410,32 @@ function paintGauges() {
 
 export function mountNow2(canvas) {
   canvas.innerHTML = N2_HTML;
+  _n2Ready = false;
+  // Loading overlay until the first real data lands (avoids the empty-then-trickle
+  // cold start). Cleared in paintGauges() once getLastMetrics() is non-null.
+  if (!document.getElementById('n2-loading')) {
+    const ov = document.createElement('div');
+    ov.id = 'n2-loading';
+    ov.innerHTML =
+      '<style>' +
+      '#n2-loading{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:14px;background:var(--pt-bg,#0d1117);' +
+      'transition:opacity .35s ease;}' +
+      '#n2-loading.fade{opacity:0;pointer-events:none;}' +
+      '#n2-loading .n2l-ring{width:42px;height:42px;border:3px solid rgba(123,176,245,0.25);' +
+      'border-top-color:#7BB0F5;border-radius:50%;animation:n2lspin .8s linear infinite;}' +
+      '#n2-loading .n2l-txt{font:600 12px ui-monospace,monospace;letter-spacing:.5px;' +
+      'text-transform:uppercase;color:var(--pt-accent-blue-bright,#7BB0F5);}' +
+      '#n2-loading .n2l-sub{font:11px ui-monospace,monospace;color:var(--pt-text-muted,#97A0B0);}' +
+      '@keyframes n2lspin{to{transform:rotate(360deg);}}' +
+      '</style>' +
+      '<div class="n2l-ring"></div>' +
+      '<div class="n2l-txt">Starting dashboard</div>' +
+      '<div class="n2l-sub">connecting to node and fetching live data\u2026</div>';
+    // canvas is the positioning context; ensure it can host an absolute overlay.
+    if (getComputedStyle(canvas).position === 'static') canvas.style.position = 'relative';
+    canvas.appendChild(ov);
+  }
   try { initChainPulse(); } catch (e) { /* heartbeat renders on next tick */ }
   paintGauges();
   refreshLifetimeBlocks().catch(() => {});
@@ -408,5 +445,6 @@ export function mountNow2(canvas) {
 
 export function unmountNow2() {
   if (_mirrorTimer) { clearInterval(_mirrorTimer); _mirrorTimer = null; }
+  const ov = document.getElementById('n2-loading'); if (ov) ov.remove();
   try { stopChainPulse(); } catch (e) { /* noop */ }
 }

@@ -62,7 +62,7 @@ let _lastPeers = null;   // last peers poll result, for instant repaint on NOW r
 let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
 
-let activeView = 'now';
+let activeView = 'now2';
 let canvasEl = null;
 
 function labelFor(view) {
@@ -380,13 +380,13 @@ window.addEventListener('DOMContentLoaded', () => {
   setMode('demo');
   paintMode();
   setRoleBadge(null);
-  mountView('now');
+  mountView('now2');
 
   // First run (no saved connection) opens the guided setup wizard; returning
   // users go straight to the quick connect screen. The wizard hands off to the
   // same connect screen internally, so both paths end live + polling.
   const startLive = () => {
-    mountView('now');
+    mountView('now2');
     paintMode();
     runProbeAndPaintRole();
     startPolling();

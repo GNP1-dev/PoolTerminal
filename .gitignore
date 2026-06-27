@@ -79,3 +79,9 @@ dist-ssr
 # === Tauri build artifacts ===
 /src-tauri/target/
 /src-tauri/gen/schemas/
+
+# local tooling — never commit
+fill-mempool.sh
+patch_*.py
+*.out
+pt_dbsync_audit.*

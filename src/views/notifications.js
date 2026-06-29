@@ -20,6 +20,7 @@
 
 import { fmtAda, shortStake, getOwnPoolTicker } from '../ui/notif-format.js';
 import { getNotifications, clearNotifications } from '../data/read-model.js';
+import { confirmDialog } from '../ui/dialog.js';
 
 // Copy text to the clipboard with a brief check-mark on the button that fired.
 function copyStake(text, btn) {
@@ -374,7 +375,11 @@ async function render(canvas) {
   const clearBtn = canvas.querySelector('.nf-clear');
   if (clearBtn) {
     clearBtn.addEventListener('click', async () => {
-      if (!window.confirm('Clear the delegation activity history?\n\nMonitoring continues \u2014 only the displayed list is wiped. New movements will appear from now on.')) return;
+      if (!(await confirmDialog({
+        title: 'Clear activity history',
+        message: 'Clear the delegation activity history?\n\nMonitoring continues - only the displayed list is wiped. New movements will appear from now on.',
+        confirmLabel: 'Clear history',
+      }))) return;
       clearBtn.disabled = true; clearBtn.textContent = 'Clearing\u2026';
       await clearNotifications();
       unread = 0; setBadge(0);

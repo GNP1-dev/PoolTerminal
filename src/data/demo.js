@@ -175,16 +175,18 @@ export class DemoDataSource {
       }
     }
 
-    // Baseline accumulation: 0-3 small txs per poll (~1.5/s avg).
-    const baselineCount = Math.floor(Math.random() * 4);
+    // Baseline accumulation: 0-2 small txs per poll. Tuned so steady-state
+    // mempool sits in the realistic low single-digit % range. /*demo-mempool*/
+    const baselineCount = Math.floor(Math.random() * 3);
     for (let i = 0; i < baselineCount; i++) {
-      const bytes = 200 + Math.floor(Math.random() * 1500);
+      const bytes = 200 + Math.floor(Math.random() * 1200);
       this._mempool.txs.push({ hash: rndHash(), bytes });
     }
 
-    // Occasional surge (~1.5% of polls): 150-350 KB blast (NFT mint, sweep…)
-    if (Math.random() < 0.015) {
-      const surgeBytes = 150000 + Math.floor(Math.random() * 200000);
+    // Occasional surge (~1% of polls): a 15-55 KB burst (NFT mint, sweep), i.e.
+    // a realistic spike to roughly 20-60% of one block rather than multiples.
+    if (Math.random() < 0.01) {
+      const surgeBytes = 15000 + Math.floor(Math.random() * 40000);
       let added = 0;
       while (added < surgeBytes) {
         const bytes = 800 + Math.floor(Math.random() * 1500);

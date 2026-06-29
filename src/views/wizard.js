@@ -24,6 +24,8 @@ import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings
 import { showConnectModal } from './connect.js';
 import { isConnected, getSession } from '../data/session.js';
 import { applyBlockfrostKey } from '../data/read-model.js';
+import { setKoiosToken, hasKoiosToken } from '../data/koios-token.js';
+import { setPaused } from '../data/koios-meter.js';
 import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
 
 const APP_VERSION = '0.1.0';   // keep in step with package.json
@@ -44,6 +46,7 @@ function freshState() {
     dbsync: {},             // db-sync DB creds
     useBlockfrost: false,   // optional Blockfrost
     blockfrostKey: '',      // Blockfrost project key
+    koiosToken: '',         // optional Koios API token (raises 5k -> 50k/day)
     notif: {},              // poll cadence + threshold
   };
 }
@@ -114,7 +117,7 @@ const STEPS = [
   {
     key: 'hub',
     title: 'Want richer data?',
-    render: () => `
+    render: (wiz) => `
       <p class="wz-p">Your node and Koios are already covering the essentials. If you want even more detail,
       you can add one or both of these - we'll ask about each on the next screens. Adding nothing is a perfectly
       good setup.</p>
@@ -135,7 +138,16 @@ const STEPS = [
           <div class="wz-srccard-tag wz-tag-opt">Optional - next</div>
         </div>
       </div>
-      <div class="wz-foot">You can add or remove either of these later from Settings.</div>`,
+      <div class="wz-field" style="margin-top:16px;">
+        <label>Koios API token <span class="wz-opt">(optional - raises your Koios limit from 5,000 to 50,000 requests/day)</span></label>
+        <input id="wz-koios-token" type="password" value="${esc(wiz.koiosToken || '')}" placeholder="paste your Koios bearer token" autocomplete="off" spellcheck="false">
+        <div class="wz-foot" style="margin-top:6px;">${hasKoiosToken() ? 'A token is currently set. ' : ''}Get a free token at koios.rest (sign in, then create an API token). Without one, Koios runs on the free 5,000/day tier.</div>
+      </div>
+      <div class="wz-foot">You can add or remove these later from Settings.</div>`,
+    collect: (wiz, root) => {
+      const t = root.querySelector('#wz-koios-token'); /*wz-koios-token*/
+      wiz.koiosToken = t ? t.value.trim() : '';
+    },
   },
   {
     key: 'dbsync',
@@ -734,6 +746,11 @@ async function applyWizard(wiz) {
   } catch (e) { console.warn('[wizard] notif save failed:', e.message ?? e); }
 
   try { saveSourceChoice(wiz); } catch (e) { console.warn('[wizard] source save failed:', e.message ?? e); }
+
+  try {
+    setKoiosToken(wiz.koiosToken || '');
+    if ((wiz.koiosToken || '').trim()) setPaused(false);   // token raises the daily limit; lift any free-tier auto-pause
+  } catch (e) { console.warn('[wizard] Koios token save failed:', e.message ?? e); }
 
   if (wiz.useDbsync && wiz.poolHex) {
     try {

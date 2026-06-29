@@ -351,6 +351,8 @@ export async function backfillIfNeeded() {
 // recent ones get it via refreshRecent. Small batches per tick — never stalls.
 const IDEAL_FILL_MS = 4000;
 const IDEAL_FILL_BATCH = 8;
+const IDEAL_MAX_ATTEMPTS = 2;        // give up on an epoch Koios can't enrich after this many tries
+const _idealAttempts = new Map();    // epoch -> failed attempts; stops infinite re-fetch /*ideal-giveup*/
 let _idealFillAt = 0;
 let _idealFillInFlight = false;
 let _idealFillDone = false;
@@ -372,7 +374,7 @@ export async function refreshIdealFiller() {
       r.data && r.data.source === 'koios_history' &&
       r.data.leaderReward === undefined && r.epoch <= rewardCutoff;
 
-    const need = rows.filter((r) => needIdeal(r) || needLeader(r));
+    const need = rows.filter((r) => (needIdeal(r) || needLeader(r)) && (_idealAttempts.get(r.epoch) || 0) < IDEAL_MAX_ATTEMPTS);
     if (!need.length) {
       _idealFillDone = true;
       console.log('[read-model] enrich fill complete (ideal + leader rewards)');
@@ -389,11 +391,19 @@ export async function refreshIdealFiller() {
       }
       if (needLeader(r) && addr) {
         const lr = await koios.getLeaderReward(addr, r.epoch);
-        if (lr != null) { d.leaderReward = lr; changed = true; }   // 0 is valid (zero-block epoch)
+        if (lr != null) { d.leaderReward = lr; changed = true; }
+        else if (d.adopted === 0 || d.confirmed === 0) {
+          // Zero-block epoch: genuinely no leader reward. Koios returns no
+          // account_rewards row (null), so resolve it to 0 - otherwise the
+          // epoch never leaves the enrich set and is re-fetched forever.
+          d.leaderReward = 0; changed = true;   /*leader-zero*/
+        }
       }
-      if (changed) await cachePutEpoch(r.epoch, d);
+      if (changed) { await cachePutEpoch(r.epoch, d); _idealAttempts.delete(r.epoch); }
+      else _idealAttempts.set(r.epoch, (_idealAttempts.get(r.epoch) || 0) + 1);
     }
-    console.log(`[read-model] enrich fill: ~${Math.max(0, need.length - IDEAL_FILL_BATCH)} epochs remaining`);
+    const blanked = rows.filter((r) => (needIdeal(r) || needLeader(r)) && (_idealAttempts.get(r.epoch) || 0) >= IDEAL_MAX_ATTEMPTS).length;
+    console.log(`[read-model] enrich fill: ~${Math.max(0, need.length - IDEAL_FILL_BATCH)} epochs remaining${blanked ? `, ${blanked} left blank (Koios has no stake/reward data for them)` : ''}`);
   } catch (err) {
     console.warn('[read-model] enrich fill failed:', err.message ?? err);
   } finally {
@@ -414,6 +424,7 @@ export async function refreshIdealFiller() {
 export async function forceRefreshHistory() {
   _idealFillDone = false;
   _idealFillAt = 0;
+  _idealAttempts.clear();   // retry epochs we previously gave up on
   console.log('[read-model] history enrich re-armed (manual reload) - refilling gaps');
   try { await refreshIdealFiller(); } catch (e) { console.warn('[read-model] forceRefreshHistory:', e?.message ?? e); }
 }
@@ -998,9 +1009,12 @@ let _koiosBackfillInFlight = false;
 async function ensureKoios() {
   if (!KOIOS_ENABLED) return false;   // master switch: Koios fully off
   if (_koiosInit) return koiosHist.koiosSource.reachable();
-  _koiosInit = true;
+  // Only latch on SUCCESS. A failed probe (an authenticated retry before the
+  // token is live, or a transient 429) must NOT permanently mark Koios
+  // unreachable - leave _koiosInit false so the next poll re-probes once the
+  // token is in effect. /*koios-init-retry*/
   const ok = await koiosHist.initKoios(ensurePoolBech32());
-  if (ok) await cacheMetaSet('history_source', 'koios');
+  if (ok) { _koiosInit = true; await cacheMetaSet('history_source', 'koios'); }
   return ok;
 }
 

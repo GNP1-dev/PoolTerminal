@@ -17,7 +17,7 @@
  */
 
 import { invoke } from '../data/tauri.js';
-import { loadConfig, saveConfig, markConnected, setTransport } from '../data/session.js';
+import { loadConfig, saveConfig, markConnected, setTransport, isConnected } from '../data/session.js';
 import { setMode } from '../data/index.js';
 import { resetNowLoading } from './now.js';
 
@@ -150,6 +150,7 @@ const MODAL_HTML = `
       <div class="pt-modal-status" id="cn-status" style="display:none"></div>
     </div>
     <div class="pt-modal-actions">
+      <button id="cn-cancel" class="pt-btn pt-btn-secondary" style="display:none">Cancel</button>
       <button id="cn-skip" class="pt-btn pt-btn-secondary">Use Demo Mode</button>
       <button id="cn-connect" class="pt-btn pt-btn-primary">Connect</button>
     </div>
@@ -378,6 +379,15 @@ export function showConnectModal(onDone) {
       byId('cn-host').value = '192.168.0.62';
     }
   });
+
+  // Already connected? Offer an escape: a Cancel button and backdrop-click
+  // that just close the modal and return to the app, so an accidental click
+  // on the live badge isn't a dead end. /*cn-cancel*/
+  if (isConnected()) {
+    const cx = byId('cn-cancel');
+    if (cx) { cx.style.display = ''; cx.addEventListener('click', () => modal.remove()); }
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  }
 
   byId('cn-skip').addEventListener('click', () => {
     setMode('demo');

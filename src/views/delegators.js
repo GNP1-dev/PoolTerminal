@@ -131,7 +131,7 @@ const DELEGATORS_HTML = `
       background: rgba(120,90,220,0.18); color: #b39dff; border: 0.5px solid rgba(150,120,240,0.5); padding: 1px 6px; border-radius: 3px; margin-left: 8px; }
 
     /* Journey timeline */
-    .dd-journey { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 8px 2px 18px; }
+    .dd-journey { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 10px 10px 18px; }
     .dd-hop { display: flex; align-items: center; flex: 0 0 auto; }
     .dd-node { width: 132px; border-radius: 9px; padding: 12px 12px 11px; color: #fff; position: relative;
       box-shadow: 0 4px 14px rgba(0,0,0,0.35); }
@@ -157,6 +157,8 @@ const DELEGATORS_HTML = `
 
     /* Loyalty leaderboard */
     .loy-legend { display: flex; gap: 16px; align-items: center; font: 400 10px ui-monospace, monospace; color: var(--pt-text-muted); padding: 2px 10px 8px; }
+    .loy-legend-na { display: block; padding: 6px 10px 10px; }
+    .loy-legend-na .loy-na { /*loy-na-red*/ display: block; font: 700 11.5px ui-monospace, monospace; color: #ff6b6b; background: rgba(255,80,80,0.08); border: 1px solid rgba(255,90,90,0.40); border-radius: 6px; padding: 8px 11px; line-height: 1.5; }
     .loy-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
     .loy-sw-ten { background: #4a9eff; }
     .loy-sw-stk { background: #d6b246; }
@@ -201,7 +203,7 @@ const DELEGATORS_HTML = `
     .du-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; border-color: var(--pt-accent-gold, #d6b246); }
     .du-row.hit { animation: duhit 2.4s ease-out 1; }
     @keyframes duhit { 0% { background: rgba(214,178,70,0.55); } 100% { background: transparent; } }
-    .d-search { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+    .d-search { display: flex; align-items: center; gap: 8px; margin: 8px 8px 4px; }
     .d-search input { flex: 1; min-width: 0; background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border); border-radius: 6px; color: var(--pt-text-primary); font: 400 11px ui-monospace, monospace; padding: 6px 9px; }
     .d-search button { background: #1b2430; color: var(--pt-text-secondary); border: 1px solid var(--pt-border); border-radius: 6px; font-size: 11px; padding: 6px 12px; cursor: pointer; }
     .d-search button:hover { color: var(--pt-text-primary); }
@@ -471,7 +473,7 @@ async function openStakeHistory(stake) {
     eventsHtml = `
       <div class="sh-subhead">Intra-epoch movements <span class="sh-dim">(rewards &amp; withdrawals, exact from db-sync)</span></div>
       <table class="sh-table">
-        <thead><tr><th>epoch</th><th>type</th><th>amount</th><th>tx</th></tr></thead>
+        <thead><tr><th>epoch</th><th>type</th><th class="sh-delta">amount</th><th>tx</th></tr></thead>
         <tbody>${evRows}</tbody>
       </table>`;
   }
@@ -485,7 +487,7 @@ async function openStakeHistory(stake) {
         <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first)</span></div>
         <div class="sh-tablewrap">
           <table class="sh-table">
-            <thead><tr><th>epoch</th><th>balance</th><th>change</th></tr></thead>
+            <thead><tr><th>epoch</th><th class="sh-bal">balance</th><th class="sh-delta">change</th></tr></thead><!--/*sh-align*/-->
             <tbody>${rowsHtml}</tbody>
           </table>
           ${eventsHtml}
@@ -724,6 +726,10 @@ let _duTotalStake = 0;
 let _duPage = 0;         // current page (paginated, replace-style)
 let _duView = [];        // last-rendered sorted/filtered view (for search-jump)
 let _duDrawPage = null;  // active drawPage() closure (jump-to-page)
+let _duListCache = null; // last fetched delegator list (instant re-nav cache)
+let _duLiveCache = null; // last fetched POOL_LIVE hero stats
+let _duCacheTs = 0;      // when the cache above was fetched
+const DU_CACHE_TTL = 120000; // reuse the cached list for 2 minutes
 
 function renderUnified() {
   stopLoadCreep();
@@ -768,6 +774,14 @@ function renderUnified() {
     });
     wrap.querySelectorAll('.du-copy[data-copy]').forEach((b) => {
       b.addEventListener('click', (e) => { e.stopPropagation(); copyStake(b.getAttribute('data-copy'), b); });
+    });
+    // WebKitGTK lays out %-width flex children at 0 on first paint; re-apply
+    // the width after layout to force a correct reflow so bars show first time. /*barfix*/
+    requestAnimationFrame(() => {
+      wrap.querySelectorAll('.loy-seg').forEach((seg) => {
+        const w = seg.style.width; if (!w) return;
+        seg.style.width = '0'; void seg.offsetWidth; seg.style.width = w;
+      });
     });
     wrap.scrollTop = 0;
     // page bar
@@ -881,10 +895,14 @@ function setLoadProgress(floor, stage, ceil) {
 export async function mountDelegators(canvas) {
   canvas.innerHTML = DELEGATORS_HTML;
   const root = canvas.querySelector('#pt-delegators');
-  showDelegLoading();   // paint immediately — before the first-visit Blockfrost init (can take seconds)
-
-  // Optional Blockfrost enrichment — idempotent, no-op without a key.
-  try { await readModel.ensureBlockfrost(); } catch { /* ignore */ }
+  // Instant re-nav: reuse a recently fetched delegator list from memory rather
+  // than re-querying the source (Koios pool_delegators can take ~20s). /*du-cache*/
+  const _cacheFresh = _duListCache && (Date.now() - _duCacheTs) < DU_CACHE_TTL;
+  if (!_cacheFresh) {
+    showDelegLoading();   // spinner only on a real fetch
+    // Optional Blockfrost enrichment — idempotent, no-op without a key.
+    try { await readModel.ensureBlockfrost(); } catch { /* ignore */ }
+  }
 
   // Need a delegator-list source (db-sync or Blockfrost). POOL_LIVE (hero live
   // stats) is a bonus — if absent (e.g. db-sync only, no Blockfrost key), the
@@ -896,7 +914,8 @@ export async function mountDelegators(canvas) {
 
   setText('d-meta', 'loading…');
   let live = null, list = [];
-  try {
+  if (_cacheFresh) { list = _duListCache; live = _duLiveCache; }
+  else try {
     if (registry.can(DataKind.POOL_LIVE)) {
       setLoadProgress(34, 'Loading live pool stats\u2026', 44);
       try { live = await registry.get(DataKind.POOL_LIVE); } catch { live = null; }
@@ -910,6 +929,7 @@ export async function mountDelegators(canvas) {
     return;
   }
   if (!Array.isArray(list)) list = [];
+  if (!_cacheFresh) { _duListCache = list; _duLiveCache = live; _duCacheTs = Date.now(); }
 
   // Hero stats (computed on the FULL list — totals are always whole-pool).
   const totalStakeLov = list.reduce((s, d) => s + (d.liveStakeLovelace || 0), 0);
@@ -1000,7 +1020,15 @@ export async function mountDelegators(canvas) {
 
   // If no loyalty source, hide the legend + default to stake sort.
   if (!registry.can(DataKind.DELEGATOR_LOYALTY)) {
-    const lg = document.getElementById('d-legend'); if (lg) lg.style.display = 'none';
+    const lg = document.getElementById('d-legend');
+    if (lg) {
+      lg.classList.add('loy-legend-na');
+      lg.innerHTML = '<span class="loy-na">\u24d8 Loyalty ranking (tenure \u00d7 stake-weight) needs db-sync or Blockfrost. '
+        + 'Connected to Koios only, so the table shows current live stake. '
+        + 'Add db-sync or a Blockfrost key from Settings to rank by loyalty.</span>';
+    }
+    const lb = document.getElementById('sort-loyalty'); if (lb) lb.style.display = 'none';
+    const rb = document.getElementById('loy-refresh'); if (rb) rb.style.display = 'none';
     setSort('stake');
   }
 

@@ -18,6 +18,7 @@ import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getSession } from '../data/session.js';
 import { invoke } from '../data/tauri.js';
+import { confirmDialog, alertDialog } from '../ui/dialog.js';
 import { forceRefreshHistory } from '../data/read-model.js';
 import { getUsage } from '../data/koios-meter.js';
 import { hasKoiosToken } from '../data/koios-token.js';
@@ -137,7 +138,7 @@ function ensureStyle() {
     .ds-head p { font-size: 12px; color: var(--pt-text-muted, #9aa7b4); margin: 0 0 10px; line-height: 1.4; }
 
     /* 2x2 tile grid filling the remaining height, no page scroll. */
-    .ds-grid { flex: 1 1 auto; min-height: 0; display: grid;
+    .ds-grid { flex: 1 1 auto; min-height: 0; margin-top: 14px; display: grid; /*ds-gap*/
       grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px; }
     .ds-tile { min-height: 0; display: flex; flex-direction: column;
       background: rgba(120,150,190,0.04); border: 1px solid rgba(150,182,235,0.45);
@@ -220,11 +221,13 @@ async function reloadHistoryFlow() {
 }
 
 async function clearCacheFlow() {
-  const ok = window.confirm(
-    'Clear all cached data?\n\n' +
-    'This empties the local history, delegator and loyalty cache. Your connection ' +
-    'and source choice are kept. The active source then rebuilds the cache fresh.'
-  );
+  const ok = await confirmDialog({
+    title: 'Clear cache',
+    message: 'This empties the local history, delegator and loyalty cache.\n\n' +
+      'Your connection and source choice are kept. The active source then rebuilds the cache fresh.',
+    confirmLabel: 'Clear cache',
+    danger: true,
+  });
   if (!ok) return;
   const btn = document.querySelector('#ds-clear-cache');
   if (btn) { btn.disabled = true; btn.textContent = 'Clearing...'; }
@@ -234,8 +237,25 @@ async function clearCacheFlow() {
     setTimeout(() => location.reload(), 400);
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Clear cache'; }
-    window.alert('Clear cache failed: ' + (e && e.message ? e.message : e));
+    await alertDialog({ title: 'Clear cache failed', message: String(e && e.message ? e.message : e), danger: true });
   }
+}
+
+async function resetEverythingFlow() { /*ds-reset-all*/
+  const ok = await confirmDialog({
+    title: 'Reset everything',
+    message: 'This wipes the local cache AND all settings - your connection, source ' +
+      'choice, Koios token, Blockfrost key, mempool peaks and saved preferences.\n\n' +
+      'PoolTerminal restarts at the setup wizard. This cannot be undone.',
+    confirmLabel: 'Reset everything',
+    danger: true,
+  });
+  if (!ok) return;
+  const btn = document.querySelector('#ds-reset-all');
+  if (btn) { btn.disabled = true; btn.textContent = 'Resetting...'; }
+  try { await invoke('cache_clear_all'); } catch (e) { console.warn('reset: cache clear failed', e); }
+  try { localStorage.clear(); } catch (e) { /* ignore */ }
+  setTimeout(() => location.reload(), 400);
 }
 
 export function mountDataSources(canvas) {
@@ -265,7 +285,7 @@ function draw(canvas) {
     `<div class="ds-wrap">` +
       `<div class="ds-head"><h2>Data sources</h2>` +
       `<p>Where each part of PoolTerminal gets its data, and what needs a particular source. ` +
-      `Change sources in the setup wizard or Settings.</p><button id="ds-clear-cache" class="ds-clear-btn" type="button" style="margin-top:10px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Clear cache</button><button id="ds-reload-hist" class="ds-clear-btn" type="button" style="margin-top:10px;margin-left:8px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Reload history</button></div>` +
+      `Change sources in the setup wizard or Settings.</p><button id="ds-clear-cache" class="ds-clear-btn" type="button" style="margin-top:10px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Clear cache</button><button id="ds-reload-hist" class="ds-clear-btn" type="button" style="margin-top:10px;margin-left:8px;padding:6px 12px;font-size:12px;cursor:pointer;background:#1b2430;color:#cdd6e4;border:1px solid #2c3a4d;border-radius:6px;">Reload history</button><button id="ds-reset-all" class="ds-clear-btn" type="button" style="margin-top:10px;margin-left:8px;padding:6px 12px;font-size:12px;cursor:pointer;background:#2a1416;color:#ff8585;border:1px solid #6b2b2f;border-radius:6px;">Reset everything</button></div>` +
       `<div class="ds-grid">` +
         // top-left: status
         `<div class="ds-tile">` +
@@ -297,6 +317,8 @@ function draw(canvas) {
   if (_cc) _cc.addEventListener('click', clearCacheFlow);
   const _rh = canvas.querySelector('#ds-reload-hist');
   if (_rh) _rh.addEventListener('click', reloadHistoryFlow);
+  const _ra = canvas.querySelector('#ds-reset-all');
+  if (_ra) _ra.addEventListener('click', resetEverythingFlow);
 }
 
 export function unmountDataSources() {

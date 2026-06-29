@@ -21,6 +21,7 @@
 
 import { commas } from './format.js';
 import { getLastMetrics } from '../data/metrics-query.js';
+import { getMode } from '../data/index.js';
 
 const MAX_BLOCK_BODY = 90112;   // bytes (mainnet maxBlockBodySize)
 const MAX_SCALE      = 300;     // header gauge runs to 300%
@@ -241,6 +242,9 @@ function savePeaks() {
 }
 
 function recordPeak(pct) {
+  // Never let demo-mode's synthetic mempool pollute the persisted peaks
+  // that carry into real connections. /*demo-peak-guard*/
+  if (getMode() === 'demo') return;
   loadPeaks();
   if (!isFinite(pct) || pct <= 0) return;
   const now = Date.now();

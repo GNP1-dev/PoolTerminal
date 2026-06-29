@@ -10,6 +10,7 @@
 
 import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
+import { getTransport, getSession, isConnected } from '../data/session.js';
 
 export const APP_VERSION = '0.1.0';
 
@@ -35,6 +36,23 @@ function currentSetupHtml() {
       ${chip('ab-bf', bfOn ? 'Blockfrost' : 'Blockfrost off', bfOn)}
     </div>
     <div class="ab-setup-note">Change sources anytime from the gear (Settings), top-right, or by running setup again.</div>
+  </div>`;
+}
+
+function connectionHtml() { /*ab-conn*/
+  const t = getTransport();
+  const sess = getSession();
+  const live = isConnected();
+  const mode = t === 'local'
+    ? 'This machine (local)'
+    : `SSH \u2014 ${sess.user ? sess.user + '@' : ''}${sess.host || 'remote node'}${sess.port ? ':' + sess.port : ''}`;
+  return `<div class="ab-setup ab-conn">
+    <div class="ab-setup-h">Connection</div>
+    <div class="ab-conn-row">
+      <div class="ab-conn-mode"><span class="ab-dot ab-node" style="${live ? '' : 'background:#6b7280;'}"></span>${mode}</div>
+      <button id="ab-reconnect" class="ab-conn-btn" type="button">Disconnect / Change connection</button>
+    </div>
+    <div class="ab-setup-note">Drops the current session and reopens the connect screen, so you can switch between SSH and local, or connect to a different node.</div>
   </div>`;
 }
 
@@ -114,6 +132,10 @@ function ensureStyle() {
     .ab-dot.ab-node { background: #4ade80; } .ab-dot.ab-koios { background: #4aa3ff; }
     .ab-dot.ab-dbsync { background: #2dd4bf; } .ab-dot.ab-bf { background: #a78bfa; }
     .ab-setup-note { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); margin-top: 11px; }
+    .ab-conn-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .ab-conn-mode { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--pt-text-primary, #e6edf3); font-family: ui-monospace, monospace; }
+    .ab-conn-btn { background: #1b2430; color: #cdd6e4; border: 1px solid #2c3a4d; border-radius: 7px; font-size: 12.5px; font-weight: 600; padding: 8px 14px; cursor: pointer; white-space: nowrap; transition: background 120ms ease, border-color 120ms ease; }
+    .ab-conn-btn:hover { background: #232f3f; border-color: #3a4d66; }
     .ab-sec { margin-bottom: 20px; }
     .ab-sec h3 { font-size: 14px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); margin: 0 0 7px; }
     .ab-sec p { font-size: 13px; line-height: 1.6; color: var(--pt-text-secondary, #b9c4d0); margin: 0 0 8px; }
@@ -137,9 +159,17 @@ export function mountAbout(canvas) {
       `<h2>About PoolTerminal</h2>` +
       `<div class="ab-tagline">How it works, and where your data comes from.</div>` +
       currentSetupHtml() +
+      connectionHtml() +
       SECTIONS +
       `<div class="ab-foot">App version ${APP_VERSION}</div>` +
     `</div>`;
+  const rc = document.getElementById('ab-reconnect');
+  if (rc) rc.addEventListener('click', () => {
+    // Reuse the tickertape mode-badge flow: it opens the connect screen with
+    // a full session reset and lets the user change SSH/local.
+    const badge = document.getElementById('ttape-reconnect');
+    if (badge) badge.click();
+  });
 }
 
 export function unmountAbout() { /* static view */ }

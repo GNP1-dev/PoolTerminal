@@ -16,7 +16,7 @@
 
 import { initChainPulse, stopChainPulse, getActiveWindow, densityPctForWindow } from '../ui/chain-pulse.js';
 import { speedoSVG, setSpeedo, thermoHTML, setThermo, tanksHTML, paintTanks, flashMint } from '../ui/now-gauges.js';
-import { refreshLifetimeBlocks } from './now.js';
+import { refreshLifetimeBlocks, getEpochEndMs, isRelayConfirmed } from './now.js';
 import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
 import { getNodeProbe } from '../data/session.js';
@@ -102,10 +102,22 @@ const N2_HTML = `
     .n2-bp-track { flex:1; height:7px; background:rgba(120,150,200,.12); border-radius:4px; overflow:hidden; }
     .n2-bp-bar { display:block; height:100%; width:0; border-radius:4px; background:#5dff9b; transition:width .5s ease, background .3s; }
     .n2-bp-v { width:52px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; }
+    .n2-sync { display:flex; flex-direction:column; align-items:center; gap:1px; margin-top:9px; padding-top:8px; border-top:1px solid rgba(135,165,215,.16); }
+    .n2-sync-lbl { font:600 9px ui-monospace,monospace; letter-spacing:1px; text-transform:uppercase; color:var(--pt-text-muted,#97A0B0); }
+    .n2-sync-val { font:700 22px ui-monospace,monospace; font-variant-numeric:tabular-nums; color:var(--pt-status-good,#5dff9b); text-shadow:0 0 10px currentColor; }
     .n2-bp-late { margin-top:2px; }
+    /* relay-mode: grey out BP-only dashboard areas with a covering label */
+    .pt-relay-dim { position:relative; }
+    .pt-relay-dim > *:not(.pt-relay-veil) { opacity:.16; filter:grayscale(1); pointer-events:none; }
+    .pt-relay-veil { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(10,14,22,.5); border-radius:inherit; }
+    .pt-relay-veil span { font:700 10px ui-monospace,monospace; letter-spacing:1.4px; text-transform:uppercase; color:#8893a8; background:rgba(20,28,40,.82); border:1px solid rgba(150,170,210,.32); border-radius:6px; padding:5px 11px; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,.3); }
     .n2-bp-late .n2-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
     .n2-ub-panel .pt-ub-body { overflow:visible; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:flex; }
-    .n2-pp-panel .pt-pp-body { overflow:visible; max-height:none; }
+    .n2-pp-panel .pt-pp-body { /*peers-scroll*/ overflow-y:auto; overflow-x:hidden; max-height:200px;
+      min-height:0; flex:1 1 auto; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }
+    .n2-pp-panel .pt-pp-body::-webkit-scrollbar { width:7px; }
+    .n2-pp-panel .pt-pp-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
+    .n2-pp-panel .pt-pp-body::-webkit-scrollbar-track { background:rgba(120,150,200,.06); border-radius:4px; }
     .pt-ub-vert { display:flex; gap:8px; align-items:stretch; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; padding:10px 2px 8px; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; flex:1 1 auto; }
     .pt-ub-vert::-webkit-scrollbar { height:7px; }
     .pt-ub-vert::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
@@ -185,7 +197,7 @@ const N2_HTML = `
         ${thermoHTML({ id: 'n2-kes', color: '#ffc24a', ticks: [{ frac: 0, label: '0' }, { frac: 0.5, label: '45' }, { frac: 1, label: '90' }] })}
         <div class="n2-val" id="hero-kes-val" style="color:#ffc24a">—</div>
         <div class="n2-sub" id="hero-kes-sub">—</div>
-        <div class="n2-sub" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when they match, or disk is one ahead just after a KES rotation.">opcert —</div>
+        <div class="n2-sub" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when they match, or disk is one ahead just after a KES rotation."><!--/*opcert-label*/--><span style="font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--pt-text-muted,#97A0B0);margin-right:5px;">opcert</span><span id="hero-kes-opcert-val">— on disk · — on chain</span></div>
         <div id="hero-kes-bar" style="display:none"></div>
       </div>
 
@@ -226,13 +238,30 @@ const N2_HTML = `
         <div id="n2-tip-dial">${speedoSVG({ id: 'n2-tip', min: 0, max: 120, ticks: 12, major: 4, color: '#5dff9b', redFrom: 0.75 })}</div>
         <div class="n2-val" id="n2-tip-read" style="color:#5dff9b">—</div>
         <div class="n2-sub">redline 1m 30s</div>
+        <div class="n2-sync" id="n2-sync-wrap">
+          <span class="n2-sync-lbl">SYNC</span>
+          <span class="n2-sync-val" id="n2-sync">—</span>
+        </div>
       </div>
 
       <div class="n2-panel n2-cell" id="hero-epoch">
         <div class="n2-lbl">Epoch</div>
         ${thermoHTML({ id: 'n2-epoch', color: '#7aa6ff', ticks: [{ frac: 0.25, label: '25' }, { frac: 0.5, label: '50' }, { frac: 0.75, label: '75' }] })}
         <div class="n2-val" id="hero-epoch-val" style="color:#7aa6ff">—</div>
-        <div class="n2-sub" id="hero-epoch-eta">—</div>
+        <div class="n2-epcd" id="n2-epcd"><!--/*epcd-ui*/-->
+          <style>
+            .n2-epcd{display:flex;flex-direction:column;gap:3px;margin-top:6px;width:100%;padding:0 8px;box-sizing:border-box;}
+            .n2-epcd-row{display:flex;align-items:baseline;justify-content:space-between;}
+            .n2-epcd-k{font:600 10px ui-monospace,monospace;letter-spacing:.5px;text-transform:uppercase;color:var(--pt-text-muted,#97A0B0);}
+            .n2-epcd-v{font:700 17px ui-monospace,monospace;font-variant-numeric:tabular-nums;min-width:2ch;text-align:right;text-shadow:0 0 8px currentColor;}
+            .n2-epcd-cap{margin-top:5px;text-align:center;font:10px ui-monospace,monospace;color:var(--pt-text-muted,#97A0B0);letter-spacing:.3px;text-transform:uppercase;}
+          </style>
+          <div class="n2-epcd-row"><span class="n2-epcd-k">Days</span><span class="n2-epcd-v" id="n2-ep-d" style="color:#7aa6ff">—</span></div>
+          <div class="n2-epcd-row"><span class="n2-epcd-k">Hours</span><span class="n2-epcd-v" id="n2-ep-h" style="color:#36e0d4">—</span></div>
+          <div class="n2-epcd-row"><span class="n2-epcd-k">Minutes</span><span class="n2-epcd-v" id="n2-ep-m" style="color:#ffc24a">—</span></div>
+          <div class="n2-epcd-row"><span class="n2-epcd-k">Seconds</span><span class="n2-epcd-v" id="n2-ep-s" style="color:#5dff9b">—</span></div>
+          <div class="n2-epcd-cap" id="n2-ep-cap">to epoch end</div>
+        </div>
         <div id="hero-epoch-bar" style="display:none"></div>
       </div>
     </div>
@@ -319,8 +348,34 @@ function renderProp() {
   setBP('bp-last', last == null ? '\u2014' : last.toFixed(2) + 's', lastColor);
 }
 
+// Relay Only Mode: dim BP-only dashboard areas (block stats, KES, upcoming
+// blocks) and show a covering label. Idempotent; called each paint so it
+// self-applies once the node role resolves. /*relay-mode*/
+const RELAY_DIM_TARGETS = ['.n2-blockbox', '#hero-kes', '.n2-ub-panel'];
+function applyRelayMode() {
+  let relay = false;
+  try { relay = isRelayConfirmed(); } catch { relay = false; }
+  RELAY_DIM_TARGETS.forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    let veil = el.querySelector(':scope > .pt-relay-veil');
+    if (relay) {
+      el.classList.add('pt-relay-dim');
+      if (!veil) {
+        veil = document.createElement('div');
+        veil.className = 'pt-relay-veil';
+        veil.innerHTML = '<span>Relay Only Mode</span>';
+        el.appendChild(veil);
+      }
+    } else {
+      el.classList.remove('pt-relay-dim');
+      if (veil) veil.remove();
+    }
+  });
+}
 function paintGauges() {
   const root = document;
+  applyRelayMode();
   // Lift the loading overlay once the first real data has arrived.
   if (!_n2Ready) {
     let haveData = false;
@@ -344,23 +399,41 @@ function paintGauges() {
   if (oc) {
     const pr = getNodeProbe() || {};
     const d = pr.opCertDisk, c = pr.opCertChain;
+    const ocv = oc.querySelector('#hero-kes-opcert-val') || oc;
     if (Number.isFinite(d) && Number.isFinite(c)) {
       const ok = (d === c) || (d === c + 1);
-      oc.textContent = `opcert ${d}/${c}`;
-      oc.style.color = ok ? '#5dff9b' : '#ff5a5a';
+      ocv.textContent = `${d} on disk · ${c} on chain`;
+      ocv.style.color = ok ? '#5dff9b' : '#ff5a5a';
       oc.title = ok
         ? `Operational certificate counter healthy: disk ${d}, chain ${c}.`
         : `Operational certificate counter MISMATCH: disk ${d}, chain ${c}. Expected disk == chain or one ahead.`;
     } else if (pr.role && pr.role !== 'BP') {
       oc.textContent = '';   // relays have no op cert
     } else {
-      oc.textContent = 'opcert —';
-      oc.style.color = '';
+      ocv.textContent = '— on disk · — on chain';
+      ocv.style.color = '';
     }
   }
   // Epoch thermometer: percent
   const ep = numFrom('hero-epoch-val');
   if (ep != null) setThermo(root, 'n2-epoch', ep / 100);
+  // Epoch countdown: smooth per-second tick from the stored epoch-end time
+  // (now.js keeps it fresh on every snapshot). No API calls. /*epcd-tick*/
+  const _epDD = document.getElementById('n2-ep-d');
+  if (_epDD) {
+    const _endMs = getEpochEndMs();
+    if (_endMs == null) {
+      ['n2-ep-d','n2-ep-h','n2-ep-m','n2-ep-s'].forEach(id => { const e = document.getElementById(id); if (e) e.textContent = '\u2014'; });
+    } else {
+      const _s = Math.max(0, Math.round((_endMs - Date.now()) / 1000));
+      const _d = Math.floor(_s / 86400), _h = Math.floor((_s % 86400) / 3600), _m = Math.floor((_s % 3600) / 60), _ss = _s % 60;
+      _epDD.textContent = _d;
+      document.getElementById('n2-ep-h').textContent = _h;
+      document.getElementById('n2-ep-m').textContent = _m;
+      document.getElementById('n2-ep-s').textContent = String(_ss).padStart(2, '0');
+      const _cap = document.getElementById('n2-ep-cap'); if (_cap) _cap.textContent = _s === 0 ? 'epoch boundary' : 'to epoch end';
+    }
+  }
   // Density speedo: follows the SELECTED poll window, scale 0..10% (ideal ~5%)
   const win = getActiveWindow();
   const densPct = densityPctForWindow(win);
@@ -431,7 +504,8 @@ export function mountNow2(canvas) {
       '</style>' +
       '<div class="n2l-ring"></div>' +
       '<div class="n2l-txt">Starting dashboard</div>' +
-      '<div class="n2l-sub">connecting to node and fetching live data\u2026</div>';
+      '<div class="n2l-sub">connecting to node and fetching live data\u2026</div>' +
+      '<div class="n2l-sub" style="opacity:.75;font-style:italic;">please allow up to 90 seconds to populate</div>';
     // canvas is the positioning context; ensure it can host an absolute overlay.
     if (getComputedStyle(canvas).position === 'static') canvas.style.position = 'relative';
     canvas.appendChild(ov);

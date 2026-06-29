@@ -25,8 +25,10 @@ import { renderPeersPanel, resetPeersPanel } from './ui/peers-panel.js';
 import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
+  isRelayConfirmed,
 } from './views/now.js';
 import { mountNow2, unmountNow2 } from './views/now2.js';
+import { clearLastMetrics } from './data/metrics-query.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { mountDataSources, unmountDataSources } from './views/data-sources.js';
@@ -63,6 +65,27 @@ let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
 
 let activeView = 'now2';
+
+// Relay Only Mode: nav tabs that don't apply to a relay node. /*relay-tablock*/
+const RELAY_LOCKED_VIEWS = ['history', 'delegators', 'notifications', 'data'];
+function applyRelayTabLock() {
+  let relay = false;
+  try { relay = isRelayConfirmed(); } catch { relay = false; }
+  const tabs = document.querySelectorAll('.pt-tab');
+  tabs.forEach((t) => {
+    if (!RELAY_LOCKED_VIEWS.includes(t.dataset.view)) return;
+    t.classList.toggle('pt-tab-disabled', relay);
+    if (relay) t.title = 'Relay Only Mode \u2014 not applicable to a relay node';
+    else t.removeAttribute('title');
+  });
+  // If we're a relay and somehow on a locked view, bounce to the Dashboard.
+  if (relay && RELAY_LOCKED_VIEWS.includes(activeView)) {
+    tabs.forEach((t) => t.classList.remove('pt-tab-active'));
+    const dash = document.querySelector('.pt-tab[data-view="now2"]');
+    if (dash) dash.classList.add('pt-tab-active');
+    mountView('now2');
+  }
+}
 let canvasEl = null;
 
 function labelFor(view) {
@@ -147,6 +170,7 @@ async function fastPollTick() {
     if (activeView === 'now' || activeView === 'now2') {
       updateNowFast(snap);
     }
+    applyRelayTabLock();
 
     // Detect new blocks via tip.block increment. Spread synthetic ticks across
     // the interval since the previous fast poll so they render at distinct x
@@ -319,6 +343,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const tabs = document.querySelectorAll('.pt-tab');
   tabs.forEach((tab) => {
     tab.addEventListener('click', () => {
+      if (tab.classList.contains('pt-tab-disabled')) return;
       tabs.forEach((t) => t.classList.remove('pt-tab-active'));
       tab.classList.add('pt-tab-active');
       mountView(tab.dataset.view);
@@ -351,10 +376,13 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const modeBadge = document.getElementById('ttape-mode');
-  modeBadge.addEventListener('click', () => {
+  // The Live badge is a static status indicator now; reconnecting /
+  // changing node is this explicit button next to it. /*reconnect-btn*/
+  const reconnectBtn = document.getElementById('ttape-reconnect');
+  if (reconnectBtn) reconnectBtn.addEventListener('click', () => {
     showConnectModal(() => {
       paintMode();
+      clearLastMetrics();   // drop stale metrics so the dashboard shows its loading overlay until fresh data arrives
       lastFastError = null;
       lastSeenBlock = null;
       lastPollTime = null;

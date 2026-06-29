@@ -37,6 +37,7 @@ function readMetric(text, name) {
 
 let lastMetrics = null;
 export function getLastMetrics() { return lastMetrics; }
+export function clearLastMetrics() { lastMetrics = null; }
 
 export async function queryMetrics() {
   const probe = getNodeProbe();

@@ -305,6 +305,7 @@ let _loadingStart = 0;
 // Epoch countdown: store the absolute end time (ms) derived from each snapshot,
 // then a local 1s timer counts down to it — no API calls, ticks every second.
 let _epochEndMs = null;
+let _lastEpochSlot = null;  // last slotInEpoch we synced from /*epcd-slotguard*/
 let _epochTimer = null;
 let _steps = [];
 // Once the first full load completes this session, returning to the NOW tab
@@ -331,7 +332,7 @@ function isBPNode() {
 
 // Positively confirmed relay: probe resolved AND role is a known non-BP role.
 // Unknown/unresolved role → false (so we DON'T label until we're sure).
-function isRelayConfirmed() {
+export function isRelayConfirmed() { /*relay-export*/
   try {
     const p = getNodeProbe && getNodeProbe();
     if (!p || typeof p.role !== 'string') return false;
@@ -552,11 +553,25 @@ export function updateNowFast(snap) {
   // Re-sync the epoch-end time from the snapshot (1 slot = 1 second). The local
   // timer counts down to this between snapshots, so it stays accurate.
   if (snap && snap.epochLength != null && snap.slotInEpoch != null) {
-    const secsLeft = Math.max(0, snap.epochLength - snap.slotInEpoch);
-    _epochEndMs = Date.now() + secsLeft * 1000;
+    // Only re-anchor on a genuinely fresh tip. Re-anchoring every fast tick
+    // from a stale slot would pin the countdown until the next live tip.
+    if (snap.slotInEpoch !== _lastEpochSlot || _epochEndMs == null) {
+      _lastEpochSlot = snap.slotInEpoch;
+      const secsLeft = Math.max(0, snap.epochLength - snap.slotInEpoch);
+      _epochEndMs = Date.now() + secsLeft * 1000;
+    }
     tickEpochCountdown();
   }
   applyRelayLabels(document);   // idempotent; self-corrects once probe role is known
+  // Sync %: shown under the Tip diff gauge on the Dashboard (now2). /*n2-sync*/
+  if (snap && snap.syncPercent != null) {
+    const sEl = document.getElementById('n2-sync');
+    if (sEl) {
+      sEl.textContent = snap.syncPercent.toFixed(1) + '%';
+      sEl.style.color = (snap.atTip && snap.syncPercent >= 99.95)
+        ? 'var(--pt-status-good)' : 'var(--pt-status-warn)';
+    }
+  }
   setChainPulseStatus(snap.atTip, snap.tipBlock, snap.slot, snap.slotInEpoch, snap.epochLength);
   if (snap && (snap.tipBlock != null || snap.slot != null)) _firstSnapshotRendered = true;
   maybeHideLoading();
@@ -582,6 +597,11 @@ export async function refreshUpcomingBlocks(src) {
   renderUpcomingBlocks(list, { isRelay: isRelayConfirmed() });
 }
 
+// Epoch-end absolute time (ms). Maintained on every snapshot by updateNowFast.
+// Exposed so the Dashboard (now2) can render a smooth per-second countdown
+// from its own 1s timer without any API calls. /*epcd-getter*/
+export function getEpochEndMs() { return _epochEndMs; }
+
 export function unmountNow() {
   stopChainPulse();
   stopUpcomingBlocks();
@@ -589,4 +609,5 @@ export function unmountNow() {
   if (_loadingTick) { clearInterval(_loadingTick); _loadingTick = null; }
   if (_epochTimer) { clearInterval(_epochTimer); _epochTimer = null; }
   _epochEndMs = null;
+  _lastEpochSlot = null;
 }

@@ -89,7 +89,7 @@
   padding: 2px 7px;
   border: var(--pt-border-width) solid var(--pt-status-good);
   border-radius: var(--pt-radius-sm);
-  cursor: pointer;
+  cursor: default;
   user-select: none;
   transition: color 120ms ease-out, border-color 120ms ease-out;
 }
@@ -98,6 +98,21 @@
   color: var(--pt-status-warn);
   border-color: var(--pt-status-warn);
 }
+
+.pt-reconnect-btn {
+  margin-left: 10px;
+  padding: 3px 10px;
+  font: 600 11px ui-monospace, monospace;
+  color: #cdd6e4;
+  background: #1b2430;
+  border: 1px solid #2c3a4d;
+  border-radius: var(--pt-radius-sm);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+.pt-reconnect-btn:hover { background: #232f3f; border-color: #3a4d66; }
 
 /* ---------- Tabs ---------- */
 
@@ -134,6 +149,13 @@
   border-bottom-color: var(--pt-accent-blue);
   font-weight: 600;
 }
+
+.pt-tab-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+.pt-tab-disabled:hover { color: var(--pt-text-secondary); }
 
 /* ---------- View canvas ---------- */
 

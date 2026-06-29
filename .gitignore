@@ -85,3 +85,4 @@ fill-mempool.sh
 patch_*.py
 *.out
 pt_dbsync_audit.*
+*.bak

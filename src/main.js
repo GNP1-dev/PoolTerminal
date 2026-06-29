@@ -28,6 +28,7 @@ import {
   isRelayConfirmed,
 } from './views/now.js';
 import { mountNow2, unmountNow2 } from './views/now2.js';
+import { mountRelay1, unmountRelay1, mountRelay2, unmountRelay2 } from './views/relay.js';
 import { clearLastMetrics } from './data/metrics-query.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
@@ -101,6 +102,8 @@ function mountView(view) {
   if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
   if (activeView === 'data' && view !== 'data') unmountDataSources();
   if (activeView === 'about' && view !== 'about') unmountAbout();
+  if (activeView === 'relay1' && view !== 'relay1') unmountRelay1();
+  if (activeView === 'relay2' && view !== 'relay2') unmountRelay2();
   activeView = view;
   if (view === 'now') {
     mountNow(canvasEl);
@@ -128,6 +131,10 @@ function mountView(view) {
     mountDataSources(canvasEl);
   } else if (view === 'about') {
     mountAbout(canvasEl);
+  } else if (view === 'relay1') {
+    mountRelay1(canvasEl);
+  } else if (view === 'relay2') {
+    mountRelay2(canvasEl);
   } else {
     canvasEl.innerHTML = `
       <div class="pt-placeholder">

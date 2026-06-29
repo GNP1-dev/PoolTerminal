@@ -8,7 +8,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
-> _Last updated: 29 June 2026_
+> _Last updated: 27 June 2026_
 
 ## What it is
 
@@ -31,7 +31,6 @@ Working today:
 - **NOTIFICATIONS** — A live feed of delegation activity, detected on-chain within minutes: delegators joining (with the pool they came from), transfers in, **returning** delegators (anyone who was ever delegated before), redelegations away, and stake increases/decreases. Each event is colour-coded with a from→to flow, amount, epoch, slot, UTC timestamp and a one-click Cardanoscan transaction link. Each event's stake address can be **copied** with one click (handy for pasting into the Delegators search). When a returning delegator's true prior pool can't be resolved from the active source (e.g. a same-epoch multi-hop that epoch-grained APIs can't see), the event is honestly labelled **Returning Former Delegator** with the origin shown as unknown and a hint that db-sync resolves the full transfer chain. A **Clear history** button wipes the displayed feed while leaving monitoring intact. Corner toasts surface activity from any tab, and an unread badge tracks new events. A built-in advisor scales the polling cadence to your delegator count and chosen source so notifications stay within free-tier limits.
 - **DATA** — A transparency screen showing exactly which source is answering each feature (node, db-sync, Koios or Blockfrost), and what each optional source would unlock.
 - **MAP** — Full-size D3 world map (Natural Earth, cached offline after first load) plotting your node and its live peers, geo-located, with RTT-coloured connections and a side panel of latency bands and geographic distribution.
-- **RELAY 1 / RELAY 2** — Dedicated live dashboards for your relays, each monitored independently and in full isolation from the block producer and from each other (a relay stalling flatlines only its own heartbeat; the others are unaffected). Every reading comes straight from that relay's own cardano-node, Prometheus-only, over its own SSH session (or locally) — no Koios, db-sync, Blockfrost or cache. Each tab carries a red heartbeat, density (with a one-hour settle countdown, since relays do not backfill historical blocks), mempool, tip diff with a true sync reading (100% through normal inter-block gaps, falling only when genuinely behind), an epoch countdown, block propagation, a scrollable per-peer list (IP · RTT · country, sorted fastest first) and a geolocated relay map centred on that relay's own location. When a host runs a co-located block producer and relay (e.g. a dual-NIC box with the BP in `cnode_bp` and the relay in `cnode_relay`), a node selector picks the relay automatically (preferring the node with no KES key) or by an explicit filter. Polling continues in the background while you work in other tabs, with a live connection timer, so returning to a relay is seamless with no gap in its data.
 - **SETUP WIZARD** — A first-run guided walkthrough: connect to your node, then optionally add db-sync and/or Blockfrost, with notification cadence tuned to your pool size. Re-runnable any time from Settings.
 - **DEMO MODE** — Built-in synthetic pool data so you can try the full UI without connecting to a real node.
 
@@ -71,7 +70,7 @@ Almost every capability has a Koios path, so a node-plus-internet setup is compl
 
 **To db-sync (if used):** a local Unix socket (db-sync on the same machine as PoolTerminal) or a direct TCP connection (db-sync exposed over the network). A third mode — tunnelling Postgres over the existing SSH connection, for a db-sync that only listens on a remote machine's localhost — is in development and not yet enabled.
 
-Relays have their own dedicated **Relay 1 / Relay 2** tabs (see Features) — purpose-built, node-only dashboards that read solely from each relay's own cardano-node and stay fully isolated from the block-producer view and from each other. They connect with the same options as above (local or SSH, every auth method), plus an optional node selector for hosts that run a co-located block producer and relay. You can also still point the main block-producer views at a relay, where block-producer-only panels (KES, ideal, leader, upcoming blocks) are clearly marked and skipped.
+Relays are supported and degrade gracefully — block-producer-only panels (KES, ideal, leader, upcoming blocks) are clearly marked and skipped, so a relay connects cleanly without waiting on data it can't have.
 
 ## Requirements
 
@@ -133,7 +132,7 @@ PoolTerminal is built with Cardano's regular hard fork cycle in mind. See `HARDF
 
 ## Status
 
-Active development. Core data layer (all sources), connection (SSH + local), the setup wizard, and the NOW / HISTORY / DELEGATORS / NODE HEALTH / NOTIFICATIONS / DATA / MAP views are working, including per-delegator stake history, op cert counter monitoring, and honest returning-delegator labelling. Dedicated **Relay 1 / Relay 2** monitoring tabs are now working too: isolated, node-only relay dashboards with heartbeat, density, mempool, tip/sync, epoch, block propagation, a scrollable peer list, a geolocated relay map, background-persistent polling, and automatic node selection for co-located BP+relay hosts. Next: REWARDS / GOVERNANCE views.
+Active development. Core data layer (all sources), connection (SSH + local), the setup wizard, and the NOW / HISTORY / DELEGATORS / NODE HEALTH / NOTIFICATIONS / DATA / MAP views are working, including per-delegator stake history, op cert counter monitoring, and honest returning-delegator labelling. Next: REWARDS / GOVERNANCE views.
 
 ## Contributing
 

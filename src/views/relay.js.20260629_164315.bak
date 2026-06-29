@@ -1,0 +1,1000 @@
+/**
+ * PoolTerminal — Relay monitor view (Relay 1 / Relay 2).
+ *
+ * A node-health dashboard that mirrors the BP dashboard's design, driven SOLELY
+ * by the relay's own cardano-node (see data/relay-probe.js): auto-discovered
+ * process + Prometheus scrape, over an independent SSH session or locally.
+ * Nothing here touches Koios, db-sync, Blockfrost, or the cache.
+ *
+ * Panels (same look as the BP): red 5-minute heartbeat, Density (speedo + grid +
+ * gap bars), Mempool (tanks), Tip-diff (speedo + SYNC), Epoch (thermometer +
+ * countdown), Block propagation (CDF bars), Peers. BP-only sections (block
+ * production, KES, upcoming blocks) are omitted — a relay holds no keys.
+ *
+ * The Relay Map (geolocated peers) is a follow-up: it needs an SSH `ss` peer
+ * scan and a relay-specific map instance, so for now its panel is a placeholder.
+ *
+ * Connect screen mirrors the BP login's auth choices and remembers
+ * host/port/user/transport/method/order — never password, OTP, or passphrase.
+ */
+
+import { speedoSVG, setSpeedo, thermoHTML, setThermo, tanksHTML, paintTanks, flashMint } from '../ui/now-gauges.js';
+import {
+  relayConnect, relayDisconnect, relayIsConnected,
+  relaySnapshot, clearRelayProbe, relayExec,
+} from '../data/relay-probe.js';
+import { getCachedGeo, lookupGeoBatch, getOwnLocation } from '../data/geo-query.js';
+
+const LABEL = { relay1: 'Relay 1', relay2: 'Relay 2' };
+const POLL_MS = 2000;
+const MEM_CAP_BYTES = 24 * 1e9;
+const TIP_STALL_MS = 90_000;
+const MP_FULL = 90112;             // one block body (mainnet maxBlockBodySize)
+const CFG_KEY = (id) => `pt.relay.${id}.v1`;
+
+// mainnet slot math (1 slot = 1 s after Shelley) — for tip-diff / "seconds behind"
+const SHELLEY_UNIX = 1596059091, SHELLEY_SLOT = 4492800, EPOCH_LEN = 432000;
+function slotToUnix(slot) { return SHELLEY_UNIX + (slot - SHELLEY_SLOT); }
+
+// ---- per-relay runtime state ----------------------------------------------
+const S = {};
+function st(id) {
+  return (S[id] ||= {
+    root: null, timer: null, mode: 'ssh', active: false, hidden: false,
+    lastBlock: null, lastBlockTs: 0, connectedAt: 0, clockTimer: null,
+    blockTimes: [], ecgRaf: null,
+    peers: [], myLoc: null, geoInFlight: false, ownInFlight: false,
+  });
+}
+
+function fmtElapsed(ms) {
+  let s = Math.floor(ms / 1000); if (s < 0) s = 0;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+              : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function loadCfg(id) {
+  try { return JSON.parse(localStorage.getItem(CFG_KEY(id))) || null; } catch { return null; }
+}
+function saveCfg(id, cfg) {
+  try { localStorage.setItem(CFG_KEY(id), JSON.stringify(cfg)); } catch { /* ignore */ }
+}
+
+// ---- formatting helpers ----------------------------------------------------
+function fmtInt(n) { return n == null ? '—' : Math.round(n).toLocaleString(); }
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+  return b + ' B';
+}
+function fmtUptime(startUnix) {
+  if (!startUnix) return '—';
+  let s = Math.floor(Date.now() / 1000) - startUnix; if (s < 0) s = 0;
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function healthColor(score) {
+  if (score == null) return '#6f7d99';
+  if (score >= 80) return '#5dff9b';
+  if (score >= 50) return '#ffc24a';
+  return '#ff5a3c';
+}
+
+// ---- styles (mirrors the BP .n2 dashboard, namespaced .rl-*) ---------------
+const STYLE_ID = 'rl-style';
+function ensureStyle() {
+  if (document.getElementById(STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = STYLE_ID;
+  el.textContent = `
+    .rl-wrap { flex:1 1 auto; min-height:0; overflow:hidden; display:flex; flex-direction:column; gap:10px; padding:2px 2px 6px; }
+    .rl-panel { background:linear-gradient(180deg,#0a0f1c,#070b15); border:2px solid rgba(150,182,235,.6); border-radius:13px; box-shadow:0 1px 5px rgba(0,0,0,.45); }
+    .rl-lbl { font-size:12px; letter-spacing:.7px; color:var(--pt-accent-blue-bright,#7BB0F5); text-transform:uppercase; font-weight:600; }
+    .rl-muted { color:var(--pt-text-muted,#6f7d99); }
+    .rl-ptitle { font-size:12px; letter-spacing:.5px; color:var(--pt-accent-blue-bright,#7BB0F5); text-transform:uppercase; font-weight:600; }
+
+    /* hero */
+    .rl-hero { flex:0 0 auto; padding:8px 14px 12px; display:flex; flex-direction:column; gap:8px; }
+    .rl-hero-strip { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding-bottom:7px; border-bottom:1px solid rgba(135,165,215,.24); }
+    .rl-name { font-weight:800; font-size:16px; letter-spacing:.5px; color:#e6edf3; display:flex; align-items:center; gap:9px; }
+    .rl-dot { width:11px; height:11px; border-radius:50%; box-shadow:0 0 9px currentColor; }
+    .rl-badge { font-size:11px; font-family:ui-monospace,monospace; color:var(--pt-text-secondary,#9fb0d0); background:rgba(120,150,200,.08); border:1px solid rgba(120,150,200,.16); border-radius:7px; padding:2px 8px; }
+    .rl-conntimer { color:#5dff9b; border-color:rgba(93,255,155,.28); background:rgba(93,255,155,.07); font-variant-numeric:tabular-nums; min-width:48px; text-align:center; }
+    .rl-hero-actions { display:flex; align-items:center; gap:10px; }
+    .rl-btn { font:600 11px system-ui; letter-spacing:.4px; color:#cfe0ff; background:rgba(120,150,200,.10); border:1px solid rgba(135,165,215,.4); border-radius:8px; padding:5px 11px; cursor:pointer; }
+    .rl-btn:hover { background:rgba(120,150,200,.20); }
+    .rl-btn-danger { color:#ffd2cb; border-color:rgba(255,90,60,.5); background:rgba(255,90,60,.08); }
+    .rl-btn-danger:hover { background:rgba(255,90,60,.16); }
+    .rl-btn-go { color:#0a0f1c; background:#5dff9b; border-color:#5dff9b; font-weight:700; }
+    .rl-btn-go:hover { background:#7dffb1; }
+    .rl-tipline { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--pt-text-secondary,#9fb0d0); flex-wrap:wrap; }
+    .rl-attip { font-weight:700; letter-spacing:1px; }
+    .rl-tip-sep { color:rgba(120,150,200,.3); }
+    .rl-hero-main { display:flex; align-items:stretch; gap:16px; }
+    .rl-hero-trace { flex:1 1 auto; min-width:0; display:flex; align-items:center; background:rgba(8,12,22,.6); border:1px solid rgba(135,165,215,.18); border-radius:9px; overflow:hidden; }
+    .rl-hero-health { flex:0 0 auto; border-left:1px solid rgba(135,165,215,.24); padding-left:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:92px; }
+    .rl-hero-health .v { font-size:30px; font-weight:800; line-height:1; text-shadow:0 0 16px currentColor; }
+    .rl-hero-health .u { font-size:10px; color:var(--pt-text-muted,#6f7d99); letter-spacing:1px; margin-top:2px; }
+
+    /* deck */
+    .rl-deck { flex:0 0 auto; display:grid; grid-template-columns:1fr 1.5fr 1fr 1fr; gap:12px; }
+    .rl-cell { padding:10px 10px 8px; display:flex; flex-direction:column; align-items:center; }
+    .rl-cell .rl-lbl { margin-bottom:8px; }
+    .rl-val { font-family:ui-monospace,monospace; font-weight:700; font-size:17px; margin-top:6px; }
+    .rl-sub { font-size:11px; color:var(--pt-text-muted,#6f7d99); margin-top:2px; }
+
+    .rl-density-grid { display:grid; grid-template-columns:repeat(2,auto); gap:3px 14px; justify-content:center; margin-top:8px; font-size:11px; font-family:ui-monospace,monospace; color:var(--pt-text-secondary,#9fb0d0); }
+    .rl-density-grid .pt-muted { color:var(--pt-text-muted,#6f7d99); }
+    .rl-gaps { width:100%; margin-top:12px; }
+    .rl-gaps-head { font-size:10px; color:var(--pt-text-muted,#6f7d99); text-align:center; margin-bottom:6px; }
+    .rl-gap-row { display:flex; align-items:center; gap:6px; margin:4px 0; font-size:11px; }
+    .rl-gap-lbl { width:26px; color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:1px; }
+    .rl-gap-track { flex:1; height:6px; background:rgba(120,150,200,.12); border-radius:3px; overflow:hidden; }
+    .rl-gap-fill { display:block; height:100%; width:0; border-radius:3px; transition:width .6s ease; }
+    .rl-gap-val { width:40px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; color:#e6edf3; }
+
+    .rl-mp-host { width:100%; }
+    .rl-sync { display:flex; flex-direction:column; align-items:center; gap:1px; margin-top:9px; padding-top:8px; border-top:1px solid rgba(135,165,215,.16); width:100%; }
+    .rl-sync-lbl { font:600 9px ui-monospace,monospace; letter-spacing:1px; text-transform:uppercase; color:var(--pt-text-muted,#97A0B0); }
+    .rl-sync-val { font:700 22px ui-monospace,monospace; font-variant-numeric:tabular-nums; color:#5dff9b; text-shadow:0 0 10px currentColor; }
+
+    .rl-epcd { display:flex; flex-direction:column; gap:3px; margin-top:6px; width:100%; padding:0 8px; box-sizing:border-box; }
+    .rl-epcd-row { display:flex; align-items:baseline; justify-content:space-between; }
+    .rl-epcd-k { font:600 10px ui-monospace,monospace; letter-spacing:.5px; text-transform:uppercase; color:var(--pt-text-muted,#97A0B0); }
+    .rl-epcd-v { font:700 17px ui-monospace,monospace; font-variant-numeric:tabular-nums; min-width:2ch; text-align:right; text-shadow:0 0 8px currentColor; }
+    .rl-epcd-cap { margin-top:5px; text-align:center; font:10px ui-monospace,monospace; color:var(--pt-text-muted,#97A0B0); letter-spacing:.3px; text-transform:uppercase; }
+
+    /* bottom panels */
+    /* bottom: col1 matches Density width (deck col1); map spans both rows for
+       height; info box spans the first three columns. */
+    .rl-bottom { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:1fr 1fr 1.2fr 1.3fr; grid-template-rows:minmax(0,1fr) auto; gap:12px; align-items:stretch; }
+    .rl-bottom .rl-panel { padding:10px 14px; display:flex; flex-direction:column; min-width:0; }
+    .rl-area-prop  { grid-column:1; grid-row:1; min-height:158px; }
+    .rl-area-peers { grid-column:2; grid-row:1; min-height:158px; }
+    .rl-area-plist { grid-column:3; grid-row:1; min-height:158px; }
+    .rl-area-map   { grid-column:4; grid-row:1 / span 2; }
+    .rl-area-info  { grid-column:1 / span 3; grid-row:2; }
+    .rl-plist-body { flex:1 1 auto; min-height:0; overflow-y:auto; margin-top:8px; display:flex; flex-direction:column; gap:3px;
+      scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }
+    .rl-plist-body::-webkit-scrollbar { width:7px; }
+    .rl-plist-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
+    .rl-plist-body::-webkit-scrollbar-track { background:rgba(120,150,200,.06); border-radius:4px; }
+    .rl-plist-empty { color:var(--pt-text-muted,#6f7d99); font-size:11px; line-height:1.5; text-align:center; margin:auto 0; padding:0 8px; }
+    .rl-plist-row { display:grid; grid-template-columns:1fr auto auto; gap:8px; align-items:center; font:11px ui-monospace,monospace; padding:4px 6px; border-radius:6px; background:rgba(120,150,200,.05); }
+    .rl-plist-ip { color:#cdd9f0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .rl-plist-rtt { font-weight:700; }
+    .rl-plist-dir { font-size:9px; letter-spacing:.5px; text-transform:uppercase; color:var(--pt-text-muted,#6f7d99); }
+    .rl-bp-body { display:flex; flex-direction:column; gap:11px; padding-top:10px; flex:1 1 auto; justify-content:center; }
+    .rl-bp-row { display:flex; align-items:center; gap:8px; font-size:12px; }
+    .rl-bp-k { width:64px; color:var(--pt-text-muted,#6f7d99); white-space:nowrap; text-transform:uppercase; letter-spacing:.5px; font-size:10px; }
+    .rl-bp-track { flex:1; height:7px; background:rgba(120,150,200,.12); border-radius:4px; overflow:hidden; }
+    .rl-bp-bar { display:block; height:100%; width:0; border-radius:4px; background:#5dff9b; transition:width .5s ease, background .3s; }
+    .rl-bp-v { width:52px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; color:#e6edf3; }
+    .rl-bp-late { margin-top:2px; }
+    .rl-bp-late .rl-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
+
+    .rl-pp-head { display:flex; justify-content:space-between; align-items:center; }
+    .rl-pp-meta { font-size:11px; color:var(--pt-text-secondary,#9fb0d0); display:flex; gap:8px; }
+    .rl-pp-meta .pt-muted { color:var(--pt-text-muted,#6f7d99); }
+
+    .rl-map-host { flex:1 1 auto; min-height:120px; display:flex; align-items:center; justify-content:center; margin-top:8px; background:rgba(8,12,22,.5); border:1px solid rgba(135,165,215,.14); border-radius:9px; overflow:hidden; }
+    .rl-map-svg { width:100%; height:100%; display:block; }
+
+    /* live ECG (red), one beat per observed block, 5-minute window */
+    .rl-ecg { display:block; width:100%; height:52px; }
+    .rl-ecg-line { transition:stroke .5s; }
+    .rl-ecg-base { stroke:rgba(120,150,200,.18); stroke-width:1; }
+
+    /* gauge components inherit global pt-speedo / pt-thermo / pt-tank styling */
+    .pt-needle { transition:transform 1.2s cubic-bezier(.2,.8,.2,1); }
+
+    /* connect screen */
+    .rl-connect { max-width:460px; margin:26px auto; display:flex; flex-direction:column; gap:13px; padding:22px; }
+    .rl-connect h2 { margin:0; font-size:19px; color:#e6edf3; }
+    .rl-seg { display:flex; gap:0; border:1px solid rgba(135,165,215,.4); border-radius:9px; overflow:hidden; }
+    .rl-seg button { flex:1; padding:9px; background:transparent; border:0; color:var(--pt-text-secondary,#9fb0d0); font:600 12px system-ui; cursor:pointer; }
+    .rl-seg button.on { background:rgba(123,176,245,.18); color:#cfe0ff; }
+    .rl-field { display:flex; flex-direction:column; gap:4px; }
+    .rl-field label { font-size:11px; color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:.5px; }
+    .rl-field input { background:#0a0f1c; border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:9px 11px; color:#e6edf3; -webkit-text-fill-color:#e6edf3; font-family:ui-monospace,monospace; font-size:13px; }
+    .rl-field input:focus { outline:none; border-color:var(--pt-accent-blue-bright,#7BB0F5); }
+    .rl-field input::placeholder { color:rgba(159,176,208,.28); -webkit-text-fill-color:rgba(159,176,208,.28); }
+    /* selects need explicit text-fill + option colours on WebKitGTK or the text is invisible */
+    .rl-field select { -webkit-appearance:none; -moz-appearance:none; appearance:none;
+      background-color:#16202e; color:#ffffff !important; -webkit-text-fill-color:#ffffff !important;
+      border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:9px 28px 9px 11px;
+      font:600 13px ui-monospace,monospace; cursor:pointer;
+      background-image:linear-gradient(45deg,transparent 50%,#9fb4cc 50%),linear-gradient(135deg,#9fb4cc 50%,transparent 50%);
+      background-position:right 14px center,right 9px center; background-size:5px 5px,5px 5px; background-repeat:no-repeat,no-repeat; }
+    .rl-field select:focus { outline:none; border-color:var(--pt-accent-blue-bright,#7BB0F5); }
+    .rl-field select option { background-color:#0e1620; color:#ffffff; }
+
+    /* gauge component CSS (thermometer + tanks) — global app.css lacks these,
+       and now2 only injects them when the BP dashboard is mounted, so include
+       them here for the relay's Epoch thermometer and Mempool tanks. */
+    .pt-thermo { position:relative; width:62px; height:126px; margin-top:2px; }
+    .pt-thermo-tube { position:absolute; left:16px; top:0; width:16px; height:108px; border-radius:9px; background:rgba(120,150,200,.10); border:1.5px solid rgba(160,185,225,.5); overflow:hidden; box-shadow:inset 0 0 6px rgba(0,0,0,.3); }
+    .pt-thermo-ticks { position:absolute; left:0; top:0; width:100%; height:108px; pointer-events:none; }
+    .pt-thermo-tick { position:absolute; left:34px; transform:translateY(50%); display:flex; align-items:center; gap:3px; }
+    .pt-thermo-tick-line { width:7px; height:1.5px; background:rgba(160,185,225,.5); }
+    .pt-thermo-tick-lbl { font-size:8.5px; color:var(--pt-text-muted,#6f7d99); font-family:ui-monospace,monospace; }
+    .pt-thermo-fill { position:absolute; left:0; bottom:0; width:100%; border-radius:8px; transition:height 1.3s cubic-bezier(.2,.8,.2,1); }
+    .pt-thermo-bulb { position:absolute; left:11px; bottom:0; width:28px; height:28px; border-radius:50%; }
+    .pt-tanks { display:flex; gap:7px; align-items:flex-end; justify-content:center; height:104px; width:100%; }
+    .pt-tank { position:relative; width:46px; height:98px; border:2px solid rgba(120,150,200,.22); border-radius:7px; overflow:hidden; background:rgba(10,16,28,.5); transition:border-color .4s; }
+    .pt-tank-liq { position:absolute; left:0; bottom:0; width:100%; transition:height .55s ease; }
+    .pt-tank-cap { position:absolute; top:3px; left:0; width:100%; text-align:center; font-size:9px; color:#6f7d99; }
+    .pt-tank.active { border-color:rgba(54,224,212,.45); }
+    .pt-tank.spill { border-color:rgba(255,90,60,.5); }
+    .pt-tank-mf { position:absolute; inset:0; background:rgba(93,255,155,.20); opacity:0; border-radius:7px; pointer-events:none; }
+    .rl-row2 { display:grid; grid-template-columns:1fr 110px; gap:10px; }
+    .rl-msg { font-size:12px; min-height:16px; }
+    .rl-msg.err { color:#ff7a66; }
+    .rl-msg.ok { color:#5dff9b; }
+    .rl-note { font-size:11px; line-height:1.5; color:var(--pt-text-secondary,#9fb0d0); padding:10px 14px; }
+    .rl-note b { color:var(--pt-accent-blue-bright,#7BB0F5); font-weight:700; }
+
+    @media (max-width:1050px) {
+      .rl-wrap { overflow-y:auto; }
+      .rl-deck { grid-template-columns:1fr 1fr; }
+      .rl-bottom { flex:0 0 auto; grid-template-columns:1fr; grid-template-rows:auto; }
+      .rl-area-prop, .rl-area-peers, .rl-area-plist, .rl-area-map, .rl-area-info { grid-column:1; grid-row:auto; }
+      .rl-area-map { min-height:320px; }
+      .rl-plist-body { max-height:280px; }
+      .rl-hero-main { flex-wrap:wrap; }
+    }
+  `;
+  document.head.appendChild(el);
+}
+
+// ---- live ECG (red), 5-minute window, one beat per observed block ----------
+// Uses the BP 5-min QRS shape (Q-R-S, no P/T), scrolling left over the window.
+const ECG_W = 600, ECG_H = 52, ECG_BL = ECG_H * 0.56;
+const ECG_WINDOW = 300;
+const ECG_COLOR = '#ff5a3c';
+
+function ecgQRS(cx) {
+  const BL = ECG_BL, H = ECG_H, hw = 13;
+  const R = H * 0.46, Q = H * 0.13, Sd = H * 0.20;
+  return `L${(cx - hw).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx - hw * 0.30).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx - hw * 0.15).toFixed(1)},${(BL + Q).toFixed(1)} `
+       + `L${(cx).toFixed(1)},${(BL - R).toFixed(1)} `
+       + `L${(cx + hw * 0.15).toFixed(1)},${(BL + Sd).toFixed(1)} `
+       + `L${(cx + hw * 0.30).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx + hw).toFixed(1)},${BL.toFixed(1)} `;
+}
+function buildEcg(times, now) {
+  const pps = ECG_W / ECG_WINDOW;
+  const xs = times.map((t) => ECG_W - (now - t) * pps)
+    .filter((x) => x >= -16 && x <= ECG_W + 16).sort((a, b) => a - b);
+  let d = `M0,${ECG_BL.toFixed(1)} `; let cursor = 0;
+  for (const cx of xs) {
+    const start = cx - 13;
+    if (start > cursor) d += `L${start.toFixed(1)},${ECG_BL.toFixed(1)} `;
+    d += ecgQRS(cx);
+    cursor = cx + 13;
+  }
+  if (cursor < ECG_W) d += `L${ECG_W},${ECG_BL.toFixed(1)} `;
+  return d;
+}
+function renderTrace(id) {
+  return `<svg class="rl-ecg" viewBox="0 0 ${ECG_W} ${ECG_H}" preserveAspectRatio="none">
+      <defs><filter id="rl-ecg-glow-${id}" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter></defs>
+      <line class="rl-ecg-base" x1="0" y1="${ECG_BL}" x2="${ECG_W}" y2="${ECG_BL}"/>
+      <path class="rl-ecg-line" id="rl-ecg-${id}" fill="none" stroke="${ECG_COLOR}" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"
+            filter="url(#rl-ecg-glow-${id})" d="M0,${ECG_BL} L${ECG_W},${ECG_BL}"/>
+    </svg>`;
+}
+function ecgFrame(id) {
+  const s = st(id);
+  const path = s.root && s.root.querySelector(`#rl-ecg-${id}`);
+  if (!path) { s.ecgRaf = null; return; }
+  const now = Date.now() / 1000;
+  s.blockTimes = s.blockTimes.filter((t) => now - t <= ECG_WINDOW + 2);
+  path.setAttribute('d', buildEcg(s.blockTimes, now));
+  s.ecgRaf = requestAnimationFrame(() => ecgFrame(id));
+}
+function startEcg(id) { const s = st(id); if (!s.ecgRaf) s.ecgRaf = requestAnimationFrame(() => ecgFrame(id)); }
+function stopEcg(id) { const s = st(id); if (s.ecgRaf) { cancelAnimationFrame(s.ecgRaf); s.ecgRaf = null; } }
+
+// ---- density / gaps from observed block times ------------------------------
+function densityPct(times, now, win) {
+  const c = times.filter((t) => now - t <= win).length;
+  return (c / win) * 100;           // blocks per slot (1 slot = 1s) as a percent
+}
+function gapStats(times, now, win) {
+  const w = times.filter((t) => now - t <= win).sort((a, b) => a - b);
+  if (w.length < 2) return { avg: null, max: null, min: null, count: w.length };
+  const gaps = [];
+  for (let i = 1; i < w.length; i++) gaps.push(w[i] - w[i - 1]);
+  return {
+    avg: Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length),
+    max: Math.round(Math.max(...gaps)),
+    min: Math.round(Math.min(...gaps)),
+    count: w.length,
+  };
+}
+
+// ---- relay map (geolocated peers) ------------------------------------------
+// Equirectangular world map (Natural Earth 110m land, fetched once and cached).
+// Reuses the geo cache shared with the BP map; own-location is resolved over
+// THIS relay's egress so the gold self-dot sits at the relay, not the BP.
+const MAP_W = 720, MAP_H = 360;
+const WORLD_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_land.geojson';
+const WORLD_CACHE = 'pt-world-map-path-v1';
+let _worldPath = null, _worldLoading = false;
+function lngToX(lng) { return (lng + 180) * MAP_W / 360; }
+function latToY(lat) { return (90 - lat) * MAP_H / 180; }
+function rttColor(rtt) {
+  if (rtt == null) return '#555';
+  const c = Math.max(0, Math.min(rtt, 300));
+  return `hsl(${(120 - (c / 300) * 120).toFixed(0)}, 70%, 55%)`;
+}
+function escXml(s) {
+  return String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+}
+async function loadWorldMap() {
+  if (_worldPath) return _worldPath;
+  const cached = localStorage.getItem(WORLD_CACHE);
+  if (cached) { _worldPath = cached; return cached; }
+  if (_worldLoading) return null;
+  _worldLoading = true;
+  try {
+    const r = await fetch(WORLD_URL);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const geo = await r.json();
+    let d = '';
+    for (const f of geo.features) {
+      const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const poly of polys) for (const ring of poly) {
+        ring.forEach(([lng, lat], i) => { d += (i === 0 ? 'M' : 'L') + lngToX(lng).toFixed(1) + ',' + latToY(lat).toFixed(1) + ' '; });
+        d += 'Z ';
+      }
+    }
+    localStorage.setItem(WORLD_CACHE, d);
+    _worldPath = d;
+    return d;
+  } catch (e) {
+    console.warn('[relay map] world load failed:', e.message);
+    return null;
+  } finally { _worldLoading = false; }
+}
+function paintMap(id) {
+  const s = st(id);
+  if (!s.root) return;
+  const svg = s.root.querySelector(`#rl-map-svg-${id}`);
+  if (!svg) return;
+  const peers = s.peers || [];
+  const parts = [];
+  for (let lng = -180; lng <= 180; lng += 30) { const x = lngToX(lng); parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${MAP_H}" stroke="rgba(80,100,130,0.10)" stroke-width="0.5"/>`); }
+  for (let lat = -60; lat <= 60; lat += 30) { const y = latToY(lat); parts.push(`<line x1="0" y1="${y}" x2="${MAP_W}" y2="${y}" stroke="rgba(80,100,130,0.10)" stroke-width="0.5"/>`); }
+  if (_worldPath) parts.push(`<path d="${_worldPath}" fill="rgba(50,70,95,0.5)" stroke="rgba(110,140,180,0.6)" stroke-width="0.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`);
+  if (s.myLoc && peers.length) {
+    const mx = lngToX(s.myLoc.lng), my = latToY(s.myLoc.lat);
+    for (const p of peers) { const g = getCachedGeo(p.ip); if (!g) continue; parts.push(`<line x1="${mx.toFixed(1)}" y1="${my.toFixed(1)}" x2="${lngToX(g.lng).toFixed(1)}" y2="${latToY(g.lat).toFixed(1)}" stroke="${rttColor(p.rtt)}" stroke-width="0.6" opacity="0.5"/>`); }
+  }
+  for (const p of peers) {
+    const g = getCachedGeo(p.ip); if (!g) continue;
+    const rtt = p.rtt == null ? '—' : (p.rtt < 1 ? '<1ms' : Math.round(p.rtt) + 'ms');
+    const tip = escXml(`${p.ip}:${p.port}\n${g.city || ''}${g.city ? ', ' : ''}${g.country || ''}\n${g.as || ''}\nRTT ${rtt}`);
+    parts.push(`<circle cx="${lngToX(g.lng).toFixed(1)}" cy="${latToY(g.lat).toFixed(1)}" r="2.2" fill="${rttColor(p.rtt)}" stroke="rgba(0,0,0,0.6)" stroke-width="0.3"><title>${tip}</title></circle>`);
+  }
+  if (s.myLoc) {
+    const mx = lngToX(s.myLoc.lng), my = latToY(s.myLoc.lat);
+    const tip = escXml(`This relay · ${s.myLoc.city || ''}${s.myLoc.city ? ', ' : ''}${s.myLoc.country || ''}\n${s.myLoc.as || ''}`);
+    parts.push(`<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="5" fill="#f1c40f" stroke="#000" stroke-width="0.6"><title>${tip}</title></circle>`);
+  }
+  svg.innerHTML = parts.join('');
+  const meta = s.root.querySelector(`#rl-map-meta-${id}`);
+  if (meta) {
+    if (peers.length) { const located = peers.filter((p) => getCachedGeo(p.ip)).length; meta.textContent = `${located}/${peers.length} located${s.myLoc ? '' : ' · self pending'}`; }
+    else meta.textContent = _worldPath ? 'awaiting peers…' : 'loading map…';
+  }
+}
+// Resolve own location (over this relay's egress) + geolocate peer IPs, repaint.
+function refreshMapGeo(id) {
+  const s = st(id);
+  const runner = (cmd) => relayExec(id, s.mode, cmd);
+  if (!s.myLoc && !s.ownInFlight) {
+    s.ownInFlight = true;
+    getOwnLocation(runner, `__self_${id}__`)
+      .then((loc) => { if (loc) { s.myLoc = loc; paintMap(id); } })
+      .finally(() => { s.ownInFlight = false; });
+  }
+  const ips = (s.peers || []).map((p) => p.ip);
+  if (ips.length && !s.geoInFlight) {
+    s.geoInFlight = true;
+    lookupGeoBatch(ips, runner).then(() => paintMap(id)).finally(() => { s.geoInFlight = false; });
+  }
+}
+// Peer list rows (IP · RTT · country), sorted by RTT (fastest first).
+function renderPeerList(id) {
+  const s = st(id);
+  if (!s.root) return;
+  const peers = s.peers || [];
+  const count = s.root.querySelector(`#rl-plist-count-${id}`);
+  if (count) count.textContent = peers.length ? `${peers.length} peers` : '—';
+  const body = s.root.querySelector(`#rl-plist-body-${id}`);
+  if (!body) return;
+  if (!peers.length) { body.innerHTML = `<div class="rl-plist-empty">No established peers detected yet.</div>`; return; }
+  body.innerHTML = peers.map((p) => {
+    const g = getCachedGeo(p.ip);
+    const rttCol = p.rtt == null ? '#6f7d99' : p.rtt < 50 ? '#5dff9b' : p.rtt < 150 ? '#ffc24a' : '#ff5a3c';
+    const rtt = p.rtt == null ? '—' : (p.rtt < 1 ? '<1 ms' : Math.round(p.rtt) + ' ms');
+    const loc = g ? (g.countryCode || g.country || '··') : '··';
+    return `<div class="rl-plist-row"><span class="rl-plist-ip" title="${escXml(p.ip)}:${p.port}">${escXml(p.ip)}</span><span class="rl-plist-rtt" style="color:${rttCol}">${rtt}</span><span class="rl-plist-dir">${escXml(loc)}</span></div>`;
+  }).join('');
+}
+
+// ---- dashboard render ------------------------------------------------------
+function renderDashboard(id) {
+  const s = st(id);
+  const cfg = loadCfg(id) || {};
+  const where = s.mode === 'local' ? 'this machine' : (cfg.host || '—');
+  return `
+    <div class="rl-wrap">
+      <div class="rl-panel rl-hero">
+        <div class="rl-hero-strip">
+          <div class="rl-name">
+            <span class="rl-dot" id="rl-dot-${id}" style="color:#6f7d99;background:#6f7d99"></span>
+            ${LABEL[id]}
+            <span class="rl-badge" id="rl-where-${id}">${s.mode === 'local' ? 'LOCAL' : 'SSH'} · ${where}</span>
+            <span class="rl-badge rl-conntimer" id="rl-conntimer-${id}" title="Time connected">0:00</span>
+          </div>
+          <div class="rl-hero-actions">
+            <span class="rl-badge" id="rl-ver-${id}">—</span>
+            <button class="rl-btn rl-btn-danger" id="rl-disc-${id}" type="button">Disconnect</button>
+          </div>
+        </div>
+        <div class="rl-tipline">
+          <span class="rl-attip" id="rl-tipstate-${id}" style="color:#6f7d99">CONNECTING…</span>
+          <span class="rl-tip-sep">&#9474;</span>
+          <span><span class="rl-muted">block</span> <b id="rl-tipblock-${id}" style="color:#e6edf3">—</b></span>
+          <span class="rl-tip-sep">&#9474;</span>
+          <span><span class="rl-muted">slot</span> <b id="rl-tipslot-${id}" style="color:#e6edf3">—</b></span>
+          <span class="rl-tip-sep">&#9474;</span>
+          <span><span class="rl-muted">ep-slot</span> <b id="rl-tipepslot-${id}" style="color:#e6edf3">—</b></span>
+          <span class="rl-tip-sep">&#9474;</span>
+          <span id="rl-tipage-${id}" class="rl-muted">—</span>
+        </div>
+        <div class="rl-hero-main">
+          <div class="rl-hero-trace" id="rl-trace-${id}">${renderTrace(id)}</div>
+          <div class="rl-hero-health" title="Overall relay health (0-100): node up, tip advancing, peers connected.">
+            <div class="v" id="rl-health-${id}" style="color:#6f7d99">—</div>
+            <div class="u">HEALTH /100</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rl-deck">
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Density</div>
+          <div id="rl-density-note-${id}" style="margin:-3px 0 7px;font-size:9.5px;line-height:1.3;text-align:center;color:var(--pt-text-muted,#6f7d99)">Density numbers will take 1 hour to be accurate as relays do not backfill with data <span style="color:#36e0d4;font-weight:700">60:00</span></div>
+          ${speedoSVG({ id: `rl-density-${id}`, min: 0, max: 10, ticks: 10, major: 5, color: '#36e0d4' })}
+          <div class="rl-val" id="rl-density-read-${id}" style="color:#36e0d4">—</div>
+          <div class="rl-sub">density (5m)</div>
+          <div class="rl-density-grid">
+            <span><span class="pt-muted">1m</span> <span id="rl-d-m1-${id}">—</span></span>
+            <span><span class="pt-muted">5m</span> <span id="rl-d-m5-${id}">—</span></span>
+            <span><span class="pt-muted">20m</span> <span id="rl-d-m20-${id}">—</span></span>
+            <span><span class="pt-muted">1h</span> <span id="rl-d-h1-${id}">—</span></span>
+          </div>
+          <div class="rl-gaps">
+            <div class="rl-gaps-head" id="rl-blockcount-${id}">—</div>
+            <div class="rl-gap-row"><span class="rl-gap-lbl">avg</span><span class="rl-gap-track"><span class="rl-gap-fill" id="rl-bar-avg-${id}" style="background:#36e0d4"></span></span><span class="rl-gap-val" id="rl-avg-${id}">—</span></div>
+            <div class="rl-gap-row"><span class="rl-gap-lbl">max</span><span class="rl-gap-track"><span class="rl-gap-fill" id="rl-bar-max-${id}" style="background:#ffc24a"></span></span><span class="rl-gap-val" id="rl-max-${id}">—</span></div>
+            <div class="rl-gap-row"><span class="rl-gap-lbl">min</span><span class="rl-gap-track"><span class="rl-gap-fill" id="rl-bar-min-${id}" style="background:#5dff9b"></span></span><span class="rl-gap-val" id="rl-min-${id}">—</span></div>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl" style="align-self:flex-start">Mempool</div>
+          <div class="rl-mp-host">
+            <div style="text-align:center;margin-bottom:6px;font-size:12px;color:var(--pt-text-secondary,#9fb0d0)"><span id="rl-mp-count-${id}">—</span></div>
+            ${tanksHTML({ ntanks: 3 })}
+            <div id="rl-mp-tankpct-${id}" style="text-align:center;font-family:ui-monospace,monospace;font-weight:700;font-size:20px;color:#36e0d4;margin:6px 0 0;">—</div>
+            <div style="text-align:center;font-family:ui-monospace,monospace;font-size:10px;color:var(--pt-text-muted,#97A0B0);margin:0 0 5px;">100% = 88 KB</div>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Tip diff</div>
+          ${speedoSVG({ id: `rl-tip-${id}`, min: 0, max: 120, ticks: 12, major: 4, color: '#5dff9b', redFrom: 0.75 })}
+          <div class="rl-val" id="rl-tip-read-${id}" style="color:#5dff9b">—</div>
+          <div class="rl-sub">redline 1m 30s</div>
+          <div class="rl-sync">
+            <span class="rl-sync-lbl">SYNC</span>
+            <span class="rl-sync-val" id="rl-sync-${id}">—</span>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Epoch</div>
+          ${thermoHTML({ id: `rl-epoch-${id}`, color: '#7aa6ff', ticks: [{ frac: 0.25, label: '25' }, { frac: 0.5, label: '50' }, { frac: 0.75, label: '75' }] })}
+          <div class="rl-val" id="rl-epoch-read-${id}" style="color:#7aa6ff">—</div>
+          <div class="rl-epcd">
+            <div class="rl-epcd-row"><span class="rl-epcd-k">Days</span><span class="rl-epcd-v" id="rl-ep-d-${id}" style="color:#7aa6ff">—</span></div>
+            <div class="rl-epcd-row"><span class="rl-epcd-k">Hours</span><span class="rl-epcd-v" id="rl-ep-h-${id}" style="color:#36e0d4">—</span></div>
+            <div class="rl-epcd-row"><span class="rl-epcd-k">Minutes</span><span class="rl-epcd-v" id="rl-ep-m-${id}" style="color:#ffc24a">—</span></div>
+            <div class="rl-epcd-row"><span class="rl-epcd-k">Seconds</span><span class="rl-epcd-v" id="rl-ep-s-${id}" style="color:#5dff9b">—</span></div>
+            <div class="rl-epcd-cap">to epoch end</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rl-bottom">
+        <div class="rl-panel rl-area-prop">
+          <div class="rl-ptitle">Block propagation</div>
+          <div class="rl-bp-body">
+            <div class="rl-bp-row"><span class="rl-bp-k">within 1s</span><span class="rl-bp-track"><span class="rl-bp-bar" id="rl-bp-bar1-${id}"></span></span><span class="rl-bp-v" id="rl-bp-cdf1-${id}">—</span></div>
+            <div class="rl-bp-row"><span class="rl-bp-k">within 3s</span><span class="rl-bp-track"><span class="rl-bp-bar" id="rl-bp-bar3-${id}"></span></span><span class="rl-bp-v" id="rl-bp-cdf3-${id}">—</span></div>
+            <div class="rl-bp-row"><span class="rl-bp-k">within 5s</span><span class="rl-bp-track"><span class="rl-bp-bar" id="rl-bp-bar5-${id}"></span></span><span class="rl-bp-v" id="rl-bp-cdf5-${id}">—</span></div>
+            <div class="rl-bp-row rl-bp-late"><span class="rl-bp-k">last block</span><span class="rl-bp-v" id="rl-bp-last-${id}">—</span></div>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-area-peers">
+          <div class="rl-pp-head">
+            <span class="rl-ptitle">Peers</span>
+            <span class="rl-pp-meta">
+              <span><span class="pt-muted">out</span> <span id="rl-pp-out-${id}">—</span></span>
+              <span><span class="pt-muted">in</span> <span id="rl-pp-in-${id}">—</span></span>
+              <span><span class="pt-muted">dup</span> <span id="rl-pp-dup-${id}">—</span></span>
+            </span>
+          </div>
+          <div class="rl-bp-body">
+            ${ppRow('rl-phot', id, '#5dff9b', 'Hot')}
+            ${ppRow('rl-pwarm', id, '#ffc24a', 'Warm')}
+            ${ppRow('rl-pcold', id, '#ff5a3c', 'Cold')}
+          </div>
+        </div>
+
+        <div class="rl-panel rl-area-plist">
+          <div class="rl-pp-head">
+            <span class="rl-ptitle">Peer list</span>
+            <span class="rl-pp-meta"><span class="pt-muted" id="rl-plist-count-${id}">—</span></span>
+          </div>
+          <div class="rl-plist-body" id="rl-plist-body-${id}">
+            <div class="rl-plist-empty">Per-peer list (IP · RTT · direction) arrives with the SSH peer scan in the next update.</div>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-area-map">
+          <div class="rl-pp-head">
+            <span class="rl-ptitle">Relay map</span>
+            <span class="rl-pp-meta"><span class="pt-muted" id="rl-map-meta-${id}">loading map…</span></span>
+          </div>
+          <div class="rl-map-host">
+            <svg id="rl-map-svg-${id}" class="rl-map-svg" viewBox="0 0 720 360" preserveAspectRatio="xMidYMid meet"></svg>
+          </div>
+        </div>
+
+        <div class="rl-panel rl-note rl-area-info">
+          <b>How this is collected:</b> every reading on this tab comes straight from
+          ${LABEL[id]}'s own cardano-node — auto-discovered and scraped from its
+          Prometheus endpoint ${s.mode === 'local' ? 'locally on this machine' : 'over a dedicated SSH session'}.
+          No Koios, db-sync, or Blockfrost; fully independent of your block-producer view. Live only.
+        </div>
+      </div>
+    </div>`;
+}
+
+function ppRow(key, id, color, name) {
+  return `<div class="rl-bp-row">
+      <span class="rl-bp-k">${name}</span>
+      <span class="rl-bp-track"><span class="rl-bp-bar" id="${key}-bar-${id}" style="background:${color}"></span></span>
+      <span class="rl-bp-v" id="${key}-v-${id}">—</span>
+    </div>`;
+}
+
+// ---- paint (per poll) ------------------------------------------------------
+function paint(id, snap) {
+  const s = st(id);
+  const probe = snap.probe || {};
+  const h = snap.health || {};
+  const healthy = h.ok === true;
+  const now = Date.now();
+
+  // Block tracking runs ALWAYS, so density / heartbeat data keeps accumulating
+  // while this tab is hidden (the poll stays alive in the background). DOM
+  // rendering is paused below when the tab isn't visible.
+  let advanced = false;
+  if (healthy && h.blockNum != null) {
+    if (s.lastBlock == null) { s.lastBlock = h.blockNum; s.lastBlockTs = now; s.blockTimes.push(now / 1000); }
+    else if (h.blockNum > s.lastBlock) {
+      const beats = Math.min(h.blockNum - s.lastBlock, 3);
+      for (let i = 0; i < beats; i++) s.blockTimes.push(now / 1000 - i * 0.4);
+      s.lastBlock = h.blockNum; s.lastBlockTs = now; advanced = true;
+    }
+  }
+
+  // keep peer data current even while hidden (the list/map fill on return)
+  if (Array.isArray(snap.peers)) s.peers = snap.peers;
+
+  const root = s.root;
+  if (s.hidden || !root) return;   // background collection continues; rendering paused
+  const q = (sel) => root.querySelector(sel);
+  const set = (sel, val) => { const e = q(sel); if (e) e.textContent = val; };
+  if (advanced) { try { flashMint(root, 3); } catch { /* noop */ } }
+
+  // tip age / seconds-behind (since-last-block, from the tip slot)
+  const tipAge = (healthy && h.slotNum != null)
+    ? Math.max(0, Math.floor(now / 1000) - slotToUnix(h.slotNum)) : null;
+  const tipFresh = tipAge != null && tipAge < TIP_STALL_MS / 1000;
+
+  // health score
+  let score = 0;
+  if (healthy) {
+    const peersOk = (h.outbound || 0) > 0 && ((h.inbound || 0) + (h.peersHot || 0)) > 0;
+    score = 40;
+    if (tipFresh) score += 35;
+    if (peersOk) score += 20;
+    if ((h.density || 0) > 0.02) score += 5;
+    score = Math.min(100, score);
+  }
+  const col = healthColor(healthy ? score : null);
+
+  // status dot + health number (ECG stays red)
+  const dot = q(`#rl-dot-${id}`); if (dot) { dot.style.color = col; dot.style.background = col; }
+  const hv = q(`#rl-health-${id}`); if (hv) { hv.textContent = healthy ? score : '—'; hv.style.color = col; }
+
+  // tipline
+  const tipstate = q(`#rl-tipstate-${id}`);
+  if (tipstate) {
+    if (!healthy) { tipstate.textContent = 'UNREACHABLE'; tipstate.style.color = '#ff5a3c'; }
+    else if (tipFresh) { tipstate.textContent = 'AT TIP'; tipstate.style.color = '#5dff9b'; }
+    else { tipstate.textContent = 'STALLED'; tipstate.style.color = '#ffc24a'; }
+  }
+  set(`#rl-tipblock-${id}`, fmtInt(h.blockNum));
+  set(`#rl-tipslot-${id}`, fmtInt(h.slotNum));
+  set(`#rl-tipepslot-${id}`, fmtInt(h.slotInEpoch));
+  const ageEl = q(`#rl-tipage-${id}`);
+  if (ageEl) ageEl.textContent = healthy ? (tipAge == null ? 'just connected' : `last block ${tipAge}s ago`)
+                                         : (h.reason ? `unreachable (${h.reason})` : 'unreachable');
+  set(`#rl-ver-${id}`, probe.version ? `v${probe.version}` : '—');
+
+  // ---- Density (windowed from observed blocks) ----
+  const nowS = now / 1000;
+  const d5 = densityPct(s.blockTimes, nowS, 300);
+  set(`#rl-density-read-${id}`, healthy ? d5.toFixed(1) + '%' : '—');
+  setSpeedo(root, `rl-density-${id}`, d5 / 10);
+  const dread = q(`#rl-density-read-${id}`);
+  if (dread) { const dist = Math.abs(d5 - 5); dread.style.color = dist <= 0.5 ? '#5dff9b' : dist <= 1.5 ? '#ffc24a' : '#36e0d4'; }
+  const dpc = (w) => { const v = densityPct(s.blockTimes, nowS, w); return s.blockTimes.length ? v.toFixed(2) + '%' : '—'; };
+  set(`#rl-d-m1-${id}`, dpc(60)); set(`#rl-d-m5-${id}`, dpc(300));
+  set(`#rl-d-m20-${id}`, dpc(1200)); set(`#rl-d-h1-${id}`, dpc(3600));
+
+  // ---- gap bars (avg/max/min over 5m) ----
+  const gs = gapStats(s.blockTimes, nowS, 300);
+  set(`#rl-blockcount-${id}`, `blocks in last 5m: ${gs.count}`);
+  const gmax = Math.max(gs.avg || 0, gs.max || 0, gs.min || 0, 1);
+  const setGap = (barSel, valSel, v) => {
+    set(valSel, v == null ? '—' : v + 's');
+    const b = q(barSel); if (b) b.style.width = (v == null ? 0 : Math.min(100, (v / gmax) * 100)).toFixed(0) + '%';
+  };
+  setGap(`#rl-bar-avg-${id}`, `#rl-avg-${id}`, gs.avg);
+  setGap(`#rl-bar-max-${id}`, `#rl-max-${id}`, gs.max);
+  setGap(`#rl-bar-min-${id}`, `#rl-min-${id}`, gs.min);
+
+  // ---- Mempool tanks ----
+  const mpBytes = h.mempoolBytes || 0;
+  set(`#rl-mp-count-${id}`, healthy ? `${h.mempoolTxs == null ? '—' : h.mempoolTxs} tx · ${fmtBytes(h.mempoolBytes)}` : '—');
+  paintTanks(root, mpBytes, MP_FULL, 3);
+  const mpPct = Math.min(100, (mpBytes / MP_FULL) * 100);
+  const tp = q(`#rl-mp-tankpct-${id}`);
+  if (tp) {
+    if (!healthy || mpBytes <= 0) { tp.textContent = healthy ? 'EMPTY' : '—'; tp.style.color = healthy ? '#ff3344' : '#6f7d99'; }
+    else { tp.textContent = Math.round(mpPct) + '%'; tp.style.color = mpPct >= 67 ? '#ff5a3c' : mpPct >= 34 ? '#ffc24a' : '#5dff9b'; }
+  }
+
+  // ---- Tip diff + SYNC ----
+  if (tipAge != null) {
+    setSpeedo(root, `rl-tip-${id}`, tipAge / 120);
+    const tr = q(`#rl-tip-read-${id}`);
+    if (tr) { tr.textContent = tipAge + ' s'; tr.style.color = tipAge >= 90 ? '#ff5a3c' : '#5dff9b'; }
+    const sync = Math.max(0, Math.min(100, 100 - Math.max(0, tipAge - 60) / 1.2));
+    const sv = q(`#rl-sync-${id}`);
+    if (sv) { sv.textContent = sync.toFixed(1) + '%'; sv.style.color = sync >= 99 ? '#5dff9b' : sync >= 90 ? '#ffc24a' : '#ff5a3c'; }
+  }
+
+  // ---- Epoch thermo + countdown ----
+  if (healthy && h.slotInEpoch != null) {
+    const frac = Math.max(0, Math.min(1, h.slotInEpoch / EPOCH_LEN));
+    setThermo(root, `rl-epoch-${id}`, frac);
+    set(`#rl-epoch-read-${id}`, (frac * 100).toFixed(1) + '%');
+    let rem = Math.max(0, EPOCH_LEN - h.slotInEpoch);
+    const d = Math.floor(rem / 86400); rem -= d * 86400;
+    const hh = Math.floor(rem / 3600); rem -= hh * 3600;
+    const m = Math.floor(rem / 60); const ss = rem % 60;
+    set(`#rl-ep-d-${id}`, d); set(`#rl-ep-h-${id}`, hh); set(`#rl-ep-m-${id}`, m);
+    set(`#rl-ep-s-${id}`, String(ss).padStart(2, '0'));
+  }
+
+  // ---- Block propagation (CDF) ----
+  const propColor = (v) => v >= 0.95 ? '#5dff9b' : v >= 0.85 ? '#ffc24a' : '#ff5a3c';
+  const fmtPct = (v) => v == null ? '—' : (v * 100 >= 99.95 ? '100%' : (v * 100).toFixed(1) + '%');
+  [['1', h.blockDelayCdf1], ['3', h.blockDelayCdf3], ['5', h.blockDelayCdf5]].forEach(([n, v]) => {
+    set(`#rl-bp-cdf${n}-${id}`, fmtPct(v));
+    const cdf = q(`#rl-bp-cdf${n}-${id}`); if (cdf && v != null) cdf.style.color = propColor(v);
+    const bar = q(`#rl-bp-bar${n}-${id}`);
+    if (bar) { bar.style.width = v == null ? '0%' : Math.min(100, v * 100).toFixed(1) + '%'; if (v != null) bar.style.background = propColor(v); }
+  });
+  const last = h.blockDelayLast;
+  const lastEl = q(`#rl-bp-last-${id}`);
+  if (lastEl) {
+    lastEl.textContent = last == null ? '—' : last.toFixed(2) + 's';
+    lastEl.style.color = last == null ? '#9fb0d0' : last < 1 ? '#5dff9b' : last < 3 ? '#ffc24a' : '#ff5a3c';
+  }
+
+  // ---- Peers ----
+  set(`#rl-pp-out-${id}`, h.outbound == null ? '—' : h.outbound);
+  set(`#rl-pp-in-${id}`, h.inbound == null ? '—' : h.inbound);
+  set(`#rl-pp-dup-${id}`, h.duplex == null ? '—' : h.duplex);
+  const ppBar = (key, val, max) => {
+    const b = q(`#${key}-bar-${id}`); const v = q(`#${key}-v-${id}`);
+    if (v) v.textContent = val == null ? '—' : val;
+    if (b) b.style.width = Math.max(0, Math.min(100, ((val || 0) / max) * 100)).toFixed(0) + '%';
+  };
+  ppBar('rl-pcold', h.peersCold, 150);
+  ppBar('rl-pwarm', h.peersWarm, 50);
+  ppBar('rl-phot', h.peersHot, 80);
+
+  // ---- Peer list + Relay map ----
+  renderPeerList(id);
+  if (healthy && s.peers.length) refreshMapGeo(id);
+  paintMap(id);
+}
+
+// ---- poll loop -------------------------------------------------------------
+async function tick(id) {
+  const s = st(id);
+  try { paint(id, await relaySnapshot(id, s.mode)); }
+  catch (err) { paint(id, { probe: {}, health: { ok: false, reason: 'error', error: err?.message } }); }
+}
+function startPoll(id) { const s = st(id); stopPoll(id); tick(id); s.timer = setInterval(() => tick(id), POLL_MS); }
+function stopPoll(id) { const s = st(id); if (s.timer) { clearInterval(s.timer); s.timer = null; } }
+
+// connection timer — ticks every second while the dashboard is visible; the
+// connect time itself persists across tab switches, so returning shows the
+// true elapsed time, not a restart.
+function updateConnTimer(id) {
+  const s = st(id);
+  if (!s.root || !s.connectedAt) return;
+  const el = s.root.querySelector(`#rl-conntimer-${id}`);
+  if (el) el.textContent = fmtElapsed(Date.now() - s.connectedAt);
+}
+// Density needs ~1h of live data (relays don't backfill). Count down from
+// connect; at zero, switch the note to "up to date".
+function updateDensityNote(id) {
+  const s = st(id);
+  if (!s.root || !s.connectedAt) return;
+  const el = s.root.querySelector(`#rl-density-note-${id}`);
+  if (!el) return;
+  const remain = 3600 - Math.floor((Date.now() - s.connectedAt) / 1000);
+  if (remain <= 0) {
+    el.innerHTML = '<span style="color:#5dff9b;font-weight:700">Density numbers up to date</span>';
+  } else {
+    const m = Math.floor(remain / 60), ss = remain % 60;
+    el.innerHTML = 'Density numbers will take 1 hour to be accurate as relays do not backfill with data '
+      + `<span style="color:#36e0d4;font-weight:700">${m}:${String(ss).padStart(2, '0')}</span>`;
+  }
+}
+function clockTick(id) { updateConnTimer(id); updateDensityNote(id); }
+function startClock(id) { const s = st(id); stopClock(id); clockTick(id); s.clockTimer = setInterval(() => clockTick(id), 1000); }
+function stopClock(id) { const s = st(id); if (s.clockTimer) { clearInterval(s.clockTimer); s.clockTimer = null; } }
+
+// ---- connect screen --------------------------------------------------------
+function renderConnect(id, root, msg, msgCls) {
+  ensureStyle();
+  const cfg = loadCfg(id) || {};
+  const mode = cfg.transport || 'ssh';
+  const method = cfg.authMethod || 'password';
+  const order = cfg.authOrder || 'code_then_password';
+  root.innerHTML = `
+    <div class="rl-wrap">
+      <div class="rl-panel rl-connect">
+        <h2>${LABEL[id]}</h2>
+        <div class="rl-muted" style="font-size:12px;line-height:1.5">
+          Monitor a relay's node health. Pick where it runs, then connect. The host,
+          port, user and auth method are remembered — the password, OTP code and key
+          passphrase are never stored.
+        </div>
+
+        <div class="rl-seg" id="rl-seg-${id}">
+          <button data-mode="local" class="${mode === 'local' ? 'on' : ''}">This machine</button>
+          <button data-mode="ssh" class="${mode === 'ssh' ? 'on' : ''}">Remote (SSH)</button>
+        </div>
+
+        <div id="rl-sshfields-${id}" style="display:${mode === 'ssh' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+          <div class="rl-row2">
+            <div class="rl-field"><label>Host / IP</label><input id="rl-f-host-${id}" value="${cfg.host || ''}" autocomplete="off"></div>
+            <div class="rl-field"><label>Port</label><input id="rl-f-port-${id}" value="${cfg.port || 22}" inputmode="numeric"></div>
+          </div>
+          <div class="rl-field"><label>Username</label><input id="rl-f-user-${id}" value="${cfg.username || ''}" autocomplete="off"></div>
+          <div class="rl-field">
+            <label>Authentication method</label>
+            <select id="rl-f-method-${id}">
+              <option value="password" ${method === 'password' ? 'selected' : ''}>Password / 2FA</option>
+              <option value="key" ${method === 'key' ? 'selected' : ''}>SSH key file</option>
+              <option value="agent" ${method === 'agent' ? 'selected' : ''}>SSH agent</option>
+            </select>
+          </div>
+          <div id="rl-pw-group-${id}" style="display:${method === 'password' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+            <div class="rl-field">
+              <label>Authentication order</label>
+              <select id="rl-f-order-${id}">
+                <option value="code_then_password" ${order === 'code_then_password' ? 'selected' : ''}>OTP code → Password</option>
+                <option value="password_then_code" ${order === 'password_then_code' ? 'selected' : ''}>Password → OTP code</option>
+                <option value="password_only" ${order === 'password_only' ? 'selected' : ''}>Password only (no 2FA)</option>
+              </select>
+            </div>
+            <div class="rl-field"><label>Password</label><input id="rl-f-pass-${id}" type="password" autocomplete="off"></div>
+            <div class="rl-field" id="rl-code-field-${id}" style="display:${order === 'password_only' ? 'none' : 'flex'}">
+              <label>OTP code</label><input id="rl-f-code-${id}" autocomplete="off" inputmode="numeric">
+            </div>
+          </div>
+          <div id="rl-key-group-${id}" style="display:${method === 'key' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+            <div class="rl-field"><label>SSH key path</label><input id="rl-f-keypath-${id}" value="${cfg.keyPath || ''}" autocomplete="off"></div>
+            <div class="rl-field"><label>Key passphrase <span style="opacity:.6">(if any)</span></label><input id="rl-f-keypass-${id}" type="password" autocomplete="off"></div>
+          </div>
+          <div id="rl-agent-group-${id}" class="rl-muted" style="display:${method === 'agent' ? 'block' : 'none'};font-size:12px;line-height:1.5">
+            Uses your running SSH agent. No password or key file needed here.
+          </div>
+        </div>
+
+        <div id="rl-localnote-${id}" class="rl-muted" style="display:${mode === 'local' ? 'block' : 'none'};font-size:12px;line-height:1.5">
+          Reads the cardano-node running on this machine directly — no SSH, no credentials.
+        </div>
+
+        <div class="rl-msg ${msgCls || ''}" id="rl-msg-${id}">${msg || ''}</div>
+        <button class="rl-btn rl-btn-go" id="rl-go-${id}" type="button" style="padding:10px">Connect</button>
+
+        <div class="rl-note" style="padding:0">
+          <b>How this is collected:</b> readings come only from the relay's own
+          cardano-node (Prometheus over ${mode === 'ssh' ? 'SSH' : 'local exec'}).
+          No Koios, db-sync, or Blockfrost.
+        </div>
+      </div>
+    </div>`;
+
+  root.querySelectorAll(`#rl-seg-${id} button`).forEach((b) => {
+    b.addEventListener('click', () => {
+      const m = b.dataset.mode;
+      root.querySelectorAll(`#rl-seg-${id} button`).forEach((x) => x.classList.toggle('on', x === b));
+      root.querySelector(`#rl-sshfields-${id}`).style.display = m === 'ssh' ? 'flex' : 'none';
+      root.querySelector(`#rl-localnote-${id}`).style.display = m === 'local' ? 'block' : 'none';
+    });
+  });
+  const methodSel = root.querySelector(`#rl-f-method-${id}`);
+  methodSel.addEventListener('change', () => {
+    const m = methodSel.value;
+    root.querySelector(`#rl-pw-group-${id}`).style.display = m === 'password' ? 'flex' : 'none';
+    root.querySelector(`#rl-key-group-${id}`).style.display = m === 'key' ? 'flex' : 'none';
+    root.querySelector(`#rl-agent-group-${id}`).style.display = m === 'agent' ? 'block' : 'none';
+  });
+  const orderSel = root.querySelector(`#rl-f-order-${id}`);
+  orderSel.addEventListener('change', () => {
+    root.querySelector(`#rl-code-field-${id}`).style.display = orderSel.value === 'password_only' ? 'none' : 'flex';
+  });
+  root.querySelector(`#rl-go-${id}`).addEventListener('click', () => doConnect(id, root));
+}
+
+async function doConnect(id, root) {
+  const s = st(id);
+  const mode = root.querySelector(`#rl-seg-${id} button.on`)?.dataset.mode || 'ssh';
+  const msg = (t, cls) => { const e = root.querySelector(`#rl-msg-${id}`); if (e) { e.textContent = t; e.className = `rl-msg ${cls || ''}`; } };
+  const goDash = () => {
+    clearRelayProbe(id);
+    s.lastBlock = null; s.lastBlockTs = 0; s.blockTimes = []; s.active = true;
+    s.peers = []; s.myLoc = null;
+    s.hidden = false; s.connectedAt = Date.now();
+    root.innerHTML = renderDashboard(id);
+    wireDashboard(id, root);
+    startPoll(id); startEcg(id); startClock(id);
+    loadWorldMap().then(() => paintMap(id)); paintMap(id);
+  };
+
+  if (mode === 'local') { s.mode = 'local'; saveCfg(id, { transport: 'local' }); goDash(); return; }
+
+  const host = root.querySelector(`#rl-f-host-${id}`).value.trim();
+  const port = parseInt(root.querySelector(`#rl-f-port-${id}`).value.trim(), 10) || 22;
+  const username = root.querySelector(`#rl-f-user-${id}`).value.trim();
+  const method = root.querySelector(`#rl-f-method-${id}`).value;
+  if (!host || !username) { msg('Host and username are required.', 'err'); return; }
+
+  let auth;
+  if (method === 'agent') {
+    auth = { type: 'agent' };
+  } else if (method === 'key') {
+    const keyPath = root.querySelector(`#rl-f-keypath-${id}`).value.trim();
+    const keyPass = root.querySelector(`#rl-f-keypass-${id}`).value;
+    if (!keyPath) { msg('SSH key path is required.', 'err'); return; }
+    auth = { type: 'key', path: keyPath, passphrase: keyPass || null };
+  } else {
+    const order = root.querySelector(`#rl-f-order-${id}`).value;
+    const password = root.querySelector(`#rl-f-pass-${id}`).value;
+    const code = root.querySelector(`#rl-f-code-${id}`).value.trim();
+    if (!password) { msg('Password is required.', 'err'); return; }
+    if (order !== 'password_only' && !code) { msg('OTP code is required for this order.', 'err'); return; }
+    auth = order === 'password_only'
+      ? { type: 'password', password }
+      : { type: 'keyboard_interactive', password, code: code || '', order };
+  }
+
+  msg('Connecting…', '');
+  try {
+    await relayDisconnect(id);
+    await relayConnect(id, { host, port, username, auth });
+    s.mode = 'ssh';
+    const remember = { transport: 'ssh', host, port, username, authMethod: method };
+    if (method === 'password') remember.authOrder = root.querySelector(`#rl-f-order-${id}`).value;
+    if (method === 'key') remember.keyPath = root.querySelector(`#rl-f-keypath-${id}`).value.trim();
+    saveCfg(id, remember);
+    goDash();
+  } catch (err) {
+    msg('Connect failed: ' + (err?.message ?? err), 'err');
+  }
+}
+
+function wireDashboard(id, root) {
+  const s = st(id);
+  s.root = root;
+  const disc = root.querySelector(`#rl-disc-${id}`);
+  if (disc) disc.addEventListener('click', () => doDisconnect(id, root));
+}
+
+async function doDisconnect(id, root) {
+  stopPoll(id); stopEcg(id); stopClock(id);
+  await relayDisconnect(id);
+  clearRelayProbe(id);
+  const s = st(id);
+  s.lastBlock = null; s.lastBlockTs = 0; s.blockTimes = []; s.active = false;
+  s.hidden = false; s.connectedAt = 0;
+  renderConnect(id, root, 'Disconnected.', 'ok');
+}
+
+// ---- lifecycle -------------------------------------------------------------
+async function mountRelay(id, root) {
+  ensureStyle();
+  const s = st(id);
+  s.root = root;
+  if (s.active && (s.mode === 'local' || (await relayIsConnected(id)))) {
+    // Returning to the tab: the poll has kept running in the background, so
+    // blockTimes / density are already current. Re-render and resume rendering.
+    s.hidden = false;
+    if (!s.connectedAt) s.connectedAt = Date.now();
+    root.innerHTML = renderDashboard(id);
+    wireDashboard(id, root);
+    if (!s.timer) startPoll(id);   // keep the existing background poll if alive
+    startEcg(id); startClock(id);
+    loadWorldMap().then(() => paintMap(id)); paintMap(id);
+    return;
+  }
+  s.active = false;
+  renderConnect(id, root);
+}
+
+// Leaving the tab: stop only the visible animations. The poll keeps running in
+// the background so data keeps accumulating with no gap on return.
+function unmountRelay(id) {
+  const s = st(id);
+  s.hidden = true;
+  stopEcg(id); stopClock(id);
+}
+
+export function mountRelay1(root) { return mountRelay('relay1', root); }
+export function unmountRelay1() { return unmountRelay('relay1'); }
+export function mountRelay2(root) { return mountRelay('relay2', root); }
+export function unmountRelay2() { return unmountRelay('relay2'); }

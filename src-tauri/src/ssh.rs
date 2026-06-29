@@ -384,3 +384,106 @@ impl SshSession {
         Ok(ch)
     }
 }
+
+
+// ===========================================================================
+// Relay monitoring: independent SSH sessions, keyed by relay id.
+//
+// Held in a SEPARATE managed state (RelaySshState) from the primary SshState so
+// the BP connection is never touched. Each relay tab owns one entry in the map
+// (e.g. "relay1", "relay2") and runs read-only Prometheus scrapes over it. The
+// auth path reuses the same SshSession::connect_* methods as the primary.
+// Safe: this block adds new items only and changes nothing above.
+// ===========================================================================
+
+/// Shared connect dispatch, reused by the relay connect command. Mirrors the
+/// match in `ssh_connect` exactly (the primary path is left untouched).
+async fn connect_session(params: ConnectParams) -> anyhow::Result<SshSession> {
+    match params.auth {
+        AuthMethod::Key { path, passphrase } => {
+            SshSession::connect_key(
+                &params.host,
+                params.port,
+                &params.username,
+                &path,
+                passphrase.as_deref(),
+            )
+            .await
+        }
+        AuthMethod::Password { password } => {
+            SshSession::connect_password(&params.host, params.port, &params.username, &password)
+                .await
+        }
+        AuthMethod::KeyboardInteractive {
+            password,
+            code,
+            order,
+        } => {
+            SshSession::connect_keyboard_interactive(
+                &params.host,
+                params.port,
+                &params.username,
+                &password,
+                &code,
+                order,
+            )
+            .await
+        }
+        AuthMethod::Agent => {
+            SshSession::connect_agent(&params.host, params.port, &params.username).await
+        }
+    }
+}
+
+/// Managed Tauri state: independent relay sessions keyed by relay id, held
+/// alongside (never replacing) the primary SshState.
+pub struct RelaySshState(pub Arc<Mutex<std::collections::HashMap<String, SshSession>>>);
+
+impl Default for RelaySshState {
+    fn default() -> Self {
+        RelaySshState(Arc::new(Mutex::new(std::collections::HashMap::new())))
+    }
+}
+
+#[tauri::command]
+pub async fn relay_ssh_connect(
+    state: tauri::State<'_, RelaySshState>,
+    id: String,
+    params: ConnectParams,
+) -> Result<bool, String> {
+    let session = connect_session(params).await.map_err(|e| e.to_string())?;
+    state.0.lock().await.insert(id, session);
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn relay_ssh_run(
+    state: tauri::State<'_, RelaySshState>,
+    id: String,
+    command: String,
+) -> Result<CommandResult, String> {
+    let mut guard = state.0.lock().await;
+    let session = guard
+        .get_mut(&id)
+        .ok_or_else(|| format!("relay '{id}' not connected"))?;
+    session.run(&command).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn relay_ssh_disconnect(
+    state: tauri::State<'_, RelaySshState>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(mut session) = state.0.lock().await.remove(&id) {
+        session.disconnect().await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn relay_ssh_is_connected(
+    state: tauri::State<'_, RelaySshState>,
+    id: String,
+) -> Result<bool, String> {
+    Ok(state.0.lock().await.contains_key(&id))
+}

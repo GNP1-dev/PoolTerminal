@@ -62,8 +62,7 @@ export function getCachedGeo(ip) {
  * Resolve any IPs not already in cache via a single batch call.
  * Returns when done (whether successful or not).
  */
-export async function lookupGeoBatch(ips, runner) {
-  const run = runner || runCmd;
+export async function lookupGeoBatch(ips) {
   const need = [...new Set(ips)].filter(
     (ip) => ip && !cache.has(ip) && !isPrivateIp(ip)
   );
@@ -80,7 +79,7 @@ export async function lookupGeoBatch(ips, runner) {
 
   let out;
   try {
-    out = await run(cmd);
+    out = await runCmd(cmd);
   } catch (err) {
     console.warn('[geo] batch SSH failure:', err.message);
     return;
@@ -119,10 +118,8 @@ export async function lookupGeoBatch(ips, runner) {
 /**
  * Resolve our own node's public location. Cached after first call.
  */
-export async function getOwnLocation(runner, key) {
-  const run = runner || runCmd;
-  const selfKey = key || SELF_KEY;
-  if (cache.has(selfKey)) return cache.get(selfKey);
+export async function getOwnLocation() {
+  if (cache.has(SELF_KEY)) return cache.get(SELF_KEY);
 
   const cmd =
     `curl -sf --max-time 4 ` +
@@ -130,7 +127,7 @@ export async function getOwnLocation(runner, key) {
 
   let out;
   try {
-    out = await run(cmd);
+    out = await runCmd(cmd);
   } catch (err) {
     console.warn('[geo] self SSH failure:', err.message);
     return null;
@@ -149,10 +146,10 @@ export async function getOwnLocation(runner, key) {
       city:        data.city,
       as:          data.as,
     };
-    cache.set(selfKey,    loc);
+    cache.set(SELF_KEY,    loc);
     cache.set(data.query,  loc);
     saveCache();
-    console.log(`[geo] self (${selfKey}): ${loc.city}, ${loc.country} (${loc.ip})`);
+    console.log(`[geo] self: ${loc.city}, ${loc.country} (${loc.ip})`);
     return loc;
   } catch (err) {
     console.warn('[geo] self parse failed:', err.message);

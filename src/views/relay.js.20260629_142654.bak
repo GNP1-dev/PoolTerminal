@@ -1,0 +1,685 @@
+/**
+ * PoolTerminal — Relay monitor view (Relay 1 / Relay 2).
+ *
+ * A rich, BP-dashboard-style node-health view driven SOLELY by the relay's own
+ * cardano-node (see data/relay-probe.js): auto-discovered process + Prometheus
+ * scrape, over an independent SSH session or locally. Nothing here touches
+ * Koios, db-sync, Blockfrost, or the cache — it shares no state with the BP view.
+ *
+ * BP-only sections (block production, KES, opcert, upcoming/leader slots) are
+ * deliberately omitted: a relay holds no keys and forges nothing.
+ *
+ * Connect screen mirrors the BP login's auth choices (password / 2FA / SSH key /
+ * SSH agent) and remembers host/port/user/transport/method/order — never the
+ * password, OTP, or key passphrase. The connect screen is always shown first on
+ * each app launch; once connected, switching tabs resumes without re-asking.
+ */
+
+import { speedoSVG, setSpeedo, thermoHTML, setThermo } from '../ui/now-gauges.js';
+import {
+  relayConnect, relayDisconnect, relayIsConnected,
+  relaySnapshot, clearRelayProbe,
+} from '../data/relay-probe.js';
+
+const LABEL = { relay1: 'Relay 1', relay2: 'Relay 2' };
+const POLL_MS = 2000;
+const MEM_CAP_BYTES = 24 * 1e9;     // thermometer full-scale (~24 GB)
+const TIP_STALL_MS = 90_000;        // no new block in this long → not "at tip"
+const CFG_KEY = (id) => `pt.relay.${id}.v1`;
+
+// ---- per-relay runtime state ----------------------------------------------
+const S = {};
+function st(id) {
+  return (S[id] ||= {
+    root: null, timer: null, mode: 'ssh', active: false,
+    lastBlock: null, lastBlockTs: 0,
+    blockTimes: [], ecgRaf: null,
+  });
+}
+
+function loadCfg(id) {
+  try { return JSON.parse(localStorage.getItem(CFG_KEY(id))) || null; } catch { return null; }
+}
+function saveCfg(id, cfg) {
+  try { localStorage.setItem(CFG_KEY(id), JSON.stringify(cfg)); } catch { /* ignore */ }
+}
+
+// ---- formatting helpers ----------------------------------------------------
+function fmtInt(n) { return n == null ? '–' : Math.round(n).toLocaleString(); }
+function fmtBytes(b) {
+  if (b == null) return '–';
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+  return b + ' B';
+}
+function fmtUptime(startUnix) {
+  if (!startUnix) return '–';
+  let s = Math.floor(Date.now() / 1000) - startUnix;
+  if (s < 0) s = 0;
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function healthColor(score) {
+  if (score == null) return '#6f7d99';
+  if (score >= 80) return '#5dff9b';
+  if (score >= 50) return '#ffc24a';
+  return '#ff5a3c';
+}
+
+// ---- styles (namespaced .rl-*, mirroring the .n2 dashboard look) -----------
+const STYLE_ID = 'rl-style';
+function ensureStyle() {
+  if (document.getElementById(STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = STYLE_ID;
+  el.textContent = `
+    .rl-wrap { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px 2px 6px; }
+    .rl-panel { background:linear-gradient(180deg,#0a0f1c,#070b15); border:2px solid rgba(150,182,235,.6); border-radius:13px; box-shadow:0 1px 5px rgba(0,0,0,.45); }
+    .rl-lbl { font-size:12px; letter-spacing:.7px; color:var(--pt-accent-blue-bright,#7BB0F5); text-transform:uppercase; font-weight:600; }
+    .rl-muted { color:var(--pt-text-muted,#6f7d99); }
+
+    /* hero */
+    .rl-hero { padding:10px 14px 12px; display:flex; flex-direction:column; gap:9px; }
+    .rl-hero-strip { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding-bottom:8px; border-bottom:1px solid rgba(135,165,215,.24); }
+    .rl-name { font-weight:800; font-size:17px; letter-spacing:.5px; color:#e6edf3; display:flex; align-items:center; gap:9px; }
+    .rl-dot { width:11px; height:11px; border-radius:50%; box-shadow:0 0 9px currentColor; }
+    .rl-badge { font-size:11px; font-family:ui-monospace,monospace; color:var(--pt-text-secondary,#9fb0d0); background:rgba(120,150,200,.08); border:1px solid rgba(120,150,200,.16); border-radius:7px; padding:2px 8px; }
+    .rl-hero-actions { display:flex; align-items:center; gap:10px; }
+    .rl-btn { font:600 11px system-ui; letter-spacing:.4px; color:#cfe0ff; background:rgba(120,150,200,.10); border:1px solid rgba(135,165,215,.4); border-radius:8px; padding:5px 11px; cursor:pointer; }
+    .rl-btn:hover { background:rgba(120,150,200,.20); }
+    .rl-btn-danger { color:#ffd2cb; border-color:rgba(255,90,60,.5); background:rgba(255,90,60,.08); }
+    .rl-btn-danger:hover { background:rgba(255,90,60,.16); }
+    .rl-btn-go { color:#0a0f1c; background:#5dff9b; border-color:#5dff9b; font-weight:700; }
+    .rl-btn-go:hover { background:#7dffb1; }
+
+    .rl-tipline { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--pt-text-secondary,#9fb0d0); flex-wrap:wrap; }
+    .rl-attip { font-weight:700; letter-spacing:1px; }
+    .rl-tip-sep { color:rgba(120,150,200,.3); }
+
+    .rl-hero-main { display:flex; align-items:stretch; gap:16px; }
+    .rl-hero-trace { flex:1 1 auto; min-width:0; display:flex; align-items:center; background:rgba(8,12,22,.6); border:1px solid rgba(135,165,215,.18); border-radius:9px; overflow:hidden; }
+    .rl-hero-health { flex:0 0 auto; border-left:1px solid rgba(135,165,215,.24); padding-left:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:96px; }
+    .rl-hero-health .v { font-size:31px; font-weight:800; line-height:1; text-shadow:0 0 16px currentColor; }
+    .rl-hero-health .u { font-size:10px; color:var(--pt-text-muted,#6f7d99); letter-spacing:1px; margin-top:3px; }
+
+    /* gauge deck */
+    .rl-deck { display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:12px; }
+    .rl-cell { padding:10px 10px 9px; display:flex; flex-direction:column; align-items:center; }
+    .rl-cell .rl-lbl { margin-bottom:6px; }
+    .rl-val { font-family:ui-monospace,monospace; font-weight:700; font-size:17px; margin-top:6px; color:#e6edf3; }
+    .rl-sub { font-size:11px; color:var(--pt-text-muted,#6f7d99); margin-top:2px; text-align:center; }
+    .rl-big { font-family:ui-monospace,monospace; font-weight:800; font-size:24px; color:#36e0d4; text-shadow:0 0 14px rgba(54,224,212,.45); line-height:1; margin-top:4px; }
+
+    /* bottom row */
+    .rl-bottom { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:stretch; }
+    .rl-bp { padding:11px 14px; display:flex; flex-direction:column; gap:9px; }
+    .rl-bp-row { display:flex; align-items:center; gap:9px; font-size:12px; }
+    .rl-bp-k { width:62px; color:var(--pt-text-muted,#6f7d99); white-space:nowrap; text-transform:uppercase; letter-spacing:.5px; font-size:10px; }
+    .rl-bp-track { flex:1; height:7px; background:rgba(120,150,200,.12); border-radius:4px; overflow:hidden; }
+    .rl-bp-bar { display:block; height:100%; width:0; border-radius:4px; transition:width .5s ease; }
+    .rl-bp-v { width:46px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; color:#e6edf3; }
+
+    .rl-info-grid { display:grid; grid-template-columns:auto 1fr; gap:5px 12px; font-size:12px; padding:11px 14px; }
+    .rl-info-grid .k { color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:.5px; font-size:10px; align-self:center; }
+    .rl-info-grid .v { font-family:ui-monospace,monospace; color:#e6edf3; word-break:break-all; }
+
+    .rl-note { font-size:11px; line-height:1.5; color:var(--pt-text-secondary,#9fb0d0); padding:10px 14px; }
+    .rl-note b { color:var(--pt-accent-blue-bright,#7BB0F5); font-weight:700; }
+
+    /* live ECG pulse (one beat per block the relay observes, scrolling over a 5-min window) */
+    .rl-ecg { display:block; width:100%; height:52px; }
+    .rl-ecg-line { transition:stroke .5s; }
+    .rl-ecg-base { stroke:rgba(120,150,200,.18); stroke-width:1; }
+
+    /* connect screen */
+    .rl-connect { max-width:460px; margin:26px auto; display:flex; flex-direction:column; gap:13px; padding:22px; }
+    .rl-connect h2 { margin:0; font-size:19px; color:#e6edf3; }
+    .rl-seg { display:flex; gap:0; border:1px solid rgba(135,165,215,.4); border-radius:9px; overflow:hidden; }
+    .rl-seg button { flex:1; padding:9px; background:transparent; border:0; color:var(--pt-text-secondary,#9fb0d0); font:600 12px system-ui; cursor:pointer; }
+    .rl-seg button.on { background:rgba(123,176,245,.18); color:#cfe0ff; }
+    .rl-field { display:flex; flex-direction:column; gap:4px; }
+    .rl-field label { font-size:11px; color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:.5px; }
+    .rl-field input, .rl-field select { background:#0a0f1c; border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:9px 11px; color:#e6edf3; font-family:ui-monospace,monospace; font-size:13px; }
+    .rl-field input:focus, .rl-field select:focus { outline:none; border-color:var(--pt-accent-blue-bright,#7BB0F5); }
+    .rl-field input::placeholder { color:rgba(159,176,208,.28); }
+    .rl-row2 { display:grid; grid-template-columns:1fr 110px; gap:10px; }
+    .rl-msg { font-size:12px; min-height:16px; }
+    .rl-msg.err { color:#ff7a66; }
+    .rl-msg.ok { color:#5dff9b; }
+
+    @media (max-width:1040px) {
+      .rl-deck { grid-template-columns:1fr 1fr 1fr; }
+      .rl-bottom { grid-template-columns:1fr; }
+      .rl-hero-main { flex-wrap:wrap; }
+    }
+  `;
+  document.head.appendChild(el);
+}
+
+// ---- live ECG pulse: one beat per block the relay observes, scrolling -------
+// Mirrors the BP chain-pulse ECG behaviour (a QRS complex planted per real
+// block, scrolling left across a fixed time window) but self-contained and fed
+// by the blocks THIS relay sees — so it reflects actual block production rather
+// than a decorative loop.
+const ECG_W = 600, ECG_H = 52, ECG_BL = ECG_H * 0.56;
+const ECG_WINDOW = 300;     // seconds visible (5 minutes), like the BP 5m window
+
+function ecgQRS(cx) {
+  const BL = ECG_BL, H = ECG_H;
+  const R = H * 0.44, Q = H * 0.12, Sd = H * 0.20, P = H * 0.10, T = H * 0.14;
+  return `L${(cx - 11).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx - 8).toFixed(1)},${(BL - P).toFixed(1)} `
+       + `L${(cx - 5).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx - 3).toFixed(1)},${(BL + Q).toFixed(1)} `
+       + `L${(cx).toFixed(1)},${(BL - R).toFixed(1)} `
+       + `L${(cx + 3).toFixed(1)},${(BL + Sd).toFixed(1)} `
+       + `L${(cx + 5).toFixed(1)},${BL.toFixed(1)} `
+       + `L${(cx + 8).toFixed(1)},${(BL - T).toFixed(1)} `
+       + `L${(cx + 11).toFixed(1)},${BL.toFixed(1)} `;
+}
+
+function buildEcg(times, now) {
+  const pps = ECG_W / ECG_WINDOW;             // pixels (user units) per second
+  const xs = times
+    .map((t) => ECG_W - (now - t) * pps)        // newest at the right edge, scrolling left
+    .filter((x) => x >= -14 && x <= ECG_W + 14)
+    .sort((a, b) => a - b);
+  let d = `M0,${ECG_BL.toFixed(1)} `;
+  let cursor = 0;
+  for (const cx of xs) {
+    const start = cx - 11;
+    if (start > cursor) d += `L${start.toFixed(1)},${ECG_BL.toFixed(1)} `;
+    d += ecgQRS(cx);
+    cursor = cx + 11;
+  }
+  if (cursor < ECG_W) d += `L${ECG_W},${ECG_BL.toFixed(1)} `;
+  return d;
+}
+
+function renderTrace(id) {
+  return `<svg class="rl-ecg" viewBox="0 0 ${ECG_W} ${ECG_H}" preserveAspectRatio="none">
+      <defs><filter id="rl-ecg-glow-${id}" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter></defs>
+      <line class="rl-ecg-base" x1="0" y1="${ECG_BL}" x2="${ECG_W}" y2="${ECG_BL}"/>
+      <path class="rl-ecg-line" id="rl-ecg-${id}" fill="none" stroke="#6f7d99" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"
+            filter="url(#rl-ecg-glow-${id})" d="M0,${ECG_BL} L${ECG_W},${ECG_BL}"/>
+    </svg>`;
+}
+
+function ecgFrame(id) {
+  const s = st(id);
+  const path = s.root && s.root.querySelector(`#rl-ecg-${id}`);
+  if (!path) { s.ecgRaf = null; return; }
+  const now = Date.now() / 1000;
+  s.blockTimes = s.blockTimes.filter((t) => now - t <= ECG_WINDOW + 2);
+  path.setAttribute('d', buildEcg(s.blockTimes, now));
+  s.ecgRaf = requestAnimationFrame(() => ecgFrame(id));
+}
+function startEcg(id) { const s = st(id); if (!s.ecgRaf) s.ecgRaf = requestAnimationFrame(() => ecgFrame(id)); }
+function stopEcg(id) { const s = st(id); if (s.ecgRaf) { cancelAnimationFrame(s.ecgRaf); s.ecgRaf = null; } }
+
+// ---- dashboard render ------------------------------------------------------
+function renderDashboard(id) {
+  const s = st(id);
+  const cfg = loadCfg(id) || {};
+  const where = s.mode === 'local' ? 'this machine' : (cfg.host || '–');
+  return `
+    <div class="rl-wrap">
+      <div class="rl-panel rl-hero">
+        <div class="rl-hero-strip">
+          <div class="rl-name">
+            <span class="rl-dot" id="rl-dot-${id}" style="color:#6f7d99;background:#6f7d99"></span>
+            ${LABEL[id]}
+            <span class="rl-badge" id="rl-where-${id}">${s.mode === 'local' ? 'LOCAL' : 'SSH'} · ${where}</span>
+          </div>
+          <div class="rl-hero-actions">
+            <span class="rl-badge" id="rl-ver-${id}">–</span>
+            <button class="rl-btn rl-btn-danger" id="rl-disc-${id}" type="button">Disconnect</button>
+          </div>
+        </div>
+        <div class="rl-tipline">
+          <span class="rl-attip" id="rl-tipstate-${id}" style="color:#6f7d99">CONNECTING…</span>
+          <span class="rl-tip-sep">·</span>
+          <span>block <b id="rl-tipblock-${id}" style="color:#e6edf3">–</b></span>
+          <span class="rl-tip-sep">·</span>
+          <span>epoch <b id="rl-tipepoch-${id}" style="color:#e6edf3">–</b> / slot <b id="rl-tipslot-${id}" style="color:#e6edf3">–</b></span>
+          <span class="rl-tip-sep">·</span>
+          <span id="rl-tipage-${id}" class="rl-muted">–</span>
+        </div>
+        <div class="rl-hero-main">
+          <div class="rl-hero-trace" id="rl-trace-${id}">${renderTrace(id)}</div>
+          <div class="rl-hero-health" title="Overall relay health (0-100): node up, tip advancing, peers connected.">
+            <div class="v" id="rl-health-${id}" style="color:#6f7d99">–</div>
+            <div class="u">HEALTH</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rl-deck">
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Tip</div>
+          <div class="rl-big" id="rl-block-${id}">–</div>
+          <div class="rl-sub" id="rl-blocksub-${id}">block height</div>
+        </div>
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Density</div>
+          ${speedoSVG({ id: `rl-spd-dens-${id}`, color: '#7BB0F5', min: 0, max: 6, ticks: 12, major: 3 })}
+          <div class="rl-val" id="rl-dens-${id}">–</div>
+        </div>
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Peers</div>
+          ${speedoSVG({ id: `rl-spd-peers-${id}`, color: '#36e0d4', min: 0, max: 100, ticks: 10, major: 5 })}
+          <div class="rl-val" id="rl-peers-${id}">–</div>
+          <div class="rl-sub">in + out established</div>
+        </div>
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Mempool</div>
+          <div class="rl-big" id="rl-mptx-${id}" style="color:#ffc24a;text-shadow:0 0 14px rgba(255,194,74,.4)">–</div>
+          <div class="rl-sub"><span id="rl-mpbytes-${id}">–</span> · txs in mempool</div>
+        </div>
+        <div class="rl-panel rl-cell">
+          <div class="rl-lbl">Memory</div>
+          ${thermoHTML({ id: `rl-thermo-${id}`, color: '#ff8a5c', ticks: [{ frac: 0.25, label: '6G' }, { frac: 0.5, label: '12G' }, { frac: 0.75, label: '18G' }] })}
+          <div class="rl-val" id="rl-mem-${id}">–</div>
+        </div>
+      </div>
+
+      <div class="rl-bottom">
+        <div class="rl-panel rl-bp">
+          <div class="rl-lbl">Peers</div>
+          ${bpRow('rl-pin', id, '#36e0d4')}
+          ${bpRow('rl-pout', id, '#5dff9b')}
+          ${bpRow('rl-pdup', id, '#7BB0F5')}
+          <div style="height:1px;background:rgba(135,165,215,.16);margin:2px 0"></div>
+          ${bpRow('rl-pcold', id, '#6f8bd0')}
+          ${bpRow('rl-pwarm', id, '#ffc24a')}
+          ${bpRow('rl-phot', id, '#ff5a3c')}
+        </div>
+        <div class="rl-panel">
+          <div class="rl-lbl" style="padding:11px 14px 0">Node</div>
+          <div class="rl-info-grid">
+            <span class="k">Version</span><span class="v" id="rl-i-ver-${id}">–</span>
+            <span class="k">Transport</span><span class="v" id="rl-i-mode-${id}">–</span>
+            <span class="k">PID</span><span class="v" id="rl-i-pid-${id}">–</span>
+            <span class="k">Node port</span><span class="v" id="rl-i-nport-${id}">–</span>
+            <span class="k">Prom port</span><span class="v" id="rl-i-pport-${id}">–</span>
+            <span class="k">Uptime</span><span class="v" id="rl-i-up-${id}">–</span>
+            <span class="k">Role</span><span class="v" id="rl-i-role-${id}">–</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rl-panel rl-note">
+        <b>How this is collected:</b> every reading on this tab comes straight from
+        ${LABEL[id]}'s own cardano-node — its process is auto-discovered and its
+        Prometheus endpoint scraped ${s.mode === 'local' ? 'locally on this machine' : 'over a dedicated SSH session'}.
+        Nothing here uses Koios, db-sync, or Blockfrost, and it is fully independent
+        of your block-producer view. Live only — nothing from this tab is cached.
+      </div>
+    </div>`;
+}
+
+function bpRow(key, id, color) {
+  const names = {
+    'rl-pin': 'In', 'rl-pout': 'Out', 'rl-pdup': 'Duplex',
+    'rl-pcold': 'Cold', 'rl-pwarm': 'Warm', 'rl-phot': 'Hot',
+  };
+  return `<div class="rl-bp-row">
+      <span class="rl-bp-k">${names[key]}</span>
+      <span class="rl-bp-track"><span class="rl-bp-bar" id="${key}-bar-${id}" style="background:${color}"></span></span>
+      <span class="rl-bp-v" id="${key}-v-${id}">–</span>
+    </div>`;
+}
+
+// ---- paint (per poll) ------------------------------------------------------
+function paint(id, snap) {
+  const s = st(id);
+  const root = s.root;
+  if (!root) return;
+  const q = (sel) => root.querySelector(sel);
+  const set = (sel, val) => { const e = q(sel); if (e) e.textContent = val; };
+
+  const probe = snap.probe || {};
+  const h = snap.health || {};
+  const healthy = h.ok === true;
+
+  // --- block / tip tracking + ECG beats (one per observed new block) ---
+  const now = Date.now();
+  if (healthy && h.blockNum != null) {
+    if (s.lastBlock == null) { s.lastBlock = h.blockNum; s.lastBlockTs = now; s.blockTimes.push(now / 1000); }
+    else if (h.blockNum > s.lastBlock) {
+      const beats = Math.min(h.blockNum - s.lastBlock, 3);
+      for (let i = 0; i < beats; i++) s.blockTimes.push(now / 1000 - i * 0.4);
+      s.lastBlock = h.blockNum; s.lastBlockTs = now;
+    }
+  }
+
+  // --- health score ---
+  let score = 0, tipFresh = false;
+  if (healthy) {
+    const age = s.lastBlockTs ? now - s.lastBlockTs : Infinity;
+    tipFresh = age < TIP_STALL_MS;
+    const peersOk = (h.outbound || 0) > 0 && ((h.inbound || 0) + (h.peersHot || 0)) > 0;
+    score = 40;
+    if (tipFresh) score += 35;
+    if (peersOk) score += 20;
+    if ((h.density || 0) > 0.02) score += 5;
+    score = Math.min(100, score);
+  }
+  const col = healthColor(healthy ? score : null);
+
+  // --- ECG colour + status dot + health number ---
+  const ekgCol = healthy ? col : '#ff5a3c';
+  const ecg = q(`#rl-ecg-${id}`);
+  if (ecg) ecg.style.stroke = ekgCol;
+  const dot = q(`#rl-dot-${id}`);
+  if (dot) { dot.style.color = col; dot.style.background = col; }
+  const hv = q(`#rl-health-${id}`);
+  if (hv) { hv.textContent = healthy ? score : '–'; hv.style.color = col; }
+
+  // --- tip line ---
+  const tipstate = q(`#rl-tipstate-${id}`);
+  if (tipstate) {
+    if (!healthy) { tipstate.textContent = 'UNREACHABLE'; tipstate.style.color = '#ff5a3c'; }
+    else if (tipFresh) { tipstate.textContent = 'AT TIP'; tipstate.style.color = '#5dff9b'; }
+    else { tipstate.textContent = 'STALLED'; tipstate.style.color = '#ffc24a'; }
+  }
+  set(`#rl-tipblock-${id}`, fmtInt(h.blockNum));
+  set(`#rl-tipepoch-${id}`, h.epoch == null ? '–' : h.epoch);
+  set(`#rl-tipslot-${id}`, fmtInt(h.slotInEpoch));
+  const ageEl = q(`#rl-tipage-${id}`);
+  if (ageEl) {
+    const age = s.lastBlockTs ? Math.floor((now - s.lastBlockTs) / 1000) : null;
+    ageEl.textContent = healthy ? (age == null ? 'just connected' : `last block ${age}s ago`)
+                                : (h.reason ? `unreachable (${h.reason})` : 'unreachable');
+  }
+
+  // --- version badge ---
+  set(`#rl-ver-${id}`, probe.version ? `v${probe.version}` : '–');
+
+  // --- deck ---
+  set(`#rl-block-${id}`, fmtInt(h.blockNum));
+  const densPct = h.density != null ? h.density * 100 : null;
+  set(`#rl-dens-${id}`, densPct == null ? '–' : densPct.toFixed(2) + '%');
+  setSpeedo(root, `rl-spd-dens-${id}`, densPct == null ? 0 : densPct / 6);
+
+  const established = (h.inbound || 0) + (h.outbound || 0);
+  set(`#rl-peers-${id}`, healthy ? String(established) : '–');
+  setSpeedo(root, `rl-spd-peers-${id}`, established / 100);
+
+  set(`#rl-mptx-${id}`, h.mempoolTxs == null ? '–' : h.mempoolTxs);
+  set(`#rl-mpbytes-${id}`, fmtBytes(h.mempoolBytes));
+
+  set(`#rl-mem-${id}`, fmtBytes(h.rssBytes));
+  setThermo(root, `rl-thermo-${id}`, (h.rssBytes || 0) / MEM_CAP_BYTES, '#ff8a5c');
+
+  // --- peers detail bars ---
+  const bar = (key, val, max) => {
+    const b = q(`#${key}-bar-${id}`); const v = q(`#${key}-v-${id}`);
+    if (v) v.textContent = val == null ? '–' : val;
+    if (b) b.style.width = Math.max(0, Math.min(100, ((val || 0) / max) * 100)).toFixed(0) + '%';
+  };
+  bar('rl-pin', h.inbound, 80);
+  bar('rl-pout', h.outbound, 80);
+  bar('rl-pdup', h.duplex, 100);
+  bar('rl-pcold', h.peersCold, 150);
+  bar('rl-pwarm', h.peersWarm, 50);
+  bar('rl-phot', h.peersHot, 80);
+
+  // --- node info ---
+  set(`#rl-i-ver-${id}`, probe.version || '–');
+  set(`#rl-i-mode-${id}`, s.mode === 'local' ? 'Local (this machine)' : 'SSH');
+  set(`#rl-i-pid-${id}`, probe.pid || '–');
+  set(`#rl-i-nport-${id}`, probe.nodePort || '–');
+  set(`#rl-i-pport-${id}`, probe.prometheusPort || '–');
+  set(`#rl-i-up-${id}`, fmtUptime(probe.nodeStartUnix));
+  const roleEl = q(`#rl-i-role-${id}`);
+  if (roleEl) {
+    roleEl.textContent = probe.role || '–';
+    roleEl.style.color = probe.role === 'BP' ? '#ffc24a' : '#e6edf3';
+  }
+}
+
+// ---- poll loop -------------------------------------------------------------
+async function tick(id) {
+  const s = st(id);
+  try {
+    const snap = await relaySnapshot(id, s.mode);
+    paint(id, snap);
+  } catch (err) {
+    paint(id, { probe: {}, health: { ok: false, reason: 'error', error: err?.message } });
+  }
+}
+function startPoll(id) {
+  const s = st(id);
+  stopPoll(id);
+  tick(id);
+  s.timer = setInterval(() => tick(id), POLL_MS);
+}
+function stopPoll(id) {
+  const s = st(id);
+  if (s.timer) { clearInterval(s.timer); s.timer = null; }
+}
+
+// ---- connect screen --------------------------------------------------------
+function renderConnect(id, root, msg, msgCls) {
+  ensureStyle();
+  const cfg = loadCfg(id) || {};
+  const mode = cfg.transport || 'ssh';
+  const method = cfg.authMethod || 'password';
+  const order = cfg.authOrder || 'code_then_password';
+  root.innerHTML = `
+    <div class="rl-wrap">
+      <div class="rl-panel rl-connect">
+        <h2>${LABEL[id]}</h2>
+        <div class="rl-muted" style="font-size:12px;line-height:1.5">
+          Monitor a relay's node health. Pick where it runs, then connect. The host,
+          port, user and auth method are remembered for next time — the password,
+          OTP code and key passphrase are never stored.
+        </div>
+
+        <div class="rl-seg" id="rl-seg-${id}">
+          <button data-mode="local" class="${mode === 'local' ? 'on' : ''}">This machine</button>
+          <button data-mode="ssh" class="${mode === 'ssh' ? 'on' : ''}">Remote (SSH)</button>
+        </div>
+
+        <div id="rl-sshfields-${id}" style="display:${mode === 'ssh' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+          <div class="rl-row2">
+            <div class="rl-field"><label>Host / IP</label><input id="rl-f-host-${id}" value="${cfg.host || ''}" autocomplete="off"></div>
+            <div class="rl-field"><label>Port</label><input id="rl-f-port-${id}" value="${cfg.port || 22}" inputmode="numeric"></div>
+          </div>
+          <div class="rl-field"><label>Username</label><input id="rl-f-user-${id}" value="${cfg.username || ''}" autocomplete="off"></div>
+
+          <div class="rl-field">
+            <label>Authentication method</label>
+            <select id="rl-f-method-${id}">
+              <option value="password" ${method === 'password' ? 'selected' : ''}>Password / 2FA</option>
+              <option value="key" ${method === 'key' ? 'selected' : ''}>SSH key file</option>
+              <option value="agent" ${method === 'agent' ? 'selected' : ''}>SSH agent</option>
+            </select>
+          </div>
+
+          <div id="rl-pw-group-${id}" style="display:${method === 'password' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+            <div class="rl-field">
+              <label>Authentication order</label>
+              <select id="rl-f-order-${id}">
+                <option value="code_then_password" ${order === 'code_then_password' ? 'selected' : ''}>OTP code → Password</option>
+                <option value="password_then_code" ${order === 'password_then_code' ? 'selected' : ''}>Password → OTP code</option>
+                <option value="password_only" ${order === 'password_only' ? 'selected' : ''}>Password only (no 2FA)</option>
+              </select>
+            </div>
+            <div class="rl-field"><label>Password</label><input id="rl-f-pass-${id}" type="password" autocomplete="off"></div>
+            <div class="rl-field" id="rl-code-field-${id}" style="display:${order === 'password_only' ? 'none' : 'flex'}">
+              <label>OTP code</label><input id="rl-f-code-${id}" autocomplete="off" inputmode="numeric">
+            </div>
+          </div>
+
+          <div id="rl-key-group-${id}" style="display:${method === 'key' ? 'flex' : 'none'};flex-direction:column;gap:12px">
+            <div class="rl-field"><label>SSH key path</label><input id="rl-f-keypath-${id}" value="${cfg.keyPath || ''}" autocomplete="off"></div>
+            <div class="rl-field"><label>Key passphrase <span style="opacity:.6">(if any)</span></label><input id="rl-f-keypass-${id}" type="password" autocomplete="off"></div>
+          </div>
+
+          <div id="rl-agent-group-${id}" class="rl-muted" style="display:${method === 'agent' ? 'block' : 'none'};font-size:12px;line-height:1.5">
+            Uses your running SSH agent. No password or key file needed here.
+          </div>
+        </div>
+
+        <div id="rl-localnote-${id}" class="rl-muted" style="display:${mode === 'local' ? 'block' : 'none'};font-size:12px;line-height:1.5">
+          Reads the cardano-node running on this machine directly — no SSH, no credentials.
+        </div>
+
+        <div class="rl-msg ${msgCls || ''}" id="rl-msg-${id}">${msg || ''}</div>
+        <button class="rl-btn rl-btn-go" id="rl-go-${id}" type="button" style="padding:10px">Connect</button>
+
+        <div class="rl-note" style="padding:0">
+          <b>How this is collected:</b> readings come only from the relay's own
+          cardano-node (Prometheus over ${mode === 'ssh' ? 'SSH' : 'local exec'}).
+          No Koios, db-sync, or Blockfrost.
+        </div>
+      </div>
+    </div>`;
+
+  // transport toggle
+  root.querySelectorAll(`#rl-seg-${id} button`).forEach((b) => {
+    b.addEventListener('click', () => {
+      const m = b.dataset.mode;
+      root.querySelectorAll(`#rl-seg-${id} button`).forEach((x) => x.classList.toggle('on', x === b));
+      root.querySelector(`#rl-sshfields-${id}`).style.display = m === 'ssh' ? 'flex' : 'none';
+      root.querySelector(`#rl-localnote-${id}`).style.display = m === 'local' ? 'block' : 'none';
+    });
+  });
+
+  // auth-method switch
+  const methodSel = root.querySelector(`#rl-f-method-${id}`);
+  const syncMethod = () => {
+    const m = methodSel.value;
+    root.querySelector(`#rl-pw-group-${id}`).style.display = m === 'password' ? 'flex' : 'none';
+    root.querySelector(`#rl-key-group-${id}`).style.display = m === 'key' ? 'flex' : 'none';
+    root.querySelector(`#rl-agent-group-${id}`).style.display = m === 'agent' ? 'block' : 'none';
+  };
+  methodSel.addEventListener('change', syncMethod);
+
+  // auth-order switch (hide OTP when password-only)
+  const orderSel = root.querySelector(`#rl-f-order-${id}`);
+  orderSel.addEventListener('change', () => {
+    root.querySelector(`#rl-code-field-${id}`).style.display = orderSel.value === 'password_only' ? 'none' : 'flex';
+  });
+
+  root.querySelector(`#rl-go-${id}`).addEventListener('click', () => doConnect(id, root));
+}
+
+async function doConnect(id, root) {
+  const s = st(id);
+  const mode = root.querySelector(`#rl-seg-${id} button.on`)?.dataset.mode || 'ssh';
+  const msg = (t, cls) => { const e = root.querySelector(`#rl-msg-${id}`); if (e) { e.textContent = t; e.className = `rl-msg ${cls || ''}`; } };
+  const goDash = () => {
+    clearRelayProbe(id);
+    s.lastBlock = null; s.lastBlockTs = 0; s.blockTimes = []; s.active = true;
+    root.innerHTML = renderDashboard(id);
+    wireDashboard(id, root);
+    startPoll(id);
+    startEcg(id);
+  };
+
+  if (mode === 'local') {
+    s.mode = 'local';
+    saveCfg(id, { transport: 'local' });
+    goDash();
+    return;
+  }
+
+  const host = root.querySelector(`#rl-f-host-${id}`).value.trim();
+  const port = parseInt(root.querySelector(`#rl-f-port-${id}`).value.trim(), 10) || 22;
+  const username = root.querySelector(`#rl-f-user-${id}`).value.trim();
+  const method = root.querySelector(`#rl-f-method-${id}`).value;
+
+  if (!host || !username) { msg('Host and username are required.', 'err'); return; }
+
+  let auth;
+  if (method === 'agent') {
+    auth = { type: 'agent' };
+  } else if (method === 'key') {
+    const keyPath = root.querySelector(`#rl-f-keypath-${id}`).value.trim();
+    const keyPass = root.querySelector(`#rl-f-keypass-${id}`).value;
+    if (!keyPath) { msg('SSH key path is required.', 'err'); return; }
+    auth = { type: 'key', path: keyPath, passphrase: keyPass || null };
+  } else {
+    const order = root.querySelector(`#rl-f-order-${id}`).value;
+    const password = root.querySelector(`#rl-f-pass-${id}`).value;
+    const code = root.querySelector(`#rl-f-code-${id}`).value.trim();
+    if (!password) { msg('Password is required.', 'err'); return; }
+    if (order !== 'password_only' && !code) { msg('OTP code is required for this order.', 'err'); return; }
+    auth = order === 'password_only'
+      ? { type: 'password', password }
+      : { type: 'keyboard_interactive', password, code: code || '', order };
+  }
+
+  msg('Connecting…', '');
+  try {
+    await relayDisconnect(id);
+    await relayConnect(id, { host, port, username, auth });
+    s.mode = 'ssh';
+    // remember everything EXCEPT secrets (password / OTP / passphrase)
+    const remember = { transport: 'ssh', host, port, username, authMethod: method };
+    if (method === 'password') remember.authOrder = root.querySelector(`#rl-f-order-${id}`).value;
+    if (method === 'key') remember.keyPath = root.querySelector(`#rl-f-keypath-${id}`).value.trim();
+    saveCfg(id, remember);
+    goDash();
+  } catch (err) {
+    msg('Connect failed: ' + (err?.message ?? err), 'err');
+  }
+}
+
+function wireDashboard(id, root) {
+  const s = st(id);
+  s.root = root;
+  const disc = root.querySelector(`#rl-disc-${id}`);
+  if (disc) disc.addEventListener('click', () => doDisconnect(id, root));
+}
+
+async function doDisconnect(id, root) {
+  stopPoll(id);
+  stopEcg(id);
+  await relayDisconnect(id);
+  clearRelayProbe(id);
+  const s = st(id);
+  s.lastBlock = null; s.lastBlockTs = 0; s.blockTimes = []; s.active = false;
+  renderConnect(id, root, 'Disconnected.', 'ok');
+}
+
+// ---- lifecycle -------------------------------------------------------------
+async function mountRelay(id, root) {
+  ensureStyle();
+  const s = st(id);
+  s.root = root;
+
+  // Resume only if this relay was connected earlier in THIS app session.
+  // Always show the connect screen first on a fresh launch.
+  if (s.active && (s.mode === 'local' || (await relayIsConnected(id)))) {
+    root.innerHTML = renderDashboard(id);
+    wireDashboard(id, root);
+    startPoll(id);
+    startEcg(id);
+    return;
+  }
+  s.active = false;
+  renderConnect(id, root);
+}
+
+function unmountRelay(id) {
+  // Stop polling + animation, but keep the SSH session alive so switching tabs is instant.
+  stopPoll(id);
+  stopEcg(id);
+}
+
+export function mountRelay1(root) { return mountRelay('relay1', root); }
+export function unmountRelay1() { return unmountRelay('relay1'); }
+export function mountRelay2(root) { return mountRelay('relay2', root); }
+export function unmountRelay2() { return unmountRelay('relay2'); }

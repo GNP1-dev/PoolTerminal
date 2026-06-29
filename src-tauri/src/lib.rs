@@ -30,6 +30,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(SshState::default())
+        .manage(ssh::RelaySshState::default())
         .setup(|app| {
             // Cache DB lives in the OS-standard app data dir (XDG on Linux).
             let data_dir = app.path().app_data_dir()?;
@@ -45,6 +46,10 @@ pub fn run() {
             ssh::ssh_run,
             ssh::ssh_disconnect,
             ssh::ssh_is_connected,
+            ssh::relay_ssh_connect,
+            ssh::relay_ssh_run,
+            ssh::relay_ssh_disconnect,
+            ssh::relay_ssh_is_connected,
             cache::cache_put_epoch,
             cache::cache_get_epochs,
             cache::cache_put_sample,

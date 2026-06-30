@@ -700,12 +700,16 @@ export function currentBlockProduction() { return _bp; }
 // leadership-schedule` (not cncli, which can carry restore-artifact phantoms).
 
 let _ubCurEpoch = null;     // epoch the cached --current schedule is for
-let _ubCurSlots = null;     // cached --current slots (array) or null
+let _ubCurSlots = null;     // cached --current slots (array when resolved) or null while unresolved
+let _ubCurCheckedAt = 0;    // last time we (re)attempted the --current schedule
+let _ubCurFirstTryAt = 0;   // when --current detection began (drives the "detecting" grace window)
 let _ubNextEpoch = null;    // epoch the cached --next schedule is for
 let _ubNextSlots = null;    // cached --next slots, or null if window not open
 let _ubNextCheckedAt = 0;   // last time we probed --next (retry until window opens)
 
 const UB_NEXT_RETRY_MS = 10 * 60 * 1000;   // re-probe --next every 10 min until it opens
+const UB_CUR_RETRY_MS  = 8 * 1000;         // re-attempt --current at most this often while unresolved
+const UB_CUR_GRACE_MS  = 70 * 1000;        // show "detecting" (not "unavailable") for the first 70s
 
 // Persisted schedule cache (poolterminal.db). The leadership-schedule query is
 // heavy AND its result is fixed for an epoch once the snapshot stabilises, so
@@ -731,16 +735,31 @@ async function saveCachedSchedule(epoch, which, slots) {
 export async function getUpcomingBlocks(currentEpoch) {
   const nowMs = Date.now();
 
-  // CURRENT epoch — use persisted cache if present; else compute once + persist.
+  // CURRENT epoch — load from cache if present, else compute. Until it resolves
+  // to an array we keep retrying: the node socket / cli may not be ready at the
+  // first attempt right after launch, so a slow start shows "detecting" rather
+  // than latching a premature "unavailable".
   if (currentEpoch != null && _ubCurEpoch !== currentEpoch) {
-    _ubCurEpoch = currentEpoch;
+    _ubCurEpoch = currentEpoch;        // new epoch: restart detection
+    _ubCurSlots = null;
+    _ubCurFirstTryAt = 0;
+    _ubCurCheckedAt = 0;
+  }
+  if (currentEpoch != null && !Array.isArray(_ubCurSlots)
+      && nowMs - _ubCurCheckedAt > UB_CUR_RETRY_MS) {
+    _ubCurCheckedAt = nowMs;
+    if (_ubCurFirstTryAt === 0) _ubCurFirstTryAt = nowMs;
     const cached = await loadCachedSchedule(currentEpoch, 'current');
     if (cached !== undefined) {
       _ubCurSlots = cached;
     } else {
       const slots = await leadershipSchedule('current');
-      _ubCurSlots = slots;
-      if (Array.isArray(slots)) await saveCachedSchedule(currentEpoch, 'current', slots);
+      if (Array.isArray(slots)) {
+        _ubCurSlots = slots;
+        await saveCachedSchedule(currentEpoch, 'current', slots);
+      } else {
+        _ubCurSlots = null;   // unresolved; keep retrying until success or grace expiry
+      }
     }
   }
 
@@ -786,6 +805,20 @@ export function isNextEpochWindowOpen() { return Array.isArray(_ubNextSlots); }
 /** Whether the upcoming-blocks data is ready (schedule fetched or cached). For
  *  the loading screen — current-epoch schedule resolved is enough to proceed. */
 export function isUpcomingReady() { return _ubCurSlots !== null && _ubCurSlots !== undefined; }
+
+/** Tri-state for the upcoming-blocks empty UI. 'loading' = current-epoch
+ *  schedule not yet resolved; 'unavailable' = the leadership-schedule could not
+ *  be computed (no VRF signing key, cardano-cli or node socket reachable);
+ *  'ready' = computed (the slot list may legitimately be empty). The schedule
+ *  comes from `cardano-cli query leadership-schedule`, not cncli. */
+export function upcomingScheduleState() {
+  if (Array.isArray(_ubCurSlots)) return 'ready';
+  // Not resolved yet: distinguish "still detecting" (just launched, or retrying
+  // within the grace window) from a genuine, settled "unavailable".
+  if (_ubCurFirstTryAt === 0) return 'loading';
+  if (Date.now() - _ubCurFirstTryAt < UB_CUR_GRACE_MS) return 'loading';
+  return 'unavailable';
+}
 
 
 
@@ -1469,7 +1502,7 @@ export function resetReadModel() {
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;
   _bpProducedAt = 0; _bpProduced = 0; _bpInfoWritten = false;
-  _ubCurEpoch = null; _ubCurSlots = null; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
+  _ubCurEpoch = null; _ubCurSlots = null; _ubCurCheckedAt = 0; _ubCurFirstTryAt = 0; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
   _healthAt = 0;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;

@@ -112,7 +112,7 @@ const N2_HTML = `
     .pt-relay-veil { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(10,14,22,.5); border-radius:inherit; }
     .pt-relay-veil span { font:700 10px ui-monospace,monospace; letter-spacing:1.4px; text-transform:uppercase; color:#8893a8; background:rgba(20,28,40,.82); border:1px solid rgba(150,170,210,.32); border-radius:6px; padding:5px 11px; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,.3); }
     .n2-bp-late .n2-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
-    .n2-ub-panel .pt-ub-body { overflow:visible; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:flex; }
+    .n2-ub-panel .pt-ub-body { overflow-y:auto; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:block; }
     .n2-pp-panel .pt-pp-body { /*peers-scroll*/ overflow-y:auto; overflow-x:hidden; max-height:200px;
       min-height:0; flex:1 1 auto; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }
     .n2-pp-panel .pt-pp-body::-webkit-scrollbar { width:7px; }
@@ -269,10 +269,10 @@ const N2_HTML = `
     <div class="n2-bottom">
       <div class="n2-panel n2-ub-panel">
         <div class="pt-panel-header" style="display:flex;justify-content:space-between;">
-          <span class="pt-panel-title">Upcoming blocks</span>
+          <span class="pt-panel-title" title="Your assigned leader slots for this and next epoch, computed by cardano-cli query leadership-schedule (needs the pool VRF signing key and node socket). Empty if you have no slots, or if that schedule cannot be computed on this connection. Does not use cncli.">Upcoming blocks</span>
           <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
         </div>
-        <div class="pt-ub-body" id="ub-body" data-layout="vertical"></div>
+        <div class="pt-ub-body" id="ub-body"></div>
       </div>
       <div class="n2-panel n2-bp-panel">
         <div class="pt-panel-header"><span class="pt-panel-title">Block propagation</span></div>
@@ -376,10 +376,12 @@ function applyRelayMode() {
 function paintGauges() {
   const root = document;
   applyRelayMode();
-  // Lift the loading overlay once the first real data has arrived.
+  // Lift the loading overlay once the first real data has arrived. Demo mode
+  // has no node Prometheus metrics (getLastMetrics stays null) but does fill the
+  // dashboard from its snapshot, so treat demo as ready or it hangs forever.
   if (!_n2Ready) {
     let haveData = false;
-    try { haveData = getLastMetrics() != null; } catch (e) { haveData = false; }
+    try { haveData = getMode() === 'demo' || getLastMetrics() != null; } catch (e) { haveData = false; }
     if (haveData) {
       _n2Ready = true;
       const ov = document.getElementById('n2-loading');

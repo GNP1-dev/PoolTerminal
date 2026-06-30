@@ -576,26 +576,34 @@
   display: block;
 }
 
-/* Upcoming blocks: progress-bar column + tighter grid (5 cols incl. when) */
-.pt-ub-row { grid-template-columns: 32px 96px auto auto minmax(40px, 1fr) 60px; gap: 10px; }
+/* Upcoming blocks: Block No | progress bar | d:h:m:s | day+time | slot */
+.pt-ub-row { grid-template-columns: 46px minmax(60px, 1fr) 132px 110px 124px; gap: 12px; padding: 8px 14px; }
 .pt-ub-when {
   color: var(--pt-text-primary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .pt-ub-row-next .pt-ub-when { color: var(--pt-accent-blue); }
+.pt-ub-eta { font-weight: 600; }
+.pt-ub-slot { color: var(--pt-text-secondary); text-align: right; }
+/* next-up row: accent wash + left edge so the next block to mint stands out */
+.pt-ub-row-next { box-shadow: inset 3px 0 0 var(--pt-accent-blue-bright); }
+/* next-epoch rows: amber index so they're distinct from current-epoch slots */
+.pt-ub-row-nx .pt-ub-idx { color: #f1c40f; }
 .pt-ub-bar-track {
   width: 100%;
-  height: 6px;
-  background: var(--pt-border);
-  border-radius: 3px;
+  height: 11px;
+  background: rgba(120, 150, 200, 0.14);
+  border: 1px solid rgba(120, 150, 200, 0.18);
+  border-radius: 6px;
   overflow: hidden;
 }
 .pt-ub-bar {
   height: 100%;
-  background: var(--pt-accent-blue);
-  border-radius: 3px;
+  width: 0;
+  background: #36e0d4;
+  border-radius: 6px;
 }
-.pt-ub-row-next .pt-ub-bar { background: var(--pt-accent-blue-bright); }
 
 /* ---- Mempool: stable height regardless of tx count ---- */
 .pt-mp-body {

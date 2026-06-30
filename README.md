@@ -8,7 +8,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > ⚠️ **Early development.** Not yet released. Star to follow progress.
 
-> _Last updated: 29 June 2026_
+> _Last updated: 30 June 2026_
 
 ## What it is
 
@@ -24,7 +24,7 @@ Running a Cardano stake pool produces a torrent of operational data that's locke
 
 Working today:
 
-- **NOW** — Live current-epoch dashboard: chain pulse, tip/sync, KES expiry (with on-disk vs on-chain **operational certificate counter** and a health check), ideal/leader, era badge, mempool, peer counts, and a compact relay map. **Upcoming blocks** lists your assigned leader slots for the current *and* next epoch (once the ~36 h leadership-schedule window opens), each with a live countdown — sourced from the authoritative `cardano-cli` leadership schedule and cached per epoch. Views repaint instantly from cache on return, refreshing live behind.
+- **NOW** — Live current-epoch dashboard: chain pulse, tip/sync, KES expiry (with on-disk vs on-chain **operational certificate counter** and a health check), ideal/leader, era badge, mempool, peer counts, and a compact relay map. **Upcoming blocks** lists your assigned leader slots for the current *and* next epoch (once the ~36 h leadership-schedule window opens) as horizontal rows, next-to-mint first and scrollable, each with a progress bar that fills and warms toward red as the slot nears, a live d:h:m:s countdown, the day/time and slot number — sourced from the authoritative `cardano-cli` leadership schedule and cached per epoch. Views repaint instantly from cache on return, refreshing live behind.
 - **HISTORY** — Full per-epoch table back to your pool's first epoch: blocks, ideal, luck, delegators, active stake, and a colour-coded six-way reward split (delegator reward · pledge · min-fee · margin · **SPO earnings** · total payout), where SPO earnings is the operator's own take per epoch. Charts for blocks-per-epoch and luck.
 - **DELEGATORS** — One data-rich, sortable table of every delegator, merging live stake with a computed **loyalty** ranking (tenure × stake-weight × penalties for defection/withdrawal). Sort by loyalty or stake, dust filter, paginated. **Search by stake address** to jump straight to a delegator and highlight their row, and **copy** any full stake address with one click. Click any delegator for a deep-dive: balance, rewards, withdrawals, DRep flag, and a colourful **pool-movement journey** showing every pool they've delegated to with entry/exit epochs and active stake at each. Each row has two history buttons: **Delegation history** (the pool-movement journey) and **Stake history** — a per-epoch active-stake table (balance, change, running balance going back in time) paired with a running-balance line graph across the delegator's whole history. Stake history works from db-sync, Koios *or* Blockfrost; on db-sync it additionally shows intra-epoch movements (rewards in, withdrawals out). The deep-dive works from db-sync, Koios *or* Blockfrost; the loyalty leaderboard needs db-sync or Blockfrost (Koios can't compute it).
 - **NODE HEALTH** — Host and node-process metrics (CPU, memory, peers, resources) with historical samples.

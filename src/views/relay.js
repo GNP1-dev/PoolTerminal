@@ -96,6 +96,7 @@ function ensureStyle() {
   el.id = STYLE_ID;
   el.textContent = `
     .rl-wrap { flex:1 1 auto; min-height:0; overflow:hidden; display:flex; flex-direction:column; gap:10px; padding:2px 2px 6px; }
+    .rl-wrap-scroll { overflow-y:auto; }
     .rl-panel { background:linear-gradient(180deg,#0a0f1c,#070b15); border:2px solid rgba(150,182,235,.6); border-radius:13px; box-shadow:0 1px 5px rgba(0,0,0,.45); }
     .rl-lbl { font-size:12px; letter-spacing:.7px; color:var(--pt-accent-blue-bright,#7BB0F5); text-transform:uppercase; font-weight:600; }
     .rl-muted { color:var(--pt-text-muted,#6f7d99); }
@@ -197,20 +198,20 @@ function ensureStyle() {
     .pt-needle { transition:transform 1.2s cubic-bezier(.2,.8,.2,1); }
 
     /* connect screen */
-    .rl-connect { max-width:460px; margin:26px auto; display:flex; flex-direction:column; gap:13px; padding:22px; }
-    .rl-connect h2 { margin:0; font-size:19px; color:#e6edf3; }
+    .rl-connect { max-width:460px; margin:14px auto; display:flex; flex-direction:column; gap:9px; padding:16px 20px; }
+    .rl-connect h2 { margin:0; font-size:17px; color:#e6edf3; }
     .rl-seg { display:flex; gap:0; border:1px solid rgba(135,165,215,.4); border-radius:9px; overflow:hidden; }
-    .rl-seg button { flex:1; padding:9px; background:transparent; border:0; color:var(--pt-text-secondary,#9fb0d0); font:600 12px system-ui; cursor:pointer; }
+    .rl-seg button { flex:1; padding:7px; background:transparent; border:0; color:var(--pt-text-secondary,#9fb0d0); font:600 12px system-ui; cursor:pointer; }
     .rl-seg button.on { background:rgba(123,176,245,.18); color:#cfe0ff; }
-    .rl-field { display:flex; flex-direction:column; gap:4px; }
+    .rl-field { display:flex; flex-direction:column; gap:3px; }
     .rl-field label { font-size:11px; color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:.5px; }
-    .rl-field input { background:#0a0f1c; border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:9px 11px; color:#e6edf3; -webkit-text-fill-color:#e6edf3; font-family:ui-monospace,monospace; font-size:13px; }
+    .rl-field input { background:#0a0f1c; border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:7px 11px; color:#e6edf3; -webkit-text-fill-color:#e6edf3; font-family:ui-monospace,monospace; font-size:13px; }
     .rl-field input:focus { outline:none; border-color:var(--pt-accent-blue-bright,#7BB0F5); }
     .rl-field input::placeholder { color:rgba(159,176,208,.28); -webkit-text-fill-color:rgba(159,176,208,.28); }
     /* selects need explicit text-fill + option colours on WebKitGTK or the text is invisible */
     .rl-field select { -webkit-appearance:none; -moz-appearance:none; appearance:none;
       background-color:#16202e; color:#ffffff !important; -webkit-text-fill-color:#ffffff !important;
-      border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:9px 28px 9px 11px;
+      border:1px solid rgba(135,165,215,.35); border-radius:8px; padding:7px 28px 7px 11px;
       font:600 13px ui-monospace,monospace; cursor:pointer;
       background-image:linear-gradient(45deg,transparent 50%,#9fb4cc 50%),linear-gradient(135deg,#9fb4cc 50%,transparent 50%);
       background-position:right 14px center,right 9px center; background-size:5px 5px,5px 5px; background-repeat:no-repeat,no-repeat; }
@@ -838,7 +839,7 @@ function renderConnect(id, root, msg, msgCls) {
   const method = cfg.authMethod || 'password';
   const order = cfg.authOrder || 'code_then_password';
   root.innerHTML = `
-    <div class="rl-wrap">
+    <div class="rl-wrap rl-wrap-scroll">
       <div class="rl-panel rl-connect">
         <h2>${LABEL[id]}</h2>
         <div class="rl-muted" style="font-size:12px;line-height:1.5">

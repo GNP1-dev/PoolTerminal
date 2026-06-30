@@ -273,7 +273,7 @@ const NOW_HTML = `
 
       <div class="pt-panel pt-panel-flex pt-grid-upcoming">
         <div class="pt-panel-header">
-          <span class="pt-panel-title">Upcoming blocks</span>
+          <span class="pt-panel-title" title="Your assigned leader slots for this and next epoch, computed by cardano-cli query leadership-schedule (needs the pool VRF signing key and node socket). Empty if you have no slots, or if that schedule cannot be computed on this connection. Does not use cncli.">Upcoming blocks</span>
           <span class="pt-panel-meta"><span id="ub-count" class="pt-muted">—</span></span>
         </div>
         <div class="pt-ub-body" id="ub-body"></div>
@@ -484,7 +484,7 @@ export function mountNow(canvas) {
         _epochEndMs = Date.now() + secsLeft * 1000;
       }
     }
-    if (_lastUpcoming) renderUpcomingBlocks(_lastUpcoming, { isRelay: isRelayConfirmed() });
+    if (_lastUpcoming) renderUpcomingBlocks(_lastUpcoming, { isRelay: isRelayConfirmed(), scheduleState: readModel.upcomingScheduleState() });
     else if (ubBody) { ubBody.innerHTML = '<div class="pt-ub-empty">Calculating leader schedule…</div>'; if (ubCount) ubCount.textContent = 'calculating…'; }
   } else {
     // First load this connection - the leader schedule query is slow first-time-
@@ -594,7 +594,7 @@ export async function refreshMempool(src, tipBlock) {
 export async function refreshUpcomingBlocks(src) {
   const list = await src.getUpcomingBlocks();
   _lastUpcoming = list;
-  renderUpcomingBlocks(list, { isRelay: isRelayConfirmed() });
+  renderUpcomingBlocks(list, { isRelay: isRelayConfirmed(), scheduleState: readModel.upcomingScheduleState() });
 }
 
 // Epoch-end absolute time (ms). Maintained on every snapshot by updateNowFast.

@@ -16,6 +16,13 @@ let blocks = [];
 let polledAt = 0;
 let maxEtaAtPoll = 1;
 let rafId = null;
+// The progress bar fills on a fixed track equal to the furthest a block can ever
+// be: a full epoch (5 days) plus the ~36h before the current epoch ends when the
+// next-epoch leadership schedule becomes visible = 6.5 days. So the left edge is
+// 6.5 days out (~0%) and the right edge is mint (~100%), and "fullness" always
+// means the same closeness. (The old code divided by the live max ETA, which
+// shrank every poll and pinned the bar near-empty the whole time.)
+const FILL_HORIZON_S = Math.round(6.5 * 24 * 3600);   // 6.5 days = 5d epoch + 36h next-epoch window
 function byId(id) { return document.getElementById(id); }
 function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() &&
@@ -62,6 +69,27 @@ function whenStackHTML(ts) {
   const p = formatWhenParts(ts);
   return `<div class="pt-ub-col-day">${p.day}</div><div class="pt-ub-col-time">${p.time}</div>`;
 }
+/* Full d:h:m:s countdown that always shows seconds so it visibly ticks. */
+function dhms(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const p2 = (x) => String(x).padStart(2, '0');
+  if (d > 0) return `${d}d ${p2(h)}h ${p2(m)}m ${p2(sec)}s`;
+  if (h > 0) return `${h}h ${p2(m)}m ${p2(sec)}s`;
+  if (m > 0) return `${m}m ${p2(sec)}s`;
+  return `${sec}s`;
+}
+/* Bar colour deepens toward red as the mint time approaches. */
+function urgencyColour(liveETA) {
+  return liveETA < 300   ? '#ff2233'   // < 5 min  deep red
+       : liveETA < 3600  ? '#ff4d3a'   // < 1 h    red
+       : liveETA < 21600 ? '#ff8a3c'   // < 6 h    orange
+       : liveETA < 86400 ? '#ffc24a'   // < 1 d    amber
+       :                    '#36e0d4';  // further  teal
+}
 export function renderUpcomingBlocks(list, opts = {}) {
   polledAt = Date.now() / 1000;
   blocks = list.map((b) => ({
@@ -70,7 +98,7 @@ export function renderUpcomingBlocks(list, opts = {}) {
     epoch:       b.epoch,
     nextEpoch:   !!b.nextEpoch,
     etaAtPoll:   b.etaSeconds,
-    atTimestamp: b.atTimestamp || (Math.floor(Date.now() / 1000) + b.etaSeconds),
+    atTimestamp: b.atTimestamp || (Math.floor(polledAt) + b.etaSeconds),
   }));
   maxEtaAtPoll = Math.max(1, ...blocks.map((b) => b.etaAtPoll));
   const body  = byId('ub-body');
@@ -81,9 +109,15 @@ export function renderUpcomingBlocks(list, opts = {}) {
     if (opts.isRelay) {
       count.textContent = 'relay';
       body.innerHTML = '<div class="pt-ub-empty">Operating in relay mode only</div>';
+    } else if (opts.scheduleState === 'unavailable') {
+      count.textContent = 'schedule unavailable';
+      body.innerHTML = '<div class="pt-ub-empty">Leadership schedule unavailable. This panel needs <b>cardano-cli query leadership-schedule</b>, which requires the pool\'s VRF signing key and a reachable node socket on this node.</div>';
+    } else if (opts.scheduleState === 'loading') {
+      count.textContent = 'detecting…';
+      body.innerHTML = '<div class="pt-ub-empty">Detecting upcoming blocks…</div>';
     } else {
       count.textContent = 'none upcoming · next epoch shows ~36h before end';
-      body.innerHTML = '<div class="pt-ub-empty">No upcoming assigned slots.</div>';
+      body.innerHTML = '<div class="pt-ub-empty">No assigned slots this epoch.</div>';
     }
   } else {
     const nextCount = blocks.filter((b) => b.nextEpoch).length;
@@ -109,20 +143,24 @@ export function renderUpcomingBlocks(list, opts = {}) {
       const strip = body.querySelector('.pt-ub-vert');
       if (strip) strip.scrollLeft = strip.scrollWidth;
     } else {
+      // Horizontal rows, next-to-mint first. Each row:
+      //   #Block · progress bar (widens + reddens as mint nears) · d:h:m:s ·
+      //   day+time · slot. The body scrolls when there are more than fit.
       body.innerHTML = blocks
-        .map(
-          (b, i) => `
-          <div class="pt-ub-row${i === 0 ? ' pt-ub-row-next' : ''}">
+        .map((b, i) => {
+          const w = formatWhenParts(b.atTimestamp);
+          const cls = 'pt-ub-row'
+            + (i === 0 ? ' pt-ub-row-next' : '')
+            + (b.nextEpoch ? ' pt-ub-row-nx' : '');
+          return `
+          <div class="${cls}">
             <div class="pt-ub-idx">#${b.index}</div>
-            <div class="pt-ub-when">${formatWhen(b.atTimestamp)}</div>
+            <div class="pt-ub-bar-track"><div class="pt-ub-bar" id="ub-bar-${b.index}" style="width:0%"></div></div>
+            <div class="pt-ub-eta" id="ub-eta-${b.index}">${dhms(b.etaAtPoll)}</div>
+            <div class="pt-ub-when">${w.day} ${w.time}</div>
             <div class="pt-ub-slot">slot ${commas(b.slot)}</div>
-            <div class="pt-ub-epoch" style="font-size:10px;opacity:.7;${b.nextEpoch ? 'color:#f1c40f;' : ''}">${b.nextEpoch ? 'ep ' + b.epoch : 'this ep'}</div>
-            <div class="pt-ub-bar-track">
-              <div class="pt-ub-bar" id="ub-bar-${b.index}" style="width: 0%"></div>
-            </div>
-            <div class="pt-ub-eta" id="ub-eta-${b.index}">${duration(b.etaAtPoll)}</div>
-          </div>`
-        )
+          </div>`;
+        })
         .join('');
     }
   }
@@ -132,22 +170,24 @@ function loop() {
   rafId = requestAnimationFrame(loop);
   if (!blocks.length) return;
   const elapsed   = Date.now() / 1000 - polledAt;
-  const reference = maxEtaAtPoll * 1.15;
   for (const b of blocks) {
     const liveETA = Math.max(0, b.etaAtPoll - elapsed);
     const etaEl   = byId(`ub-eta-${b.index}`);
     const barEl   = byId(`ub-bar-${b.index}`);
-    if (etaEl) etaEl.textContent = duration(liveETA);
+    if (etaEl) etaEl.textContent = dhms(liveETA);
     if (barEl) {
-      const fill = Math.min(100, Math.max(0, (1 - liveETA / reference) * 100));
+      // fill on a fixed horizon: ~0% a horizon away, ~100% just before mint.
+      const fill = Math.min(100, Math.max(0, (1 - liveETA / FILL_HORIZON_S) * 100));
       if (barEl.classList.contains('pt-ub-bar-v')) {
         barEl.style.height = fill.toFixed(1) + '%';
-        // urgency colour: nearer the block, nearer to red (under a day)
-        const c = liveETA < 3600 ? '#ff3344' : liveETA < 21600 ? '#ff7a4c' : liveETA < 86400 ? '#ffc24a' : '#36e0d4';
+        const c = urgencyColour(liveETA);
         barEl.style.background = c;
         barEl.style.boxShadow = '0 0 10px ' + c + '88';
       } else {
         barEl.style.width = fill.toFixed(1) + '%';
+        const c = urgencyColour(liveETA);
+        barEl.style.background = c;
+        barEl.style.boxShadow = '0 0 8px ' + c + '66';
       }
     }
   }

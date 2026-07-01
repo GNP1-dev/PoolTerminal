@@ -29,7 +29,7 @@ const MP_FULL = 90112;   // bytes = one block body (mainnet maxBlockBodySize)
 
 const N2_HTML = `
   <style>
-    .n2-wrap { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px 2px 6px; }
+    .n2-wrap { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; gap:10px; padding:2px 2px 6px; }
     .n2-panel { background:linear-gradient(180deg,#0a0f1c,#070b15); border:2px solid rgba(150,182,235,.6); border-radius:13px; box-shadow:0 1px 5px rgba(0,0,0,.45); }
     .n2-lbl { font-size:var(--pt-text-label,12px); letter-spacing:var(--pt-tracking-label,0.7px); color:var(--pt-accent-blue-bright,#7BB0F5); text-transform:uppercase; font-weight:600; }
 
@@ -94,7 +94,7 @@ const N2_HTML = `
     .n2-mp-host { width:100%; }
 
     /* bottom panels */
-    .n2-bottom { display:grid; grid-template-columns:1.7fr 1fr 1fr; gap:12px; align-items:stretch; flex:1 1 auto; min-height:0; }
+    .n2-bottom { display:grid; grid-template-columns:1.7fr 1fr 1fr; gap:12px; align-items:stretch; flex:1 0 auto; min-height:210px; }
     .n2-bottom .n2-panel { padding:10px 14px; min-height:115px; overflow:visible; display:flex; flex-direction:column; min-width:0; }
     .n2-bp-body { display:flex; flex-direction:column; gap:11px; padding-top:8px; flex:1 1 auto; justify-content:center; }
     .n2-bp-row { display:flex; align-items:center; gap:8px; font-size:12px; }

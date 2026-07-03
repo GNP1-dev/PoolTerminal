@@ -129,11 +129,13 @@ export function setThermo(root, id, frac, color) {
 const TANK_COL = ['#36e0d4', '#ffc24a', '#ff5a3c', '#ff3a8c'];
 export function tanksHTML(opts) {
   const n = (opts && opts.ntanks) || 3;
+  const caps = (opts && opts.caps) || null;   /*tanks-caps-v47*/
   let s = `<div class="pt-tanks" id="pt-tanks">`;
   for (let i = 0; i < n; i++) {
     const c = TANK_COL[Math.min(i, TANK_COL.length - 1)];
+    const cap = caps && caps[i] != null ? caps[i] : `${i + 1}&times;`;
     s += `<div class="pt-tank" id="mp-tank-${i}">`
-       + `<div class="pt-tank-cap">${i + 1}&times;</div>`
+       + `<div class="pt-tank-cap">${cap}</div>`
        + `<div class="pt-tank-liq" id="mp-liq-${i}" style="height:0%;background:${c};box-shadow:0 0 16px ${c}88"></div>`
        + `<div class="pt-tank-mf" id="mp-mf-${i}"></div>`
        + `</div>`;

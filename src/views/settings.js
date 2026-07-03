@@ -12,6 +12,7 @@
 
 import { registry, DataKind } from '../data/capabilities.js';
 import { showSetupWizard } from './wizard.js';
+import { invoke } from '../data/tauri.js';
 import { applyBlockfrostKey, blockfrostStatus, reverifyBlockfrost } from '../data/read-model.js';
 import {
   getNotifSettings, saveNotifSettings, getNotifSource,
@@ -167,6 +168,20 @@ export function showSettingsModal() {
       `<div class="set-row"><span class="set-label">How it works</span>` +
         `<button class="set-btn" id="set-about" type="button">About / data sources</button></div>` +
       `<div class="set-hint">A plain-language explanation of what PoolTerminal does and where its data comes from.</div>` +
+    `</div>` +
+    `<div class="set-section">` +
+      `<div class="set-section-title">Developer /*pt-devmode-v36*/</div>` +
+      `<div class="set-row"><span class="set-label">Developer mode</span>` +
+        `<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--pt-text-secondary,#b9c4d0);cursor:pointer;text-transform:none;letter-spacing:0;"><input type="checkbox" id="set-dev-toggle" style="width:auto!important;flex:0 0 auto"> Enable developer tools</label></div>` +
+      `<div class="set-hint">Extra tools for testing. Off by default.</div>` +
+      `<div id="set-dev-tools" style="display:none;">` +
+        `<div class="set-row"><span class="set-label">Wizard</span>` +
+          `<button class="set-btn" id="set-dev-wizard" type="button">Force setup wizard</button></div>` +
+        `<div class="set-hint">Relaunch the wizard now, keeping your token and cache. For quick flow testing.</div>` +
+        `<div class="set-row"><span class="set-label">Clean room</span>` +
+          `<button class="set-btn" id="set-dev-reset" type="button">Reset everything and re-run</button></div>` +
+        `<div class="set-hint set-warn">Wipes the local cache, saved connection, Koios token and all preferences, then reopens the wizard.</div>` +
+      `</div>` +
     `</div>`;
 
   const close = () => modal.remove();
@@ -174,6 +189,32 @@ export function showSettingsModal() {
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
   modal.querySelector('#set-rerun').addEventListener('click', () => { close(); showSetupWizard(); });
   modal.querySelector('#set-about').addEventListener('click', () => { close(); window.dispatchEvent(new CustomEvent('pt-open-about')); });
+
+  // Developer mode: gated testing tools (off by default, persisted).
+  const _devToggle = modal.querySelector('#set-dev-toggle');
+  const _devTools = modal.querySelector('#set-dev-tools');
+  const _devOn = (() => { try { return localStorage.getItem('pt.dev_mode') === '1'; } catch { return false; } })();
+  if (_devToggle) _devToggle.checked = _devOn;
+  if (_devTools) _devTools.style.display = _devOn ? '' : 'none';
+  if (_devToggle) _devToggle.addEventListener('change', () => {
+    const on = !!_devToggle.checked;
+    try { localStorage.setItem('pt.dev_mode', on ? '1' : '0'); } catch { /* ignore */ }
+    if (_devTools) _devTools.style.display = on ? '' : 'none';
+  });
+  const _devWizard = modal.querySelector('#set-dev-wizard');
+  if (_devWizard) _devWizard.addEventListener('click', () => { close(); showSetupWizard(); });
+  const _devReset = modal.querySelector('#set-dev-reset');
+  if (_devReset) _devReset.addEventListener('click', async () => {
+    if (_devReset.dataset.armed !== '1') {
+      _devReset.dataset.armed = '1';
+      _devReset.textContent = 'Click again to confirm';
+      setTimeout(() => { if (_devReset) { _devReset.dataset.armed = ''; _devReset.textContent = 'Reset everything and re-run'; } }, 4000);
+      return;
+    }
+    try { await invoke('cache_clear_all'); } catch (e) { console.warn('[settings] dev reset: cache clear failed', e); }
+    try { localStorage.clear(); } catch { /* ignore */ }
+    location.reload();
+  });
 
   // Blockfrost key management
   const bfMsg = (t, warn) => { const el = modal.querySelector('#set-bf-msg'); if (el) { el.textContent = t; el.classList.toggle('set-warn', !!warn); } };

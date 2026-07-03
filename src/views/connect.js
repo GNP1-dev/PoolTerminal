@@ -151,7 +151,7 @@ const MODAL_HTML = `
     </div>
     <div class="pt-modal-actions">
       <button id="cn-cancel" class="pt-btn pt-btn-secondary" style="display:none">Cancel</button>
-      <button id="cn-skip" class="pt-btn pt-btn-secondary">Use Demo Mode</button>
+      <button id="cn-back" class="pt-btn pt-btn-secondary" style="display:none">Back</button>
       <button id="cn-connect" class="pt-btn pt-btn-primary">Connect</button>
     </div>
   </div>
@@ -347,7 +347,7 @@ export async function resumeLive(cfg, onDone) {
   }
 }
 
-export function showConnectModal(onDone) {
+export function showConnectModal(onDone, opts = {}) {
   const wrap = document.createElement('div');
   wrap.innerHTML = MODAL_HTML;
   const modal = wrap.firstElementChild;
@@ -389,11 +389,12 @@ export function showConnectModal(onDone) {
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
   }
 
-  byId('cn-skip').addEventListener('click', () => {
-    setMode('demo');
-    modal.remove();
-    if (onDone) onDone({ mode: 'demo' });
-  });
+  // Opened from the wizard: a Back button closes connect and returns to it. /*cn-back-v38*/
+  if (opts.showBack) {
+    const bk = byId('cn-back');
+    if (bk) { bk.style.display = ''; bk.addEventListener('click', () => { modal.remove(); if (onDone) onDone({ mode: 'back' }); }); }
+  }
+
 
   byId('cn-connect').addEventListener('click', async () => {
     const conn = gatherFormValues();
@@ -403,7 +404,7 @@ export function showConnectModal(onDone) {
     const connectBtn = byId('cn-connect');
     const skipBtn = byId('cn-skip');
     connectBtn.disabled = true;
-    skipBtn.disabled = true;
+    if (skipBtn) skipBtn.disabled = true;   /*cn-demo-removed-v37*/
 
     try {
       // Set the transport up front so the env probe below (which calls
@@ -526,7 +527,7 @@ export function showConnectModal(onDone) {
     } catch (e) {
       setErr(typeof e === 'string' ? e : (e?.message || String(e)));
       connectBtn.disabled = false;
-      skipBtn.disabled = false;
+      if (skipBtn) skipBtn.disabled = false;
     }
   });
 }

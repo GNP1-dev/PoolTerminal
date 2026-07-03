@@ -24,7 +24,8 @@ import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
 
 const MAX_BLOCK_BODY = 90112;   // bytes (mainnet maxBlockBodySize)
-const MAX_SCALE      = 300;     // header gauge runs to 300%
+const MEMPOOL_CAP    = 2 * MAX_BLOCK_BODY;   // full mempool = two block-bodies (~176 KB) /*mp-cap-v46*/
+const MAX_SCALE      = 100;     // header gauge runs to 100% (a full mempool)
 const MAX_SAMPLES    = 60;      // 5 min @ 5s
 const SPARK_W        = 600;
 const SPARK_H        = 100;
@@ -43,15 +44,15 @@ function fmtBytes(b) {
 }
 
 function colorsFor(pct) {
-  if (pct < 100)  return { fill: 'var(--pt-status-good)', txt: 'var(--pt-text-primary)' };
-  if (pct < 200)  return { fill: 'var(--pt-status-warn)', txt: 'var(--pt-status-warn)' };
+  if (pct < 50)   return { fill: 'var(--pt-status-good)', txt: 'var(--pt-text-primary)' };
+  if (pct < 85)   return { fill: 'var(--pt-status-warn)', txt: 'var(--pt-status-warn)' };
   return            { fill: 'var(--pt-status-bad)',  txt: 'var(--pt-status-bad)'  };
 }
 
 function colorTokenForBytes(b) {
-  const pct = (b / MAX_BLOCK_BODY) * 100;
-  if (pct < 100) return 'good';
-  if (pct < 200) return 'warn';
+  const pct = (b / MEMPOOL_CAP) * 100;
+  if (pct < 50) return 'good';
+  if (pct < 85) return 'warn';
   return 'bad';
 }
 
@@ -148,6 +149,13 @@ function renderSparkline(currentBytes) {
   if (!svg) return;
 
   const values = history.map((s) => s.bytes);
+  // Data-flow series (cyan): KB arriving in the trailing ~60s per sample. /*mp-flowtrace-v51*/
+  const FLOW_MAX_KB = 300;
+  const flowVals = history.map((s, i) => {
+    let arr = 0; const st = Math.max(1, i - 11);
+    for (let j = st; j <= i; j++) { const d = history[j].bytes - history[j - 1].bytes; if (d > 0) arr += d; }
+    return arr / 1024;
+  });
   const maxVal = getMaxBytes();
   const { line, fill, lastX, lastY } = buildSparkPaths(values, maxVal);
   const markers = buildBlockMarkers();
@@ -192,6 +200,13 @@ function renderSparkline(currentBytes) {
   if (fill) parts.push(`<path d="${fill}" fill="url(#mp-grad)" stroke="none"/>`);
   // Sharp line on top
   if (line) parts.push(`<path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`);
+
+  // Data-flow trace (cyan) on its own 0-300 KB/min right-hand axis.
+  const flowLine = buildSparkPaths(flowVals, FLOW_MAX_KB).line;
+  if (flowLine) parts.push(`<path d="${flowLine}" fill="none" stroke="#2dd4ee" stroke-width="1.3" opacity="0.9"/>`);
+  parts.push(`<text x="${(SPARK_W - 4)}" y="11" text-anchor="end" style="fill:#2dd4ee;font-size:10px;font-weight:600;font-family:ui-monospace,monospace;opacity:.9">300</text>`);
+  parts.push(`<text x="${(SPARK_W - 4)}" y="${(SPARK_H / 2 + 3).toFixed(0)}" text-anchor="end" style="fill:#2dd4ee;font-size:9px;font-family:ui-monospace,monospace;opacity:.6">150</text>`);
+  parts.push(`<text x="${(SPARK_W - 4)}" y="${(SPARK_H - 3).toFixed(0)}" text-anchor="end" style="fill:#2dd4ee;font-size:9px;font-family:ui-monospace,monospace;opacity:.75">KB/m</text>`);
 
   // Pulsing current-value indicator
   if (lastX != null) {
@@ -311,7 +326,7 @@ export function renderMempool(mp, opts = {}) {
   const countEl = byId('mp-count');
   if (!countEl) return;
 
-  const pct = (mp.totalBytes / MAX_BLOCK_BODY) * 100;
+  const pct = (mp.totalBytes / MEMPOOL_CAP) * 100;
   recordPeak(pct);
   const trackPct = Math.min((pct / MAX_SCALE) * 100, 100);
   const { fill, txt } = colorsFor(pct);

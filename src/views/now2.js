@@ -91,6 +91,17 @@ const N2_HTML = `
     .pt-tank.active { border-color:rgba(54,224,212,.45); }
     .pt-tank.spill { border-color:rgba(255,90,60,.5); }
     .pt-tank-mf { position:absolute; inset:0; background:rgba(93,255,155,.20); opacity:0; border-radius:7px; pointer-events:none; }
+    .n2-mpbars { display:flex; flex-direction:column; gap:14px; padding:8px 10px 2px; }   /*mp-bars-v48*/
+    .n2-mpbar-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px; font:700 10px ui-monospace,monospace; letter-spacing:1.2px; color:#7f8fa8; }
+    .n2-mpbar-val { font-size:12px; font-weight:700; color:#9fb0d0; letter-spacing:0; }
+    .n2-mpbar-track { position:relative; height:14px; background:#0a0e15; border:1px solid #3d4d6a; border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 3px rgba(0,0,0,.55); }   /*mp-bars-v49*/
+    .n2-mpbar-fill { position:absolute; left:0; top:0; height:100%; width:0; border-radius:7px; background:#5dff9b; box-shadow:0 0 12px rgba(93,255,155,.4); transition:width .5s ease, background .3s; }
+    .n2-mpbar-fill-flow { background:#2dd4ee; box-shadow:0 0 12px rgba(45,212,238,.45); }
+    .n2-mpbar-alert { visibility:hidden; height:12px; line-height:12px; color:#ff5a3c; font:700 9px ui-monospace,monospace; letter-spacing:1.2px; text-align:center; margin:1px 0 2px; text-shadow:0 0 6px rgba(255,90,60,.5); }
+    .n2-mpbar-alert.on { visibility:visible; }
+    .n2-mpbar-mark { position:absolute; top:0; height:100%; width:2px; background:#ffcf5a; box-shadow:0 0 5px rgba(255,207,90,.9); z-index:3; }
+    .n2-mpbar-ticks { display:flex; justify-content:space-between; margin-top:4px; font:9px ui-monospace,monospace; color:#6f7d99; }
+    .n2-mpbar-mid { color:#97a0b0; }
     .n2-mp-host { width:100%; }
 
     /* bottom panels */
@@ -112,6 +123,12 @@ const N2_HTML = `
     .pt-relay-veil { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(10,14,22,.5); border-radius:inherit; }
     .pt-relay-veil span { font:700 10px ui-monospace,monospace; letter-spacing:1.4px; text-transform:uppercase; color:#8893a8; background:rgba(20,28,40,.82); border:1px solid rgba(150,170,210,.32); border-radius:6px; padding:5px 11px; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,.3); }
     .n2-bp-late .n2-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
+    .n2-bp-body { gap:8px; }
+    .n2-bp-obs .n2-bp-bar { background:#7bb0f5; }
+    .n2-bp-strip { display:flex; align-items:flex-end; gap:2px; height:30px; margin-top:6px; }
+    .n2-bp-tick { flex:1 1 0; min-width:2px; border-radius:2px 2px 0 0; opacity:.85; height:10%; }
+    .n2-bp-strip-empty { font-size:10px; color:var(--pt-text-muted,#6f7d99); align-self:center; margin:auto; }
+    .n2-bp-note { font-size:9px; color:var(--pt-text-muted,#6f7d99); text-align:center; margin-top:4px; line-height:1.3; }
     .n2-ub-panel .pt-ub-body { overflow-y:auto; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:block; }
     .n2-pp-panel .pt-pp-body { /*peers-scroll*/ overflow-y:auto; overflow-x:hidden; max-height:200px;
       min-height:0; flex:1 1 auto; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }
@@ -226,9 +243,19 @@ const N2_HTML = `
         <div class="n2-lbl" style="align-self:flex-start">Mempool</div>
         <div class="n2-mp-host pt-grid-mempool" id="n2-mp-host">
           <div class="pt-panel-meta" style="text-align:center;margin-bottom:6px;font-size:12px;"><span id="mp-count">—</span></div>
-          ${tanksHTML({ ntanks: 3 })}
-          <div id="n2-mp-tankpct" style="text-align:center;font-family:ui-monospace,monospace;font-weight:700;font-size:20px;color:#36e0d4;margin:6px 0 0;">—</div>
-          <div style="text-align:center;font-family:ui-monospace,monospace;font-size:10px;color:var(--pt-text-muted,#97A0B0);margin:0 0 5px;letter-spacing:0.3px;">100% = 88 KB</div>
+          <div class="n2-mpbars">
+            <div class="n2-mpbar">
+              <div class="n2-mpbar-head"><span>MEMPOOL</span><span id="mp-bar-val" class="n2-mpbar-val">— / 176 KB</span></div>
+              <div class="n2-mpbar-alert" id="mp-bar-alert">MAX BLOCK SIZE REACHED</div>
+              <div class="n2-mpbar-track"><div class="n2-mpbar-fill" id="mp-bar-fill"></div><div class="n2-mpbar-mark" style="left:50%"></div></div>
+              <div class="n2-mpbar-ticks"><span>0</span><span class="n2-mpbar-mid">88 KB · max block</span><span>FULL</span></div>
+            </div>
+            <div class="n2-mpbar">
+              <div class="n2-mpbar-head"><span>DATA FLOW</span><span id="mp-flow-val" class="n2-mpbar-val">— KB/min</span></div>
+              <div class="n2-mpbar-track"><div class="n2-mpbar-fill n2-mpbar-fill-flow" id="mp-flow-fill"></div></div>
+              <div class="n2-mpbar-ticks"><span>0</span><span>150</span><span>300 KB/min</span></div>
+            </div>
+          </div>
           <div id="mp-body"></div>
         </div>
       </div>
@@ -277,10 +304,14 @@ const N2_HTML = `
       <div class="n2-panel n2-bp-panel">
         <div class="pt-panel-header"><span class="pt-panel-title">Block propagation</span></div>
         <div class="n2-bp-body">
+          <div class="n2-bp-row n2-bp-obs"><span class="n2-bp-k">within 0.2s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar02"></span></span><span class="n2-bp-v" id="bp-cdf02">&mdash;</span></div>
+          <div class="n2-bp-row n2-bp-obs"><span class="n2-bp-k">within 0.5s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar05"></span></span><span class="n2-bp-v" id="bp-cdf05">&mdash;</span></div>
           <div class="n2-bp-row"><span class="n2-bp-k">within 1s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar1"></span></span><span class="n2-bp-v" id="bp-cdf1">&mdash;</span></div>
           <div class="n2-bp-row"><span class="n2-bp-k">within 3s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar3"></span></span><span class="n2-bp-v" id="bp-cdf3">&mdash;</span></div>
           <div class="n2-bp-row"><span class="n2-bp-k">within 5s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar5"></span></span><span class="n2-bp-v" id="bp-cdf5">&mdash;</span></div>
           <div class="n2-bp-row n2-bp-late"><span class="n2-bp-k">last block</span><span class="n2-bp-v" id="bp-last">&mdash;</span></div>
+          <div class="n2-bp-strip" id="bp-strip"></div>
+          <div class="n2-bp-note">0.2s / 0.5s and the strip are observed live and build as blocks arrive.</div>
         </div>
       </div>
       <div class="n2-panel n2-pp-panel">
@@ -327,15 +358,93 @@ function setBP(id, txt, color) {
   if (el) { el.textContent = txt; if (color) el.style.color = color; }
 }
 function propColor(v) { return v >= 0.95 ? '#5dff9b' : v >= 0.85 ? '#ffc24a' : '#ff5a3c'; }
+// Rolling history of observed block-fetch delays, deduped by block number and
+// persisted so the sub-second buckets and the strip build up over time. /*bp-history-v43*/
+const BP_HIST_KEY = 'pt.blockdelay.hist.v1';
+const BP_HIST_MAX = 120;
+let _bpHist = null;
+function bpHistLoad() {
+  if (_bpHist) return _bpHist;
+  try { _bpHist = JSON.parse(localStorage.getItem(BP_HIST_KEY)); } catch { _bpHist = null; }
+  if (!_bpHist || !Array.isArray(_bpHist.items)) _bpHist = { last: null, items: [] };
+  return _bpHist;
+}
+function bpHistRecord(blockNo, delay) {
+  if (blockNo == null || delay == null) return;
+  const h = bpHistLoad();
+  if (h.last === blockNo) return;   // same block, already recorded
+  h.last = blockNo;
+  h.items.push({ b: blockNo, d: delay, t: Date.now() });
+  if (h.items.length > BP_HIST_MAX) h.items = h.items.slice(-BP_HIST_MAX);
+  try { localStorage.setItem(BP_HIST_KEY, JSON.stringify(h)); } catch { /* ignore */ }
+}
+function bpHistFrac(thresh) {
+  const items = bpHistLoad().items;
+  if (items.length === 0) return null;
+  return items.reduce((a, x) => a + (x.d <= thresh ? 1 : 0), 0) / items.length;
+}
+function renderBpStrip() {
+  const el = document.getElementById('bp-strip');
+  if (!el) return;
+  const items = bpHistLoad().items.slice(-40);
+  if (items.length === 0) { el.innerHTML = '<span class="n2-bp-strip-empty">builds as blocks arrive</span>'; return; }
+  const CAP = 5;
+  el.innerHTML = items.map((x) => {
+    const col = x.d < 1 ? '#5dff9b' : x.d < 3 ? '#ffc24a' : '#ff5a3c';
+    const h = Math.max(10, Math.min(100, (Math.min(x.d, CAP) / CAP) * 100));
+    return `<span class="n2-bp-tick" style="height:${h.toFixed(0)}%;background:${col}" title="block ${x.b}: ${x.d.toFixed(2)}s"></span>`;
+  }).join('');
+}
+// Mempool inflow: bytes that ARRIVED in the last 60s (positive deltas only, so
+// a block clearing the pool never counts as negative). Independent of block
+// cadence - real fill pressure. In-memory, last minute only. /*mp-flow-v44*/
+const MP_FLOW_WINDOW_MS = 60000;
+const MP_FLOW_FULL_KBMIN = 300;   // KB/min = full-scale on the flow bar (tunable)
+let _mpFlow = [];
+function mpFlowRate(bytes) {
+  if (bytes == null) return null;
+  const now = Date.now();
+  _mpFlow.push({ t: now, b: bytes });
+  const cutoff = now - MP_FLOW_WINDOW_MS - 2000;
+  while (_mpFlow.length && _mpFlow[0].t < cutoff) _mpFlow.shift();
+  const winStart = now - MP_FLOW_WINDOW_MS;
+  let arrivals = 0, prev = null;
+  for (const s of _mpFlow) {
+    if (prev != null && s.t >= winStart && s.b > prev.b) arrivals += (s.b - prev.b);
+    prev = s;
+  }
+  return arrivals / 1024;   // KB arrived in ~60s = KB/min
+}
+function renderMempoolFlow(root) {
+  const r = root || document;
+  const m = getLastMetrics();
+  let kbmin = null;
+  if (m && m.mempoolBytes != null) kbmin = mpFlowRate(m.mempoolBytes);
+  else if (getMode() === 'demo') kbmin = 42;
+  const fill = r.querySelector('#mp-flow-fill');
+  const read = document.getElementById('mp-flow-val');
+  if (kbmin == null) {
+    if (fill) fill.style.width = '0%';
+    if (read) { read.textContent = '— KB/min'; read.style.color = '#6f7d99'; }
+    return;
+  }
+  const frac = Math.max(0, Math.min(1, kbmin / MP_FLOW_FULL_KBMIN));
+  if (fill) { fill.style.width = (frac * 100).toFixed(1) + '%'; fill.style.background = '#2dd4ee'; }
+  if (read) { read.textContent = Math.round(kbmin) + ' KB/min'; read.style.color = '#2dd4ee'; }
+}
 function renderProp() {
   const m = getLastMetrics();
-  let c1, c3, c5, last;
+  let c1, c3, c5, last, o2, o5;
   if (m && m.blockDelayCdfOne != null) {
     c1 = m.blockDelayCdfOne; c3 = m.blockDelayCdfThree; c5 = m.blockDelayCdfFive; last = m.blockDelayLast;
+    if (m.blockNum != null && last != null) bpHistRecord(m.blockNum, last);
+    o2 = bpHistFrac(0.2); o5 = bpHistFrac(0.5);
   } else if (getMode() === 'demo') {
-    c1 = 0.992; c3 = 1; c5 = 1; last = 0.31;
+    c1 = 0.992; c3 = 1; c5 = 1; last = 0.31; o2 = 0.28; o5 = 0.74;
   } else {
+    setBP('bp-cdf02', '\u2014'); setBP('bp-cdf05', '\u2014');
     setBP('bp-cdf1', '\u2014'); setBP('bp-cdf3', '\u2014'); setBP('bp-cdf5', '\u2014'); setBP('bp-last', '\u2014');
+    renderBpStrip();
     return;
   }
   const fmtPct = v => v == null ? '\u2014' : (v * 100 >= 99.95 ? '100%' : (v * 100).toFixed(1) + '%');
@@ -344,8 +453,15 @@ function renderProp() {
     const bar = document.getElementById(bid);
     if (bar && v != null) { bar.style.width = Math.min(100, v * 100).toFixed(1) + '%'; bar.style.background = propColor(v); }
   }
+  // Observed sub-second buckets (accent blue - built from recorded delays).
+  for (const [vid, bid, v] of [['bp-cdf02', 'bp-bar02', o2], ['bp-cdf05', 'bp-bar05', o5]]) {
+    setBP(vid, v == null ? '\u2014' : fmtPct(v), '#7bb0f5');
+    const bar = document.getElementById(bid);
+    if (bar) { bar.style.width = (v == null ? 0 : Math.min(100, v * 100)).toFixed(1) + '%'; bar.style.background = '#7bb0f5'; }
+  }
   const lastColor = last == null ? '#9fb0d0' : last < 1 ? '#5dff9b' : last < 3 ? '#ffc24a' : '#ff5a3c';
   setBP('bp-last', last == null ? '\u2014' : last.toFixed(2) + 's', lastColor);
+  renderBpStrip();
 }
 
 // Relay Only Mode: dim BP-only dashboard areas (block stats, KES, upcoming
@@ -457,13 +573,22 @@ function paintGauges() {
   const pctEl = root.querySelector('#mp-count .pt-mp-gauge-pct');
   if (pctEl) {
     const mpct = parseFloat((pctEl.textContent || '').replace('%', '')) || 0;
-    paintTanks(root, (mpct / 100) * MP_FULL, MP_FULL, 3);
-    const tp = document.getElementById('n2-mp-tankpct');
-    if (tp) {
-      if (mpct <= 0) { tp.textContent = 'EMPTY'; tp.style.color = '#ff3344'; }
-      else { tp.textContent = Math.round(mpct) + '%'; tp.style.color = mpct >= 67 ? '#ff5a3c' : mpct >= 34 ? '#ffc24a' : '#5dff9b'; }
+    const fill = document.getElementById('mp-bar-fill');   /*mp-bars-v48*/
+    if (fill) {
+      fill.style.width = Math.min(100, Math.max(0, mpct)).toFixed(1) + '%';
+      fill.style.background = mpct >= 85 ? '#ff5a3c' : mpct >= 50 ? '#ffc24a' : '#5dff9b';
     }
+    const val = document.getElementById('mp-bar-val');
+    if (val) {
+      const _mm = getLastMetrics();
+      const mb = (_mm && _mm.mempoolBytes != null) ? _mm.mempoolBytes : (mpct / 100) * MP_FULL * 2;
+      if (mpct >= 100) { val.textContent = 'MEMPOOL FULL'; val.style.color = '#ff5a3c'; }
+      else { val.textContent = (mb / 1024).toFixed(1) + ' / 176 KB'; val.style.color = '#9fb0d0'; }
+    }
+    const mpAlert = document.getElementById('mp-bar-alert');   /*mp-bars-v50*/
+    if (mpAlert) mpAlert.classList.toggle('on', mpct >= 50);
   }
+  renderMempoolFlow(root);
   // Mint flash: tip block advanced -> mempool drained
   const tb = numFrom('cp-tipblock');
   if (tb != null) {

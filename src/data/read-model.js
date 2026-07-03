@@ -1039,16 +1039,46 @@ let _koiosInit = false;
 let _koiosBackfillDone = false;
 let _koiosBackfillInFlight = false;
 
+// Throttled init re-probe. When Koios is the active source but unreachable (no
+// token on a blocked IP, an outage, or a bad token), initKoios() fails and
+// _koiosInit never latches - so refreshHistory() would re-probe on EVERY fast
+// tick (~1/s), each a metered Koios call that returns nothing. That silently
+// burned thousands of calls with no data landing. We now (a) allow only one
+// probe in flight at a time, (b) space failed re-probes at least KOIOS_PROBE_MS
+// apart, and (c) expose the unreachable state for the UI. /*koios-init-throttle-v32*/
+const KOIOS_PROBE_MS = 60_000;   // min gap between failed init re-probes
+let _koiosInitInFlight = false;
+let _koiosProbeAt = 0;
+let _koiosUnreachable = false;   // true after a failed probe; cleared on success
+
+/** UI status: Koios is the active source but currently unreachable. */
+export function koiosUnreachable() { return KOIOS_ENABLED && !_koiosInit && _koiosUnreachable; }
+
 async function ensureKoios() {
   if (!KOIOS_ENABLED) return false;   // master switch: Koios fully off
   if (_koiosInit) return koiosHist.koiosSource.reachable();
-  // Only latch on SUCCESS. A failed probe (an authenticated retry before the
-  // token is live, or a transient 429) must NOT permanently mark Koios
-  // unreachable - leave _koiosInit false so the next poll re-probes once the
-  // token is in effect. /*koios-init-retry*/
-  const ok = await koiosHist.initKoios(ensurePoolBech32());
-  if (ok) { _koiosInit = true; await cacheMetaSet('history_source', 'koios'); }
-  return ok;
+  // A failed probe must NOT latch _koiosInit (so we re-probe once the token is
+  // live), but it also must NOT re-fire every tick. One probe at a time, and no
+  // more often than KOIOS_PROBE_MS while it keeps failing. /*koios-init-retry*/
+  if (_koiosInitInFlight) return false;
+  const now = Date.now();
+  if (_koiosProbeAt && now - _koiosProbeAt < KOIOS_PROBE_MS) return false;
+  _koiosInitInFlight = true;
+  _koiosProbeAt = now;
+  try {
+    const ok = await koiosHist.initKoios(ensurePoolBech32());
+    if (ok) {
+      _koiosInit = true;
+      _koiosUnreachable = false;
+      await cacheMetaSet('history_source', 'koios');
+    } else {
+      _koiosUnreachable = true;
+      console.warn('[read-model] Koios unreachable at init; re-probing at most every ' + (KOIOS_PROBE_MS / 1000) + 's. If this persists, check the Koios token.');
+    }
+    return ok;
+  } finally {
+    _koiosInitInFlight = false;
+  }
 }
 
 // Optional Blockfrost enrichment (DELEGATORS view). Idempotent; no-op without a
@@ -1506,6 +1536,7 @@ export function resetReadModel() {
   _healthAt = 0;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
+  _koiosInitInFlight = false; _koiosProbeAt = 0; _koiosUnreachable = false;
   _blockfrostInit = false; blockfrost.resetBlockfrost();
   koiosHist.resetKoios();
   _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;

@@ -22,9 +22,10 @@
 import { DBSYNC_TESTED_SCHEMA as schemaTested, initDbsync } from '../data/dbsync-query.js';
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
+import { setMode } from '../data/index.js';
 import { isConnected, getSession } from '../data/session.js';
 import { applyBlockfrostKey } from '../data/read-model.js';
-import { setKoiosToken, hasKoiosToken } from '../data/koios-token.js';
+import { setKoiosToken, hasKoiosToken, getKoiosToken } from '../data/koios-token.js';
 import { setPaused } from '../data/koios-meter.js';
 import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
 
@@ -46,7 +47,8 @@ function freshState() {
     dbsync: {},             // db-sync DB creds
     useBlockfrost: false,   // optional Blockfrost
     blockfrostKey: '',      // Blockfrost project key
-    koiosToken: '',         // optional Koios API token (raises 5k -> 50k/day)
+    koiosMode: getKoiosToken() ? 'key' : null,   // 'free' | 'key' - chosen on the Koios step
+    koiosToken: getKoiosToken() || '',   // preloaded so a wizard re-run never wipes an existing token /*wz-koios-preserve-v33*/
     notif: {},              // poll cadence + threshold
   };
 }
@@ -62,38 +64,55 @@ function yesNoCards(onChoice, isYes) {
     </div>`;
 }
 
+// ── shared visual helpers: icon marks + a consistent screen header ───────────
+const ICON_LOC = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s-6-5.4-6-10a6 6 0 0 1 12 0c0 4.6-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg>';
+const ICON_NETWORK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 12h11M12 8l4 4-4 4"/><rect x="18" y="4" width="3" height="16" rx="1"/></svg>';
+const ICON_DESKTOP = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/></svg>';
+const ICON_KOIOS = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg>';
+const ICON_FREE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="9" width="18" height="12" rx="1"/><path d="M3 13h18M12 9v12M12 9C10 9 8.2 7.6 8.7 6.1S12 7 12 9zM12 9c2 0 3.8-1.4 3.3-2.9S12 7 12 9z"/></svg>';
+const ICON_KEYC = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="12" r="4.5"/><path d="M12.5 12H21M18 12v3.5M21 12v2.5"/></svg>';
+const ICON_DB = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';  /*wz-style-v40*/
+const ICON_BF = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 12l9-5M12 12v10M12 12L3 7"/></svg>';
+const ICON_BELL = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6M10 20a2 2 0 0 0 4 0"/></svg>';
+function wzHead(icon, text) {
+  return `<div class="wz-lead-row"><span class="wz-mark">${icon}</span><span class="wz-lead-t">${text}</span></div>`;
+}
+
 // ── steps ────────────────────────────────────────────────────────────────────
 const STEPS = [
   {
     key: 'welcome',
     title: 'Welcome to PoolTerminal',
     render: () => `
-      <p class="wz-lead">PoolTerminal is a live dashboard for your Cardano stake pool - block production,
-      delegators, node health and on-chain notifications, all in one place.</p>
-      <div class="wz-base wz-base-node">
-        <span class="wz-pill wz-pill-node">Your node + internet</span>
-        <span class="wz-base-t">is all you need. With just those, you get live node data plus pool figures,
-        delegators, history and notifications through <span class="wz-src wz-koios">Koios</span> (free, public).</span>
+      <div class="wz-hero">
+        <div class="wz-hero-mark"><span class="wz-hero-icon">PT</span></div>
+        <div class="wz-hero-title">Your pool, on one screen.</div>
+        <p class="wz-hero-sub">Live blocks, delegators and rewards, plus full node and relay metrics, for your
+        Cardano stake pool. Let us get you connected in under a minute.</p>
       </div>
-      <p class="wz-p">This quick setup takes about two minutes: where your node runs, how to connect, and
-      whether you want to add your own data sources for even richer detail.</p>
-      <div class="wz-note">You can change any answer later from the <strong>⚙ Settings</strong> button,
-      top-right - nothing here is permanent.</div>`,
+      <div class="wz-note">You can change any answer later from <strong>Settings</strong>, top-right -
+      nothing here is permanent.</div>
+      <div class="wz-demo-row"><button class="wz-demo-btn" id="wz-demo" type="button">Just exploring? Open a demo with sample data</button></div>`,
   },
   {
     key: 'transport',
     title: 'Where does PoolTerminal run?',
     render: (wiz) => `
-      <p class="wz-p">Pick where this app is running, relative to your Cardano node.</p>
+      ${wzHead(ICON_LOC, 'Pick where this app is running, relative to your Cardano node.')}
       <div class="wz-cards">
-        <button class="wz-card ${wiz.transport === 'ssh' ? 'wz-card-on' : ''}" data-choice="ssh" type="button">
-          <div class="wz-card-h">On a different machine</div>
-          <div class="wz-card-d">PoolTerminal connects to your node over SSH. This is the usual choice -
-          e.g. the app on your laptop, the node on a server.</div>
+        <button class="wz-card wz-card-ico ${wiz.transport === 'ssh' ? 'wz-card-on' : ''}" data-choice="ssh" type="button">
+          <span class="wz-card-ic">${ICON_NETWORK}</span>
+          <span class="wz-card-body">
+            <span class="wz-card-h">On a different machine</span>
+            <span class="wz-card-d">PoolTerminal connects to your node over SSH. This is the usual choice - e.g. the app on your laptop, the node on a server.</span>
+          </span>
         </button>
-        <button class="wz-card ${wiz.transport === 'local' ? 'wz-card-on' : ''}" data-choice="local" type="button">
-          <div class="wz-card-h">On the node itself</div>
-          <div class="wz-card-d">PoolTerminal runs commands locally - no SSH or password needed.</div>
+        <button class="wz-card wz-card-ico ${wiz.transport === 'local' ? 'wz-card-on' : ''}" data-choice="local" type="button">
+          <span class="wz-card-ic">${ICON_DESKTOP}</span>
+          <span class="wz-card-body">
+            <span class="wz-card-h">On the node itself</span>
+            <span class="wz-card-d">PoolTerminal runs commands locally - no SSH or password needed.</span>
+          </span>
         </button>
       </div>
       <div class="wz-foot">Change later: ⚙ Settings, or the connection screen (click the LIVE badge).</div>`,
@@ -115,38 +134,51 @@ const STEPS = [
     validate: (wiz) => (wiz._connected ? null : 'Please connect to your node first using the button above.'),
   },
   {
-    key: 'hub',
-    title: 'Want richer data?',
-    render: (wiz) => `
-      <p class="wz-p">Your node and Koios are already covering the essentials. If you want even more detail,
-      you can add one or both of these - we'll ask about each on the next screens. Adding nothing is a perfectly
-      good setup.</p>
-      <div class="wz-srcgrid">
-        <div class="wz-srccard wz-srccard-on wz-koios-card">
-          <span class="wz-src wz-koios">Koios</span>
-          <div class="wz-srccard-t">Working now. Pool figures, delegators, history, notifications and the deep-dive.</div>
-          <div class="wz-srccard-tag">Active</div>
-        </div>
-        <div class="wz-srccard wz-dbsync-card">
-          <span class="wz-src wz-dbsync">db-sync</span>
-          <div class="wz-srccard-t">Your own database. Adds the loyalty leaderboard and instant, unlimited history.</div>
-          <div class="wz-srccard-tag wz-tag-opt">Optional - next</div>
-        </div>
-        <div class="wz-srccard wz-bf-card">
-          <span class="wz-src wz-bf">Blockfrost</span>
-          <div class="wz-srccard-t">A free API key. Another route to the deep-dive and pool summary.</div>
-          <div class="wz-srccard-tag wz-tag-opt">Optional - next</div>
+    key: 'koios',
+    title: 'Koios access',
+    accent: 'koios',
+    render: (wiz) => {
+      const mode = wiz.koiosMode || ((wiz.koiosToken || '').trim() ? 'key' : null);
+      return `
+      ${wzHead(ICON_KOIOS, "Koios is a free public API for pool figures, delegators, history, rewards and the deep-dive. Choose how you'll reach it.")}
+      <div class="wz-cards">
+        <button class="wz-card wz-card-ico ${mode === 'free' ? 'wz-card-on' : ''}" data-koios="free" type="button">
+          <span class="wz-card-ic">${ICON_FREE}</span>
+          <span class="wz-card-body">
+            <span class="wz-card-h">Use the free tier</span>
+            <span class="wz-card-d">No key needed. Rate-limited to about 5,000 calls a day. PoolTerminal eases the poll rate to stay within it.</span>
+          </span>
+        </button>
+        <button class="wz-card wz-card-ico ${mode === 'key' ? 'wz-card-on' : ''}" data-koios="key" type="button">
+          <span class="wz-card-ic">${ICON_KEYC}</span>
+          <span class="wz-card-body">
+            <span class="wz-card-h">I have a Koios API key</span>
+            <span class="wz-card-d">Registered projects get 50,000 calls a day and skip shared-IP limits. Free to create at koios.rest.</span>
+          </span>
+        </button>
+      </div>
+      <div class="wz-reveal ${mode === 'key' ? 'wz-reveal-open' : ''}" id="wz-koios-fields">
+        <div class="wz-field"><label>Koios API token</label>
+          <input id="wz-koios-token" type="password" value="${esc(wiz.koiosToken || '')}" placeholder="paste your Koios bearer token" autocomplete="off" spellcheck="false">
+          <div class="wz-hint">${hasKoiosToken() ? 'A token is currently set - leave it to keep it. ' : ''}Sign in at koios.rest, create an API token, then paste it here.</div>
         </div>
       </div>
-      <div class="wz-field" style="margin-top:16px;">
-        <label>Koios API token <span class="wz-opt">(optional - raises your Koios limit from 5,000 to 50,000 requests/day)</span></label>
-        <input id="wz-koios-token" type="password" value="${esc(wiz.koiosToken || '')}" placeholder="paste your Koios bearer token" autocomplete="off" spellcheck="false">
-        <div class="wz-foot" style="margin-top:6px;">${hasKoiosToken() ? 'A token is currently set. ' : ''}Get a free token at koios.rest (sign in, then create an API token). Without one, Koios runs on the free 5,000/day tier.</div>
-      </div>
-      <div class="wz-foot">You can add or remove these later from Settings.</div>`,
+      <div class="wz-foot">Change later: Settings. /*wz-koios-step-v34*/</div>`;
+    },
     collect: (wiz, root) => {
-      const t = root.querySelector('#wz-koios-token'); /*wz-koios-token*/
-      wiz.koiosToken = t ? t.value.trim() : '';
+      const t = root.querySelector('#wz-koios-token');
+      const tok = t ? t.value.trim() : '';
+      if (tok) wiz.koiosMode = 'key';   // a pasted key implies the key option
+      wiz.koiosToken = wiz.koiosMode === 'key' ? tok : '';
+    },
+    validate: (wiz, root) => {
+      const mode = wiz.koiosMode;
+      if (!mode) return 'Choose the free tier, or enter a Koios API key.';
+      if (mode === 'key') {
+        const t = (root.querySelector('#wz-koios-token') || {}).value;
+        if (!(t && t.trim())) return 'Paste your Koios API key, or choose the free tier.';
+      }
+      return null;
     },
   },
   {
@@ -161,9 +193,7 @@ const STEPS = [
         ? `<option value="tunnel" ${mode === 'tunnel' ? 'selected' : ''}>Through the SSH connection to your node (tunnel)</option>` : '';
       const showCreds = mode !== 'local';
       return `
-      <p class="wz-p"><span class="wz-src wz-dbsync">db-sync</span> is your own copy of the Cardano database.
-      If you run one, PoolTerminal can read it directly - adding the <strong>loyalty leaderboard</strong>
-      (only db-sync can compute this), full instant history and the delegator deep-dive, with no API limits.</p>
+      ${wzHead(ICON_DB, "<span class='wz-src wz-dbsync'>db-sync</span> is your own copy of the Cardano database. If you run one, PoolTerminal reads it directly - adding the <strong>loyalty leaderboard</strong>, full instant history and the delegator deep-dive, with no API limits.")}
       ${yesNoCards(null, yn)}
       <div class="wz-reveal ${yn === true ? 'wz-reveal-open' : ''}" id="wz-dbsync-fields">
         <div class="wz-field"><label>How is db-sync reached?</label>
@@ -223,12 +253,8 @@ const STEPS = [
     render: (wiz) => {
       const yn = wiz._bfAnswered ? !!wiz.useBlockfrost : null;
       const lead = wiz.useDbsync
-        ? `<p class="wz-p">You've added <span class="wz-src wz-dbsync">db-sync</span>, which already gives the
-           deep-dive and more - so <span class="wz-src wz-bf">Blockfrost</span> is entirely optional here. Add it
-           only if you'd like a second source as backup.</p>`
-        : `<p class="wz-p"><span class="wz-src wz-bf">Blockfrost</span> is a free public API. A project key adds the
-           delegator deep-dive and pool summary. Worth adding if you're not running db-sync - though Koios already
-           provides these too, so you can happily skip it.</p>`;
+        ? wzHead(ICON_BF, "You've added <span class='wz-src wz-dbsync'>db-sync</span>, which already gives the deep-dive and more, so <span class='wz-src wz-bf'>Blockfrost</span> is optional here. Add it only if you'd like a second source as backup.")
+        : wzHead(ICON_BF, "<span class='wz-src wz-bf'>Blockfrost</span> is a free public API. A project key adds the delegator deep-dive and pool summary. Worth adding if you're not running db-sync - though Koios provides these too, so you can happily skip it.");
       return `
       ${lead}
       ${yesNoCards(null, yn)}
@@ -265,7 +291,7 @@ const STEPS = [
     render: (wiz) => {
       const cur = getNotifSettings();
       const n = wiz.notif || {};
-      const tier = n.koiosTier || cur.koiosTier || 'free';
+      const tier = n.koiosTier || ((wiz.koiosToken || '').trim() ? 'token' : (cur.koiosTier || 'free'));
       const pollMs = n.pollMs || cur.pollMs;
       const thresholdAda = (n.thresholdLovelace != null ? n.thresholdLovelace : cur.thresholdLovelace) / 1e6;
       const intervalOpts = POLL_LADDER_MS
@@ -274,25 +300,11 @@ const STEPS = [
       // Which source will answer live delegator notifications (db-sync > Blockfrost > Koios).
       const notifSource = wiz.useDbsync ? 'dbsync' : (wiz.useBlockfrost ? 'blockfrost' : 'koios');
       const intro = notifSource === 'dbsync'
-        ? `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
-           notifications read your <span class="wz-src wz-dbsync">db-sync</span> database directly, so there are
-           no API limits - pick any check rate you like.</p>`
+        ? wzHead(ICON_BELL, "PoolTerminal tells you when delegators join, leave or change their stake. Live notifications read your <span class='wz-src wz-dbsync'>db-sync</span> directly, so there are no API limits - pick any check rate you like.")
         : notifSource === 'blockfrost'
-        ? `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
-           notifications use <span class="wz-src wz-bf">Blockfrost</span> (50,000 calls/day on the free tier), so
-           the check rate is set to stay within budget - it suggests a safe rate.</p>`
-        : `<p class="wz-p">PoolTerminal can tell you when delegators join, leave, or change their stake. Live
-           notifications use <span class="wz-src wz-koios">Koios</span>, so the check rate is set to stay within
-           its limits - it suggests a safe rate.</p>`;
-      const tierField = notifSource === 'koios'
-        ? `<div class="wz-field"><label>Koios usage tier</label>
-        <select id="wz-n-tier">
-          <option value="free" ${tierSel('free')}>Free - no key - 5,000 calls/day</option>
-          <option value="token" ${tierSel('token')}>Registered token - 50,000 calls/day</option>
-        </select>
-        <div class="wz-opt">A free Koios token (from koios.rest) lets you check more often. Leave on Free if you don't have one.</div>
-      </div>`
-        : '';
+        ? wzHead(ICON_BELL, "PoolTerminal tells you when delegators join, leave or change their stake. Live notifications use <span class='wz-src wz-bf'>Blockfrost</span> (50,000 calls/day free), so the check rate is set to stay within budget - it suggests a safe rate.")
+        : wzHead(ICON_BELL, "PoolTerminal tells you when delegators join, leave or change their stake. Live notifications use <span class='wz-src wz-koios'>Koios</span>, so the check rate is set to stay within its limits - it suggests a safe rate.");
+      const tierField = '';   // tier is derived from the Koios screen choice  /*wz-notif-clean-v42*/
       return `
       ${intro}
       ${tierField}
@@ -313,12 +325,11 @@ const STEPS = [
       <div class="wz-foot">Change later: Settings - the same controls live there.</div>`;
     },
     collect: (wiz, root) => {
-      const tierEl = root.querySelector('#wz-n-tier');
       const intEl = root.querySelector('#wz-n-interval');
       const thrEl = root.querySelector('#wz-n-threshold');
       const ada = thrEl ? parseFloat(thrEl.value) : NaN;
       wiz.notif = {
-        koiosTier: tierEl ? tierEl.value : (wiz.notif?.koiosTier || 'free'),
+        koiosTier: (wiz.koiosToken || '').trim() ? 'token' : 'free',
         pollMs: intEl ? Number(intEl.value) : (wiz.notif?.pollMs || getNotifSettings().pollMs),
         thresholdLovelace: (Number.isFinite(ada) && ada >= 0) ? Math.round(ada * 1e6) : getNotifSettings().thresholdLovelace,
       };
@@ -455,6 +466,27 @@ const STYLE = `
   background-repeat: no-repeat, no-repeat !important; padding-right: 28px !important; cursor: pointer; }
 .pt-modal-wizard select option { background-color: #0e1620 !important; color: #fff !important; -webkit-text-fill-color: #fff !important; }
 .pt-modal-wizard input[type="checkbox"] { width: auto !important; }
+.wz-hero { text-align: center; padding: 8px 0 2px; }
+.wz-hero-mark { width: 54px; height: 54px; border-radius: 12px; margin: 0 auto 14px; display: flex; align-items: center; justify-content: center;
+  background: rgba(74,163,255,0.12); border: 1px solid rgba(74,163,255,0.4); }
+.wz-hero-icon { color: #7BB0F5; font: 700 15px ui-monospace, monospace; letter-spacing: 1px; }
+.wz-hero-title { font-size: 19px; font-weight: 700; color: var(--pt-text-primary, #e6edf3); }
+.wz-hero-sub { font-size: 13px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.55; max-width: 380px; margin: 8px auto 0; }
+.wz-demo-row { text-align: center; margin-top: 16px; }
+.wz-demo-btn { background: transparent; border: 0; color: var(--pt-accent-blue, #4aa3ff); font-size: 12.5px; cursor: pointer; text-decoration: underline; padding: 4px; }
+.wz-demo-btn:hover { color: #7bb0f5; }
+/* consistent styling foundation /*wz-style-v39*/ */
+.wz-body { padding: 8px 2px 6px; }
+.wz-lead-row { display: flex; gap: 11px; align-items: flex-start; margin: 2px 0 16px; }
+.wz-mark { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 7px; background: rgba(74,163,255,0.12); border: 1px solid #33507a; display: flex; align-items: center; justify-content: center; color: #7bb0f5; }
+.wz-lead-t { font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.5; padding-top: 4px; }
+.wz-card-ico { display: flex; align-items: center; gap: 13px; text-align: left; }
+.wz-card-ico .wz-card-ic { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; background: rgba(74,163,255,0.10); border: 1px solid #33507a; display: flex; align-items: center; justify-content: center; color: #7bb0f5; }
+.wz-card-ico.wz-card-on .wz-card-ic { background: rgba(74,163,255,0.2); border-color: var(--pt-accent-blue, #4aa3ff); }
+.wz-card-body { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+#wz-next:disabled { opacity: .4; cursor: not-allowed; }
+.wz-row { display: flex; gap: 10px; }
+.wz-field { margin-bottom: 13px; }
 `;
 
 export function showSetupWizard(opts = {}) {
@@ -504,8 +536,12 @@ export function showSetupWizard(opts = {}) {
       STEPS.map((_, i) => `<span class="wz-dot ${i === idx ? 'wz-dot-on' : i < idx ? 'wz-dot-done' : ''}"></span>`).join('') +
       `<span class="wz-step-count">Step ${idx + 1} of ${STEPS.length}</span>`;
 
-    $('#wz-back').style.visibility = idx === 0 ? 'hidden' : 'visible';
+    const _connectIdx = STEPS.findIndex((s) => s.key === 'connect');
+    const _backLocked = idx === 0 || (wiz._connected && idx <= _connectIdx + 1);
+    $('#wz-back').style.visibility = _backLocked ? 'hidden' : 'visible';
     $('#wz-next').textContent = idx === STEPS.length - 1 ? 'Finish' : 'Next';
+    $('#wz-next').style.display = (step.key === 'transport') ? 'none' : '';   /*wz-next-hide-v36*/
+    refreshNext();   /*wz-next-gate-v41*/
 
     if (step.key === 'connect') {
       const btn = modal.querySelector('#wz-connect-btn');
@@ -514,15 +550,27 @@ export function showSetupWizard(opts = {}) {
         // connect, capture the pool hex (POOL_ID) for db-sync init, then resume
         // the wizard at the hub step carrying all choices so far.
         const saved = { ...wiz };
-        const hubIdx = STEPS.findIndex((s) => s.key === 'hub');
+        const hubIdx = STEPS.findIndex((s) => s.key === 'koios');
         modal.remove();
         showConnectModal((res) => {
           if (res && res.mode === 'live') {
             saved._connected = true;
             saved.poolHex = (res.envVars && res.envVars.POOL_ID) || null;
+            showSetupWizard({ onComplete, _resume: saved, _startIndex: hubIdx });
+          } else {
+            const connectStepIdx = STEPS.findIndex((s) => s.key === 'connect');   /*wz-back-v38*/
+            showSetupWizard({ onComplete, _resume: saved, _startIndex: connectStepIdx });
           }
-          showSetupWizard({ onComplete, _resume: saved, _startIndex: hubIdx });
-        });
+        }, { showBack: true });
+      });
+    }
+
+    if (step.key === 'welcome') {
+      const d = modal.querySelector('#wz-demo');
+      if (d) d.addEventListener('click', () => {   /*wz-demo-welcome-v37*/
+        setMode('demo');
+        modal.remove();
+        if (onComplete) onComplete(wiz);
       });
     }
 
@@ -532,6 +580,20 @@ export function showSetupWizard(opts = {}) {
           wiz.transport = card.dataset.choice;
           modal.querySelectorAll('.wz-card').forEach((c) => c.classList.toggle('wz-card-on', c === card));
           $('#wz-err').textContent = '';
+          setTimeout(() => { const nb = $('#wz-next'); if (nb) nb.click(); }, 180);   // auto-advance /*wz-flow-v35*/
+        });
+      });
+    }
+
+    if (step.key === 'koios') {
+      const reveal = modal.querySelector('#wz-koios-fields');
+      modal.querySelectorAll('.wz-card[data-koios]').forEach((card) => {
+        card.addEventListener('click', () => {
+          wiz.koiosMode = card.dataset.koios;
+          modal.querySelectorAll('.wz-card[data-koios]').forEach((c) => c.classList.toggle('wz-card-on', c === card));
+          if (reveal) reveal.classList.toggle('wz-reveal-open', wiz.koiosMode === 'key');
+          $('#wz-err').textContent = '';
+          if (wiz.koiosMode === 'key') { const t = modal.querySelector('#wz-koios-token'); if (t) t.focus(); }
         });
       });
     }
@@ -631,8 +693,7 @@ export function showSetupWizard(opts = {}) {
 
     if (step.key === 'notif') {
       const recompute = () => {
-        const tierEl = modal.querySelector('#wz-n-tier');
-        const tier = tierEl ? tierEl.value : 'free';
+        const tier = (wiz.koiosToken || '').trim() ? 'token' : 'free';
         const intEl = modal.querySelector('#wz-n-interval');
         const intervalMs = intEl ? Number(intEl.value) : getNotifSettings().pollMs;
         const source = wiz.useDbsync ? 'dbsync' : (wiz.useBlockfrost ? 'blockfrost' : 'koios');
@@ -666,7 +727,7 @@ export function showSetupWizard(opts = {}) {
           } else { usageEl.textContent = ''; usageEl.classList.remove('wz-warn'); }
         }
       };
-      ['#wz-n-tier', '#wz-n-interval'].forEach((id) => { const el = modal.querySelector(id); if (el) el.addEventListener('change', recompute); });
+      ['#wz-n-interval'].forEach((id) => { const el = modal.querySelector(id); if (el) el.addEventListener('change', recompute); });
       const sg = modal.querySelector('#wz-n-suggest');
       if (sg) sg.addEventListener('click', () => {
         const ms = Number(sg.dataset.ms); const sel = modal.querySelector('#wz-n-interval');
@@ -676,7 +737,22 @@ export function showSetupWizard(opts = {}) {
     }
   }
 
-  $('#wz-back').addEventListener('click', () => { if (idx > 0) { idx--; paint(); } });
+  $('#wz-back').addEventListener('click', () => {
+    const connectIdx = STEPS.findIndex((s) => s.key === 'connect');
+    if (wiz._connected && idx <= connectIdx + 1) return;   // node connection is a commitment
+    if (idx > 0) { idx--; paint(); }
+  });
+  // Gate Next on the step's own validation; re-check whenever the user acts.
+  function refreshNext() {
+    const st = STEPS[idx];
+    const nb = $('#wz-next');
+    if (!nb) return;
+    const invalid = st.validate ? !!st.validate(wiz, modal) : false;
+    nb.disabled = invalid;
+  }
+  modal.addEventListener('input', refreshNext);
+  modal.addEventListener('click', () => setTimeout(refreshNext, 0));
+
   $('#wz-next').addEventListener('click', () => {
     const step = STEPS[idx];
     if (step.validate) {

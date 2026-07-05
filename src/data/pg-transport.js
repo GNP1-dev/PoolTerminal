@@ -16,13 +16,35 @@
 import { invoke } from './tauri.js';
 
 /**
+ * Independent db-sync SSH session. Held in RelaySshState under this id, entirely
+ * separate from the node's primary SSH session, so db-sync can live on a third
+ * machine. Established with the shared relay_ssh_* commands.
+ */
+export const DBSYNC_SSH_ID = 'dbsync';
+
+/** Open (or replace) the dedicated db-sync SSH session. `params` is ConnectParams. */
+export async function connectDbsyncSsh(params) {
+  return invoke('relay_ssh_connect', { id: DBSYNC_SSH_ID, params });
+}
+/** Close the db-sync SSH session. */
+export async function disconnectDbsyncSsh() {
+  try { return await invoke('relay_ssh_disconnect', { id: DBSYNC_SSH_ID }); }
+  catch { return false; }
+}
+/** True if the db-sync SSH session is currently connected. */
+export async function dbsyncSshConnected() {
+  try { return await invoke('relay_ssh_is_connected', { id: DBSYNC_SSH_ID }); }
+  catch { return false; }
+}
+
+/**
  * Feature flag: SSH-tunnelled Postgres - for a db-sync that only listens on the
  * remote machine's own localhost (not exposed over the network). OFF until the
  * tunnel is validated on a second machine. While false: the wizard never offers
  * tunnel mode, and pgQuery never routes to it, so the working local-socket and
  * direct-TCP paths are the only ones reachable.
  */
-export const SSH_TUNNEL_ENABLED = false;
+export const SSH_TUNNEL_ENABLED = true;   /*dbsync-ssh-v55*/
 
 /**
  * Run a read-only SQL statement against db-sync.
@@ -34,11 +56,16 @@ export async function pgQuery(conn, sql) {
   // Route through the SSH tunnel only when explicitly flagged AND the feature is
   // enabled. `viaSsh` is a JS-only hint; strip it before sending to Rust (the
   // PgConn struct has no such field).
+  const viaId = conn && conn.sshVia;   // e.g. 'dbsync' -> independent SSH session
   const useTunnel = SSH_TUNNEL_ENABLED && !!(conn && conn.viaSsh === true);
-  const { viaSsh, ...pgConn } = conn || {};
+  const { viaSsh, sshVia, ...pgConn } = conn || {};
   let res;
   try {
-    res = await invoke(useTunnel ? 'pg_query_ssh' : 'pg_query', { conn: pgConn, sql });
+    if (viaId) {
+      res = await invoke('pg_query_ssh_via', { conn: pgConn, sql, id: viaId });
+    } else {
+      res = await invoke(useTunnel ? 'pg_query_ssh' : 'pg_query', { conn: pgConn, sql });
+    }
   } catch (err) {
     // Rust returns a string error (connect/query failure).
     throw new Error(typeof err === 'string' ? err : (err?.message ?? 'pg_query failed'));

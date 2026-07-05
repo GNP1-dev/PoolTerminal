@@ -860,11 +860,12 @@ function dbsyncConfigFromChoice() {
   const mode = c.dbsyncMode || 'local';
   const cfg = { database: d.database || 'cexplorer' };
   if (mode !== 'local') {
-    cfg.host = d.host || (mode === 'tunnel' ? '127.0.0.1' : '');
+    cfg.host = d.host || (mode === 'tunnel' || mode === 'ssh' ? '127.0.0.1' : '');
     cfg.port = d.port || 5432;
     if (d.user) cfg.user = d.user;
     if (d.password) cfg.password = d.password;
     if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
+    if (mode === 'ssh') cfg.sshVia = 'dbsync';   // dedicated SSH session /*dbsync-ssh-v56*/
   }
   return cfg;
 }
@@ -873,6 +874,15 @@ async function ensureDbsync() {
   if (_dbsyncInit) return dbsync.dbsyncSource.reachable();
   const _dbCfg = dbsyncConfigFromChoice();
   if (!_dbCfg) return false;   // user did not opt into db-sync - respect that choice
+  if (_dbCfg.sshVia) {   // independent SSH: open the dedicated db-sync session first /*dbsync-ssh-v56*/
+    const _c = savedSourceChoice();
+    const _sshP = _c && _c.dbsync && _c.dbsync.ssh;
+    if (!_sshP) { console.warn('[dbsync] ssh mode but no SSH params saved'); return false; }
+    try {
+      const { connectDbsyncSsh } = await import('./pg-transport.js');
+      await connectDbsyncSsh(_sshP);
+    } catch (e) { console.warn('[dbsync] db-sync SSH session connect failed', e); return false; }
+  }
   _dbsyncInit = true;
   const ok = await dbsync.initDbsync(_dbCfg, poolHex());
   if (ok) {
@@ -1226,6 +1236,8 @@ const NOTIF_EVENTS_KEEP = 1000;                  // cache retains newest N (prun
 let _notifAt = 0;
 let _notifInFlight = false;
 let _notifArmed = false;
+const NOTIF_STAKE_SETTLE_MS = 20 * 60 * 1000;   // pause stake-change events for 20 min into a new epoch /*notif-epoch-guard-v57*/
+let _notifStakeSettleUntil = 0;
 const _tickerCache = new Map();   // poolBech32 -> ticker|null, session-lived (tickers rarely change)
 
 /** Resolve pool ids to tickers, fetching only the ones we haven't seen this
@@ -1313,15 +1325,25 @@ export async function refreshNotifications(currentEpoch) {
     const prevRows = await cacheGetNotifSnapshot();
     const prev = new Map(prevRows.map((r) => [r.stake, r]));
 
+    // Source-switch guard: if the live delegator source changed (e.g. Koios ->
+    // db-sync), the stake basis differs (live vs active stake), so a naive diff
+    // flags everyone. Re-baseline silently on a source change. /*notif-source-guard-v59*/
+    const srcKey = `notif_source:${poolHex()}`;
+    const curSrc = (registry.resolve(DataKind.DELEGATOR_LIST_LIVE) || {}).id || '';
+    const lastSrc = await cacheMetaGet(srcKey);
+    const sourceChanged = lastSrc != null && lastSrc !== curSrc;
+
     const lovOf = (d) => d.liveStakeLovelace ?? Math.round((d.liveStake || 0) * 1e6);
     const curRows = cur.map((d) => ({ stake: d.stake, lovelace: lovOf(d), latestDelegTx: d.latestDelegTx ?? null }));
 
     // First run for this pool → store baseline, emit nothing (no false flood of
     // "joins" for every existing delegator). Re-baselines if the snapshot is
     // somehow empty (cache cleared), so it stays self-healing.
-    if (baselined !== 'done' || prev.size === 0) {
+    if (baselined !== 'done' || prev.size === 0 || sourceChanged) {
       await cachePutNotifSnapshot(curRows);
       await cacheMetaSet(baseKey, 'done');
+      await cacheMetaSet(srcKey, curSrc);
+      if (sourceChanged) console.log(`[notif] live source changed to '${curSrc}' — re-baselined, no events`);
       // Seed the db-sync join watermark to the current tip so first run doesn't
       // replay every historical join; later polls emit only newer certs.
       if (dbsync.dbsyncSource.reachable()) {
@@ -1334,6 +1356,20 @@ export async function refreshNotifications(currentEpoch) {
 
     const curMap = new Map(cur.map((d) => [d.stake, d]));
     const events = [];
+
+    // Epoch-boundary guard: at each new epoch the whole live-stake distribution
+    // shifts at once (rewards land, active-stake snapshot rolls, Koios recomputes
+    // live stake), which would fire a false stake_up/down for every delegator.
+    // Pause stake-change detection for a settling window; the snapshot still
+    // advances and joins/leaves are unaffected. /*notif-epoch-guard-v57*/
+    const _epKey = `notif_epoch:${poolHex()}`;
+    const _lastEp = Number(await cacheMetaGet(_epKey)) || 0;
+    if (currentEpoch && currentEpoch !== _lastEp) {
+      await cacheMetaSet(_epKey, String(currentEpoch));
+      _notifStakeSettleUntil = now + NOTIF_STAKE_SETTLE_MS;
+      console.log(`[notif] epoch ${currentEpoch}: pausing stake-change detection to absorb the boundary shift`);
+    }
+    const stakeSettling = now < _notifStakeSettleUntil;
 
     // --- Instant joins from db-sync (when available) -------------------------
     // db-sync records each delegation cert the moment it lands in a block, so
@@ -1381,6 +1417,7 @@ export async function refreshNotifications(currentEpoch) {
     }
 
     // Joins (collected, classified below) + stake up/down (walk current set).
+    const stakeEvents = [];   // collected for the mass-change guard /*notif-mass-guard-v64*/
     const joins = [];
     for (const d of cur) {
       const before = prev.get(d.stake);
@@ -1389,13 +1426,26 @@ export async function refreshNotifications(currentEpoch) {
         // New in the Koios set. If db-sync is catching joins, this is just the
         // boundary catch-up of a join already emitted — absorb silently.
         if (!dbsyncJoinsActive) joins.push({ stake: d.stake, amount: lov });
-      } else {
+      } else if (!stakeSettling) {
         const delta = lov - Number(before.lovelace || 0);
         if (Math.abs(delta) >= getNotifThresholdLovelace()) {
-          events.push({ type: delta > 0 ? 'stake_up' : 'stake_down', stake: d.stake,
+          stakeEvents.push({ type: delta > 0 ? 'stake_up' : 'stake_down', stake: d.stake,
                         detail: { amount: lov, delta, epoch: currentEpoch ?? null } });
         }
       }
+    }
+
+    // Mass-change circuit breaker: genuine stake activity touches a handful of
+    // delegators; a systemic shift (epoch roll, source switch, db-sync snapshot
+    // advancing, Koios boundary recompute) moves most of the set at once. If more
+    // than the threshold would fire in a single poll, treat it as systemic —
+    // suppress them and let the snapshot re-baseline silently (the snapshot is
+    // written at the end of this function regardless). Joins/leaves unaffected.
+    const MASS_CHANGE_LIMIT = Math.max(15, Math.ceil(cur.length * 0.2));   /*notif-mass-guard-v64*/
+    if (stakeEvents.length > MASS_CHANGE_LIMIT) {
+      console.log(`[notif] suppressed ${stakeEvents.length} simultaneous stake changes (systemic shift; limit ${MASS_CHANGE_LIMIT}) — re-baselined, no events`);
+    } else {
+      for (const _ev of stakeEvents) events.push(_ev);
     }
 
     // Classify joins: returning (we have our own record of them leaving us) >

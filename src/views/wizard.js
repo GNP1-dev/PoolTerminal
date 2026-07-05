@@ -182,69 +182,172 @@ const STEPS = [
     },
   },
   {
-    key: 'dbsync',
+    key: 'dbhave',
     title: 'Do you run db-sync?',
     accent: 'dbsync',
     render: (wiz) => {
-      const db = wiz.dbsync || {};
       const yn = wiz._dbAnswered ? !!wiz.useDbsync : null;
-      const mode = wiz.dbsyncMode || 'local';
-      const tunnelOpt = SSH_TUNNEL_ENABLED
-        ? `<option value="tunnel" ${mode === 'tunnel' ? 'selected' : ''}>Through the SSH connection to your node (tunnel)</option>` : '';
-      const showCreds = mode !== 'local';
       return `
-      ${wzHead(ICON_DB, "<span class='wz-src wz-dbsync'>db-sync</span> is your own copy of the Cardano database. If you run one, PoolTerminal reads it directly - adding the <strong>loyalty leaderboard</strong>, full instant history and the delegator deep-dive, with no API limits.")}
+      ${wzHead(ICON_DB, "<span class='wz-src wz-dbsync'>db-sync</span> is your own full copy of the Cardano database. If you run one, PoolTerminal reads it directly - adding the <strong>loyalty leaderboard</strong>, full instant history and the delegator deep-dive, with no API limits.")}
       ${yesNoCards(null, yn)}
-      <div class="wz-reveal ${yn === true ? 'wz-reveal-open' : ''}" id="wz-dbsync-fields">
-        <div class="wz-field"><label>How is db-sync reached?</label>
-          <select id="wz-db-mode">
-            <option value="local" ${mode === 'local' ? 'selected' : ''}>On the same machine as PoolTerminal (local socket)</option>
-            <option value="tcp" ${mode === 'tcp' ? 'selected' : ''}>Over the network (direct connection)</option>
-            ${tunnelOpt}
-          </select>
-        </div>
-        <div class="wz-field"><label>Database name</label>
-          <input id="wz-db-name" type="text" value="${esc(db.database || 'cexplorer')}" autocomplete="off"></div>
-        <div class="wz-creds ${showCreds ? '' : 'wz-creds-hidden'}" id="wz-db-creds">
-          <div class="wz-field"><label>Host${mode === 'tunnel' ? ' <span class="wz-opt">(as seen from the node; usually 127.0.0.1)</span>' : ''}</label>
-            <input id="wz-db-host" type="text" value="${esc(db.host || (mode === 'tunnel' ? '127.0.0.1' : ''))}" autocomplete="off"></div>
-          <div class="wz-row">
-            <div class="wz-field" style="flex:0.7"><label>Port</label>
-              <input id="wz-db-port" type="number" value="${db.port || 5432}" autocomplete="off"></div>
-            <div class="wz-field"><label>User</label>
-              <input id="wz-db-user" type="text" value="${esc(db.user || '')}" placeholder="cexplorer" autocomplete="off"></div>
-          </div>
-          <div class="wz-field"><label>Password <span class="wz-opt">(only if your db-sync user needs one)</span></label>
-            <input id="wz-db-pass" type="password" value="${esc(db.password || '')}" autocomplete="off"></div>
-          <label class="wz-check"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}>
-            Remember this password on this machine</label>
-        </div>
-        <div class="wz-hint" id="wz-db-hint"></div>
-        <div class="wz-testrow">
-          <button class="pt-btn" id="wz-db-test" type="button">Test connection</button>
-          <span class="wz-test-result" id="wz-db-test-result"></span>
-        </div>
-      </div>
       <div class="wz-foot">Not sure? Choose No - Koios covers history and the deep-dive. You can add db-sync later.</div>`;
     },
+    validate: (wiz) => (wiz._dbAnswered ? null : 'Please choose Yes or No.'),
+  },
+  {
+    key: 'dbwhere',   /*wz-dbtree-v62*/
+    title: 'Where does db-sync run?',
+    accent: 'dbsync',
+    skip: (wiz) => !wiz.useDbsync,
+    render: (wiz) => {
+      const loc = wiz.dbLocation || null;
+      const card = (id, ico, title, sub) =>
+        `<button class="wz-card wz-card-ico ${loc === id ? 'wz-card-on' : ''}" data-dbloc="${id}" type="button">`
+        + `<span class="wz-card-ic">${ico}</span><span class="wz-card-body"><span class="wz-card-h">${title}</span>`
+        + `<span class="wz-card-d">${sub}</span></span></button>`;
+      return `
+      ${wzHead(ICON_DB, "Where is the machine running db-sync, relative to PoolTerminal and your node?")}
+      <div class="wz-cards">
+        ${card('local', ICON_DESKTOP, 'On this machine', 'db-sync is on the same computer as PoolTerminal. Connects through the local socket - no SSH needed.')}
+        ${card('bp', ICON_NETWORK, 'On your block producer', 'db-sync lives on the node you are connecting to. Reuses that SSH connection - no extra login.')}
+        ${card('remote', ICON_NETWORK, 'On another machine', 'db-sync is on a separate machine. PoolTerminal opens its own SSH connection to it.')}
+      </div>`;
+    },
+    validate: (wiz) => (wiz.dbLocation ? null : 'Please choose where db-sync runs.'),
+  },
+  {
+    key: 'dbconn',
+    title: 'db-sync connection',
+    accent: 'dbsync',
+    skip: (wiz) => !wiz.useDbsync,
+    render: (wiz) => {
+      const loc = wiz.dbLocation || 'local';
+      const db = wiz.dbsync || {};
+      const ssh = db.ssh || {};
+      const authMode = db.authMode || 'password';
+      const dbNameRole = `
+        <div class="wz-field"><label>Database name</label>
+          <input id="wz-db-name" type="text" value="${esc(db.database || 'cexplorer')}" autocomplete="off"></div>
+        <div class="wz-field"><label>Database role / user</label>
+          <input id="wz-db-user" type="text" value="${esc(db.user || '')}" placeholder="e.g. cexplorer or your linux user" autocomplete="off"></div>`;
+      const discover = `<div class="wz-info">Not sure of the names? On the db-sync machine run <code>sudo -u postgres psql -l</code> to list the databases and their owning role.</div>`;
+
+      if (loc === 'local') {
+        return `
+        ${wzHead(ICON_DB, "db-sync is on this machine. PoolTerminal connects through the local socket - just confirm the database name and role.")}
+        ${dbNameRole}
+        ${discover}
+        <div class="wz-hint" id="wz-db-hint"></div>
+        <div class="wz-testrow"><button class="pt-btn" id="wz-db-test" type="button">Test connection</button><span class="wz-test-result" id="wz-db-test-result"></span></div>`;
+      }
+
+      // Shared db-access prerequisites - shown on BOTH the BP and remote paths,
+      // because either way db-sync lives on another machine that must be set up.
+      const prereq = `
+        <div class="wz-note wz-note-warn">
+          <div class="wz-note-h">On the db-sync machine you will need:</div>
+          <ul class="wz-checklist">
+            <li>Postgres reachable on <strong>localhost</strong> - <code>ss -tlnp | grep 5432</code> should show <code>127.0.0.1:5432</code>. <button type="button" class="wz-info-i" data-info="pglocal">i</button></li>
+            <li>A way in for the database: a <strong>password</strong> for the role, or a <strong>loopback-trust</strong> line in <code>pg_hba.conf</code> (<code>host &lt;db&gt; &lt;role&gt; 127.0.0.1/32 trust</code>) - safe only while Postgres stays localhost-only. <button type="button" class="wz-info-i" data-info="pgauth">i</button></li>
+            <li>Your <strong>database and role names</strong> - run <code>sudo -u postgres psql -l</code> to see them. <button type="button" class="wz-info-i" data-info="dbnames">i</button></li>
+          </ul>
+        </div>`;
+
+      const pgHostPort = `
+        <div class="wz-row">
+          <div class="wz-field"><label>db-sync host <span class="wz-opt">(as seen ON that machine - usually 127.0.0.1)</span></label>
+            <input id="wz-db-host" type="text" value="${esc(db.host || '127.0.0.1')}" autocomplete="off"></div>
+          <div class="wz-field" style="flex:0.45"><label>Port</label>
+            <input id="wz-db-port" type="number" value="${db.port || 5432}" autocomplete="off"></div>
+        </div>`;
+
+      const auth = `
+        <div class="wz-field"><label>Database access</label>
+          <select id="wz-db-auth">
+            <option value="password" ${authMode === 'password' ? 'selected' : ''}>Password (simplest)</option>
+            <option value="trust" ${authMode === 'trust' ? 'selected' : ''}>No password - loopback trust (advanced)</option>
+          </select>
+        </div>
+        <div class="wz-field ${authMode === 'password' ? '' : 'wz-creds-hidden'}" id="wz-db-passrow"><label>Database password</label>
+          <input id="wz-db-pass" type="password" value="${esc(db.password || '')}" autocomplete="off">
+          <label class="wz-check"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}> Remember this password on this machine</label></div>
+        <div class="wz-info ${authMode === 'trust' ? '' : 'wz-creds-hidden'}" id="wz-db-trustnote">Loopback trust means no password is stored: access is controlled purely by who can open the SSH tunnel. Keep Postgres listening on localhost only.</div>`;
+
+      if (loc === 'bp') {
+        return `
+        ${wzHead(ICON_DB, "db-sync is on your block producer. PoolTerminal reaches it through the SSH connection you already set up - no extra login. You still need the database reachable and authorised on that machine:")}
+        ${prereq}
+        ${pgHostPort}
+        ${dbNameRole}
+        ${auth}
+        <div class="wz-info">This rides your node's SSH session (your 2FA login), and reconnects when you reconnect to the node.</div>
+        <div class="wz-testrow"><button class="pt-btn" id="wz-db-test" type="button">Test connection</button><span class="wz-test-result" id="wz-db-test-result"></span></div>`;
+      }
+
+      // remote (another machine): full SSH panel
+      return `
+      ${wzHead(ICON_DB, "db-sync is on a separate machine. PoolTerminal opens its <strong>own SSH connection</strong> to it and reads the database through the tunnel - nothing is exposed to the network.")}
+      <div class="wz-note wz-note-warn">
+        <div class="wz-note-h">SSH access (key-based): <button type="button" class="wz-info-i" data-info="sshkey">i</button></div>
+        <ul class="wz-checklist">
+          <li>A password/2FA login will not work for a background connection - use an <strong>SSH key</strong>. Add its <code>.pub</code> to <code>~/.ssh/authorized_keys</code> on the db-sync machine.</li>
+          <li><strong>Permissions matter (fails silently):</strong> <code>~/.ssh</code> must be <code>700</code> and <code>authorized_keys</code> <code>600</code>, or SSH ignores the key and falls back to a password prompt.</li>
+        </ul>
+      </div>
+      ${prereq}
+      <div class="wz-subhead">SSH to the db-sync machine</div>
+      <div class="wz-row">
+        <div class="wz-field"><label>SSH host</label><input id="wz-ssh-host" type="text" value="${esc(ssh.host || '')}" placeholder="192.168.0.x or hostname" autocomplete="off"></div>
+        <div class="wz-field" style="flex:0.4"><label>Port</label><input id="wz-ssh-port" type="number" value="${ssh.port || 22}" autocomplete="off"></div>
+      </div>
+      <div class="wz-field"><label>SSH username</label><input id="wz-ssh-user" type="text" value="${esc(ssh.username || '')}" autocomplete="off"></div>
+      <div class="wz-field"><label>SSH private key path <span class="wz-opt">(on this machine)</span></label><input id="wz-ssh-key" type="text" value="${esc((ssh.auth && ssh.auth.path) || '')}" placeholder="/home/you/.ssh/id_ed25519" autocomplete="off"></div>
+      <div class="wz-field"><label>Key passphrase <span class="wz-opt">(only if your key has one)</span></label><input id="wz-ssh-pass" type="password" value="${esc((ssh.auth && ssh.auth.passphrase) || '')}" autocomplete="off"></div>
+      <div class="wz-subhead">Database on that machine</div>
+      ${pgHostPort}
+      ${dbNameRole}
+      ${auth}
+      <div class="wz-testrow"><button class="pt-btn" id="wz-db-test" type="button">Test connection</button><span class="wz-test-result" id="wz-db-test-result"></span></div>`;
+    },
     collect: (wiz, root) => {
-      // useDbsync + answered flag are set by the Yes/No handler; here we gather creds.
-      if (wiz.useDbsync) {
-        const modeEl = root.querySelector('#wz-db-mode');
-        wiz.dbsyncMode = modeEl ? modeEl.value : 'local';
-        const v = (id) => { const el = root.querySelector(id); return el ? el.value.trim() : ''; };
-        const save = root.querySelector('#wz-db-savepass');
-        wiz.dbsync = {
-          database: v('#wz-db-name') || 'cexplorer',
-          host: v('#wz-db-host'),
-          port: Number(v('#wz-db-port')) || 5432,
-          user: v('#wz-db-user'),
-          password: v('#wz-db-pass'),
-          savePassword: !!(save && save.checked),
+      if (!wiz.useDbsync) return;
+      const loc = wiz.dbLocation || 'local';
+      const v = (id) => { const el = root.querySelector(id); return el ? el.value.trim() : ''; };
+      const chk = (id) => { const el = root.querySelector(id); return !!(el && el.checked); };
+      wiz.dbsyncMode = loc === 'local' ? 'local' : loc === 'bp' ? 'tunnel' : 'ssh';
+      const authEl = root.querySelector('#wz-db-auth');
+      const authMode = authEl ? authEl.value : 'password';
+      const cfg = {
+        database: v('#wz-db-name') || 'cexplorer',
+        user: v('#wz-db-user'),
+        host: v('#wz-db-host') || (loc === 'local' ? '' : '127.0.0.1'),
+        port: Number(v('#wz-db-port')) || 5432,
+        authMode,
+        password: authMode === 'password' ? v('#wz-db-pass') : '',
+        savePassword: authMode === 'password' ? chk('#wz-db-savepass') : false,
+      };
+      if (loc === 'remote') {
+        cfg.ssh = {
+          host: v('#wz-ssh-host'),
+          port: Number(v('#wz-ssh-port')) || 22,
+          username: v('#wz-ssh-user'),
+          auth: { type: 'key', path: v('#wz-ssh-key'), passphrase: v('#wz-ssh-pass') || null },
         };
       }
+      wiz.dbsync = cfg;
     },
-    validate: (wiz) => (wiz._dbAnswered ? null : 'Please choose Yes or No.'),
+    validate: (wiz, root) => {   /*wz-dbconn-validate-v63a2*/
+      if (!wiz.useDbsync) return null;
+      const loc = wiz.dbLocation || 'local';
+      const v = (id) => { const el = root && root.querySelector(id); return el ? el.value.trim() : ''; };
+      if (!v('#wz-db-name')) return 'Enter the database name.';
+      if (loc === 'remote') {
+        if (!v('#wz-ssh-host')) return 'Enter the SSH host of the db-sync machine.';
+        if (!v('#wz-ssh-user')) return 'Enter the SSH username.';
+        if (!v('#wz-ssh-key')) return 'Enter the SSH private key path.';
+      }
+      return null;
+    },
   },
   {
     key: 'blockfrost',
@@ -424,7 +527,7 @@ const STYLE = `
 .wz-reveal { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .25s ease, margin .25s ease; margin: 0; }
 .wz-reveal-open { max-height: 600px; opacity: 1; margin: 14px 0 0; }
 .wz-creds { transition: max-height .25s ease, opacity .2s ease; overflow: hidden; }
-.wz-creds-hidden { max-height: 0; opacity: 0; }
+.wz-creds-hidden { max-height: 0; opacity: 0; overflow: hidden; pointer-events: none; }  /*wz-collapse-fix-v63a3*/
 
 .wz-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .wz-field > label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--pt-text-muted, #9aa7b4); }
@@ -485,9 +588,108 @@ const STYLE = `
 .wz-card-ico.wz-card-on .wz-card-ic { background: rgba(74,163,255,0.2); border-color: var(--pt-accent-blue, #4aa3ff); }
 .wz-card-body { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
 #wz-next:disabled { opacity: .4; cursor: not-allowed; }
+/* db-sync tree panels (wz-dbtree-v62) */
+.wz-note-warn { background: rgba(255,196,74,0.08); border: 1px solid rgba(255,196,74,0.35); border-radius: 8px; padding: 10px 12px; margin: 4px 0 12px; }
+.wz-note-h { font-weight: 700; font-size: 12px; color: #ffcf5a; margin-bottom: 6px; }
+.wz-checklist { margin: 0; padding-left: 18px; font-size: 11.5px; color: var(--pt-text-secondary, #b9c4d0); line-height: 1.6; }
+.wz-checklist li { margin-bottom: 4px; }
+.wz-checklist code, .wz-info code { background: rgba(120,150,200,0.14); border-radius: 3px; padding: 1px 4px; font-size: 10.5px; }
+.wz-subhead { font-weight: 700; font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase; color: #7f8fa8; margin: 14px 0 6px; }
+.wz-info { font-size: 11px; color: var(--pt-text-muted, #97A0B0); line-height: 1.5; margin: 4px 0 8px; }
+/* info icons + pop-out (wz-infoicons-v63b) */
+.wz-info-i { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; margin-left:5px; border-radius:50%; font:italic 700 10px serif; cursor:pointer; background:rgba(120,150,200,.18); border:1px solid rgba(120,150,200,.4); color:#a8bce0; vertical-align:middle; line-height:1; }
+.wz-info-i:hover { background:rgba(54,224,212,.2); border-color:rgba(54,224,212,.55); color:#8ff2e6; }
+.wz-info-pop { position:fixed; z-index:100; width:300px; max-width:92vw; background:#141b26; border:1px solid rgba(120,150,200,.35); border-radius:9px; padding:12px 13px 11px; box-shadow:0 10px 30px rgba(0,0,0,.6); }
+.wz-info-x { position:absolute; top:5px; right:10px; font-size:16px; line-height:1; color:#7f8fa8; cursor:pointer; }
+.wz-info-x:hover { color:#c8d4ea; }
+.wz-info-t { font-weight:700; font-size:12px; color:#8ff2e6; margin-bottom:5px; padding-right:14px; }
+.wz-info-b { font-size:11px; line-height:1.5; color:#c8d4ea; margin-bottom:8px; }
+.wz-info-cmd { display:flex; align-items:center; gap:6px; background:#0b0f16; border:1px solid rgba(120,150,200,.2); border-radius:5px; padding:5px 7px; margin-bottom:5px; }
+.wz-info-cmd code { flex:1; font-family:ui-monospace,monospace; font-size:10px; color:#b9e6ff; white-space:pre-wrap; word-break:break-all; }
+.wz-info-copy { flex:0 0 auto; font:700 9px ui-monospace,monospace; padding:3px 7px; border-radius:4px; cursor:pointer; background:rgba(54,224,212,.14); border:1px solid rgba(54,224,212,.4); color:#8ff2e6; }
+.wz-info-copy:hover { background:rgba(54,224,212,.25); }
+.wz-info-f { font-size:10px; line-height:1.45; color:#97a0b0; margin-top:6px; font-style:italic; }
 .wz-row { display: flex; gap: 10px; }
 .wz-field { margin-bottom: 13px; }
 `;
+
+const WZ_INFO = {   /*wz-infoicons-v63b*/
+  sshkey: {
+    title: 'SSH key access',
+    body: "A background connection can't answer a 2FA prompt, so PoolTerminal needs a key-based login to the db-sync machine. Generate a dedicated key, authorise it, and set the permissions - if ~/.ssh is too open, SSH silently ignores the key and falls back to a password prompt.",
+    cmds: [
+      "ssh-keygen -t ed25519 -f ~/.ssh/pt_dbsync -N ''",
+      "cat ~/.ssh/pt_dbsync.pub >> ~/.ssh/authorized_keys",
+      "chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys",
+    ],
+    foot: "Then enter the private key path (e.g. ~/.ssh/pt_dbsync) in the SSH key field. Key auth also bypasses the 2FA that interactive logins use.",
+  },
+  pglocal: {
+    title: 'Postgres on localhost',
+    body: "The tunnel connects to Postgres on the db-sync machine's own loopback, so it must be listening on 127.0.0.1:5432. Check with:",
+    cmds: ["ss -tlnp | grep 5432"],
+    foot: "If nothing shows 127.0.0.1:5432, set  listen_addresses = 'localhost'  in postgresql.conf and reload Postgres. Loopback-only keeps it off the network.",
+  },
+  pgauth: {
+    title: 'Database access',
+    body: "Two ways to let the app in: a password for the role, or a loopback-trust line (no password stored) - safe ONLY while Postgres stays localhost-only. For trust, add this ABOVE the scram-sha-256 line in pg_hba.conf (replace <db> and <role>), then reload:",
+    cmds: ["host    <db>    <role>    127.0.0.1/32    trust", "sudo systemctl reload postgresql"],
+    foot: "Find your pg_hba.conf path with:  sudo -u postgres psql -tA -c \"SHOW hba_file\"",
+  },
+  dbnames: {
+    title: 'Database & role names',
+    body: "Not sure of your database and role names? List every database and its owning role:",
+    cmds: ["sudo -u postgres psql -l"],
+    foot: "The db-sync database is usually \"cexplorer\". Its Owner column is the role to enter above.",
+  },
+};
+
+function wzFallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta); if (done) done();
+  } catch (e) { /* copy unavailable */ }
+}
+function wzCopyCmd(text, btn) {
+  const done = () => { const o = btn.textContent; btn.textContent = 'copied'; setTimeout(() => { btn.textContent = o; }, 1200); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => wzFallbackCopy(text, done));
+    } else { wzFallbackCopy(text, done); }
+  } catch (e) { wzFallbackCopy(text, done); }
+}
+function closeInfoPop(modal) { const ex = modal.querySelector('.wz-info-pop'); if (ex) ex.remove(); }
+function showInfoPop(modal, anchorEl, info) {
+  if (!info) return;
+  closeInfoPop(modal);
+  const pop = document.createElement('div');
+  pop.className = 'wz-info-pop';
+  const cmdRows = (info.cmds || []).map(() => '<div class="wz-info-cmd"><code></code><button type="button" class="wz-info-copy">copy</button></div>').join('');
+  pop.innerHTML = '<div class="wz-info-x" title="Close">\u00d7</div><div class="wz-info-t"></div><div class="wz-info-b"></div>' + cmdRows + (info.foot ? '<div class="wz-info-f"></div>' : '');
+  pop.querySelector('.wz-info-t').textContent = info.title || '';
+  pop.querySelector('.wz-info-b').textContent = info.body || '';
+  if (info.foot) pop.querySelector('.wz-info-f').textContent = info.foot;
+  const codeEls = pop.querySelectorAll('.wz-info-cmd code');
+  const copyEls = pop.querySelectorAll('.wz-info-copy');
+  (info.cmds || []).forEach((c, i) => {
+    if (codeEls[i]) codeEls[i].textContent = c;
+    if (copyEls[i]) copyEls[i].addEventListener('click', () => wzCopyCmd(c, copyEls[i]));
+  });
+  pop.querySelector('.wz-info-x').addEventListener('click', () => closeInfoPop(modal));
+  modal.appendChild(pop);
+  const ar = anchorEl.getBoundingClientRect();
+  let left = ar.left - 40;
+  if (left < 8) left = 8;
+  const maxLeft = window.innerWidth - 308;
+  if (left > maxLeft) left = Math.max(8, maxLeft);
+  let top = ar.bottom + 6;
+  const maxTop = window.innerHeight - pop.offsetHeight - 8;
+  if (top > maxTop) top = Math.max(8, ar.top - pop.offsetHeight - 6);
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
 
 export function showSetupWizard(opts = {}) {
   if (document.getElementById('wz-modal')) return;
@@ -525,6 +727,11 @@ export function showSetupWizard(opts = {}) {
 
   const $ = (id) => modal.querySelector(id);
 
+  // Skip-aware navigation: a step whose skip(wiz) returns true is passed over. /*wz-skip-v61*/
+  const stepVisible = (i) => { const s = STEPS[i]; return !(s && typeof s.skip === 'function' && s.skip(wiz)); };
+  const nextVisibleIdx = (from) => { for (let i = from + 1; i < STEPS.length; i++) if (stepVisible(i)) return i; return -1; };
+  const prevVisibleIdx = (from) => { for (let i = from - 1; i >= 0; i--) if (stepVisible(i)) return i; return -1; };
+
   function paint() {
     const step = STEPS[idx];
     $('#wz-title').textContent = step.title;
@@ -532,14 +739,16 @@ export function showSetupWizard(opts = {}) {
     $('#wz-body').innerHTML = `<div class="wz-anim">${step.render(wiz)}</div>`;
     $('#wz-err').textContent = '';
 
+    const _vis = STEPS.map((_, i) => i).filter(stepVisible);
+    const _cur = _vis.indexOf(idx);
     $('#wz-progress').innerHTML =
-      STEPS.map((_, i) => `<span class="wz-dot ${i === idx ? 'wz-dot-on' : i < idx ? 'wz-dot-done' : ''}"></span>`).join('') +
-      `<span class="wz-step-count">Step ${idx + 1} of ${STEPS.length}</span>`;
+      _vis.map((i, p) => `<span class="wz-dot ${p === _cur ? 'wz-dot-on' : p < _cur ? 'wz-dot-done' : ''}"></span>`).join('') +
+      `<span class="wz-step-count">Step ${_cur + 1} of ${_vis.length}</span>`;
 
     const _connectIdx = STEPS.findIndex((s) => s.key === 'connect');
-    const _backLocked = idx === 0 || (wiz._connected && idx <= _connectIdx + 1);
+    const _backLocked = prevVisibleIdx(idx) === -1 || (wiz._connected && idx <= _connectIdx + 1);
     $('#wz-back').style.visibility = _backLocked ? 'hidden' : 'visible';
-    $('#wz-next').textContent = idx === STEPS.length - 1 ? 'Finish' : 'Next';
+    $('#wz-next').textContent = nextVisibleIdx(idx) === -1 ? 'Finish' : 'Next';
     $('#wz-next').style.display = (step.key === 'transport') ? 'none' : '';   /*wz-next-hide-v36*/
     refreshNext();   /*wz-next-gate-v41*/
 
@@ -598,62 +807,96 @@ export function showSetupWizard(opts = {}) {
       });
     }
 
-    if (step.key === 'dbsync') {
-      const reveal = modal.querySelector('#wz-dbsync-fields');
+    if (step.key === 'dbhave') {   /*wz-dbtree-v62*/
       modal.querySelectorAll('.wz-card[data-yn]').forEach((card) => {
         card.addEventListener('click', () => {
           const yes = card.dataset.yn === 'yes';
           wiz.useDbsync = yes; wiz._dbAnswered = true;
           modal.querySelectorAll('.wz-card[data-yn]').forEach((c) => c.classList.toggle('wz-card-on', c === card));
-          if (reveal) reveal.classList.toggle('wz-reveal-open', yes);
           $('#wz-err').textContent = '';
-          updateDbHint();
+          setTimeout(() => { const nb = $('#wz-next'); if (nb) nb.click(); }, 180);   // auto-advance
         });
       });
-      const modeEl = modal.querySelector('#wz-db-mode');
-      if (modeEl) modeEl.addEventListener('change', () => {
-        const creds = modal.querySelector('#wz-db-creds');
-        const local = modeEl.value === 'local';
-        if (creds) creds.classList.toggle('wz-creds-hidden', local);
-        const hostEl = modal.querySelector('#wz-db-host');
-        if (hostEl && modeEl.value === 'tunnel' && !hostEl.value) hostEl.value = '127.0.0.1';
-        updateDbHint();
-      });
-      function updateDbHint() {
-        const h = modal.querySelector('#wz-db-hint'); if (!h) return;
-        const m = (modal.querySelector('#wz-db-mode') || {}).value || 'local';
-        h.textContent = m === 'local'
-          ? 'Local socket: db-sync runs on this same machine. Leave the credentials as they are - it connects through the socket. db-sync activates after a successful test.'
-          : m === 'tunnel'
-            ? 'Tunnel: PoolTerminal reaches db-sync through the SSH connection to your node. Host is as the node sees it (usually 127.0.0.1).'
-            : 'Network: enter the host, port and user for the machine running db-sync.';
-      }
-      updateDbHint();
+    }
 
+    if (step.key === 'dbwhere') {
+      modal.querySelectorAll('.wz-card[data-dbloc]').forEach((card) => {
+        card.addEventListener('click', () => {
+          wiz.dbLocation = card.dataset.dbloc;
+          modal.querySelectorAll('.wz-card[data-dbloc]').forEach((c) => c.classList.toggle('wz-card-on', c === card));
+          $('#wz-err').textContent = '';
+          setTimeout(() => { const nb = $('#wz-next'); if (nb) nb.click(); }, 180);   // auto-advance
+        });
+      });
+    }
+
+    if (step.key === 'dbconn') {
+      modal.querySelectorAll('.wz-info-i').forEach((ic) => {   /*wz-infoicons-v63b*/
+        ic.addEventListener('click', (e) => { e.stopPropagation(); showInfoPop(modal, ic, WZ_INFO[ic.dataset.info]); });
+      });
+      modal.addEventListener('click', (e) => {
+        const pop = modal.querySelector('.wz-info-pop');
+        if (pop && !pop.contains(e.target) && !(e.target.classList && e.target.classList.contains('wz-info-i'))) closeInfoPop(modal);
+      });
+      // Auth-method toggle: show/hide the password row and the trust note.
+      const authEl = modal.querySelector('#wz-db-auth');
+      if (authEl) authEl.addEventListener('change', () => {
+        const pw = modal.querySelector('#wz-db-passrow');
+        const tn = modal.querySelector('#wz-db-trustnote');
+        const isPw = authEl.value === 'password';
+        if (pw) pw.classList.toggle('wz-creds-hidden', !isPw);
+        if (tn) tn.classList.toggle('wz-creds-hidden', isPw);
+      });
       const dbTest = modal.querySelector('#wz-db-test');
-      if (dbTest) dbTest.addEventListener('click', async () => {
+      if (dbTest) dbTest.addEventListener('click', async () => {   /*wz-wire-v63*/
         const res = modal.querySelector('#wz-db-test-result');
         if (!res) return;
         if (!wiz.poolHex) {
           res.textContent = 'Connect to your node first (needed to find your pool).';
           res.className = 'wz-test-result wz-test-bad'; return;
         }
-        const modeEl = modal.querySelector('#wz-db-mode');
+        const loc = wiz.dbLocation || 'local';
         const v = (id) => { const el = modal.querySelector(id); return el ? el.value.trim() : ''; };
-        const tmp = {
-          dbsyncMode: modeEl ? modeEl.value : 'local',
-          dbsync: {
-            database: v('#wz-db-name') || 'cexplorer',
-            host: v('#wz-db-host'), port: Number(v('#wz-db-port')) || 5432,
-            user: v('#wz-db-user'), password: v('#wz-db-pass'),
-          },
+        const authEl = modal.querySelector('#wz-db-auth');
+        const authMode = authEl ? authEl.value : 'password';
+        const mode = loc === 'local' ? 'local' : loc === 'bp' ? 'tunnel' : 'ssh';
+        const dbsync = {
+          database: v('#wz-db-name') || 'cexplorer',
+          user: v('#wz-db-user'),
+          host: v('#wz-db-host') || (loc === 'local' ? '' : '127.0.0.1'),
+          port: Number(v('#wz-db-port')) || 5432,
+          password: authMode === 'password' ? v('#wz-db-pass') : '',
         };
         res.textContent = 'Testing...'; res.className = 'wz-test-result wz-test-pending';
         dbTest.disabled = true;
         try {
-          const ok = await initDbsync(buildDbsyncConfig(tmp), wiz.poolHex);
-          res.textContent = ok ? 'Connected to db-sync \u2713' : 'Could not connect - check the details above.';
-          res.className = 'wz-test-result ' + (ok ? 'wz-test-good' : 'wz-test-bad');
+          if (loc === 'remote') {
+            const sshParams = {
+              host: v('#wz-ssh-host'), port: Number(v('#wz-ssh-port')) || 22,
+              username: v('#wz-ssh-user'),
+              auth: { type: 'key', path: v('#wz-ssh-key'), passphrase: v('#wz-ssh-pass') || null },
+            };
+            res.textContent = 'Opening SSH connection to the db-sync machine...';
+            try {
+              const { connectDbsyncSsh } = await import('../data/pg-transport.js');
+              await connectDbsyncSsh(sshParams);
+            } catch (e) {
+              res.textContent = 'Could not open the SSH connection - check the SSH host, port, username and key path. (' + (e.message ?? e) + ')';
+              res.className = 'wz-test-result wz-test-bad'; dbTest.disabled = false; return;
+            }
+            dbsync.ssh = sshParams;
+            res.textContent = 'SSH connected - querying db-sync...';
+          }
+          const ok = await initDbsync(buildDbsyncConfig({ dbsyncMode: mode, dbsync }), wiz.poolHex);
+          if (ok) {
+            res.textContent = 'Connected to db-sync \u2713';
+            res.className = 'wz-test-result wz-test-good';
+          } else {
+            res.textContent = loc === 'local'
+              ? 'Could not reach db-sync on the local socket - check the database name and role.'
+              : 'Reached the machine, but the database query did not succeed - check the database name, role, and your password / loopback-trust setup.';
+            res.className = 'wz-test-result wz-test-bad';
+          }
         } catch (e) {
           res.textContent = 'Connection failed: ' + (e.message ?? e);
           res.className = 'wz-test-result wz-test-bad';
@@ -740,7 +983,8 @@ export function showSetupWizard(opts = {}) {
   $('#wz-back').addEventListener('click', () => {
     const connectIdx = STEPS.findIndex((s) => s.key === 'connect');
     if (wiz._connected && idx <= connectIdx + 1) return;   // node connection is a commitment
-    if (idx > 0) { idx--; paint(); }
+    const pi = prevVisibleIdx(idx);
+    if (pi !== -1) { idx = pi; paint(); }
   });
   // Gate Next on the step's own validation; re-check whenever the user acts.
   function refreshNext() {
@@ -760,7 +1004,8 @@ export function showSetupWizard(opts = {}) {
       if (err) { $('#wz-err').textContent = err; return; }
     }
     if (step.collect) step.collect(wiz, modal);
-    if (idx < STEPS.length - 1) { idx++; paint(); }
+    const ni = nextVisibleIdx(idx);
+    if (ni !== -1) { idx = ni; paint(); }
     else {
       const nextBtn = $('#wz-next');
       nextBtn.disabled = true;
@@ -786,9 +1031,22 @@ function saveSourceChoice(wiz) {
       host: d.host || '',
       port: d.port || 5432,
       user: d.user || '',
+      authMode: d.authMode || 'password',
       savePassword: !!d.savePassword,
       password: d.savePassword ? (d.password || '') : '',
     };
+    if (wiz.dbsyncMode === 'ssh' && d.ssh) {   /*wz-wire-v63*/
+      out.dbsync.ssh = {
+        host: d.ssh.host || '',
+        port: d.ssh.port || 22,
+        username: d.ssh.username || '',
+        auth: {
+          type: 'key',
+          path: (d.ssh.auth && d.ssh.auth.path) || '',
+          passphrase: (d.ssh.auth && d.ssh.auth.passphrase) || null,
+        },
+      };
+    }
   }
   try { localStorage.setItem('poolterminal.source.v1', JSON.stringify(out)); }
   catch (e) { console.warn('[wizard] source save failed:', e.message ?? e); }
@@ -801,11 +1059,12 @@ function buildDbsyncConfig(wiz) {
   const mode = wiz.dbsyncMode || 'local';
   const cfg = { database: d.database || 'cexplorer' };
   if (mode === 'local') return cfg;
-  cfg.host = d.host || (mode === 'tunnel' ? '127.0.0.1' : '');
+  cfg.host = d.host || (mode === 'tunnel' || mode === 'ssh' ? '127.0.0.1' : '');
   cfg.port = d.port || 5432;
   if (d.user) cfg.user = d.user;
   if (d.password) cfg.password = d.password;
   if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
+  if (mode === 'ssh') cfg.sshVia = 'dbsync';   // independent SSH session /*wz-wire-v63*/
   return cfg;
 }
 

@@ -116,6 +116,9 @@ function mountView(view) {
   } else if (view === 'now2') {
     mountNow2(canvasEl);
     if (_lastPeers) { try { renderPeersPanel(_lastPeers); } catch { /* not ready */ } }
+    else if (getMode() === 'demo' && dataSource().getPeers) {   /*demo-peers-v66d*/
+      dataSource().getPeers().then((p) => { try { renderPeersPanel(p); } catch { /* not ready */ } }).catch(() => {});
+    }
     refreshUpcomingBlocks(dataSource()).catch(() => {});
   } else if (view === 'history') {
     mountHistory(canvasEl);

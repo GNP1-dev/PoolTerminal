@@ -143,7 +143,7 @@ export async function getDelegatorList() {
   } catch { /* owners are a nice-to-have flag */ }
 
   const rows = await pgQuery(_cfg, `
-    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake)
+    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake_progress WHERE completed)   /* newest COMPLETE snapshot, not the future one db-sync pre-fills /*dbsync-epoch-complete-v58*/ */
     SELECT sa.view AS stake, es.amount::text AS lovelace
     FROM epoch_stake es
     JOIN stake_address sa ON sa.id = es.addr_id
@@ -172,7 +172,7 @@ export async function getLoyalty() {
   console.log('[dbsync.getLoyalty] issuing query for pool_id', _poolId);
   const _t = Date.now();
   const rows = await pgQuery(_cfg, `
-    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake),
+    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake_progress WHERE completed),
     delegs AS (SELECT addr_id FROM epoch_stake WHERE epoch_no=(SELECT e FROM cur) AND pool_id=${_poolId}),
     mine AS (
       SELECT es.addr_id, es.epoch_no, es.amount,
@@ -451,6 +451,48 @@ export async function getDelegationEvents(opts = {}) {
 export async function getMaxDelegationId() {
   const rows = await pgQuery(_cfg, `SELECT MAX(id)::text AS m FROM delegation`);
   return (rows.length && rows[0].m != null) ? Number(rows[0].m) : 0;
+}
+
+// --- On-chain message feed (CIP-20 tx metadata, label 674) ------------------
+// Watermarked by tx_metadata.id so each message surfaces exactly once. Returns
+// the raw text (msg array joined by newlines / string as-is); the DEX-bot
+// denylist and profanity filtering are applied in the UI so its toggles work
+// without re-querying. /*msgfeed-v65*/
+function normalizeMsg(json) {
+  try {
+    const o = typeof json === 'string' ? JSON.parse(json) : json;
+    const m = o && o.msg;
+    if (Array.isArray(m)) return m.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n');
+    if (typeof m === 'string') return m;
+    if (m != null) return JSON.stringify(m);
+    return typeof json === 'string' ? json : JSON.stringify(o);
+  } catch { return String(json == null ? '' : json); }
+}
+
+export async function getMessageFeed(opts = {}) {
+  if (!_cfg) return { messages: [], scannedMax: null };
+  const sinceId = Number(opts.sinceId) || 0;
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 500);
+  const order = opts.order === 'asc' ? 'ASC' : 'DESC';   /*msgfeed-order-v67b*/
+  const rows = await pgQuery(_cfg, `
+    SELECT m.id::text AS id,
+           encode(t.hash, 'hex') AS tx,
+           (extract(epoch from b.time))::bigint::text AS ts,
+           m.json::text AS json   /*msgfeed-jsonb-v65b*/
+    FROM tx_metadata m
+    JOIN tx t ON t.id = m.tx_id
+    JOIN block b ON b.id = t.block_id
+    WHERE m.key = 674 AND m.id > ${sinceId}
+    ORDER BY m.id ${order}
+    LIMIT ${limit}`);
+  const messages = rows.map((r) => ({
+    id: Number(r.id),
+    tx: r.tx,
+    ts: Number(r.ts),
+    text: normalizeMsg(r.json),
+  }));
+  const scannedMax = messages.length ? Math.max(...messages.map((mm) => mm.id)) : sinceId;
+  return { messages, scannedMax };
 }
 
 const PROVIDES = [

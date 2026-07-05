@@ -260,3 +260,95 @@ pub async fn pg_query_ssh(
     let _ = handle.await;
     result
 }
+
+
+// db-sync over an INDEPENDENT SSH session (additive) - PoolTerminal Stage 2.
+// Identical to pg_query_ssh, but the direct-tcpip forward is opened over a
+// dedicated keyed session held in RelaySshState (id, e.g. "dbsync") rather than
+// the primary node SshState. This lets db-sync live on a machine that is neither
+// the app host nor the node. The session is established with relay_ssh_connect
+// (the same auth path as any SSH connection). The node's primary session is
+// never touched.
+#[tauri::command]
+pub async fn pg_query_ssh_via(
+    conn: PgConn,
+    sql: String,
+    id: String,
+    relay_state: tauri::State<'_, crate::ssh::RelaySshState>,
+) -> Result<PgResult, String> {
+    let host = conn
+        .host
+        .clone()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = conn.port.unwrap_or(5432);
+
+    // Open the forward channel briefly under the lock, then release the guard so
+    // the query does not hold the relay-sessions map mutex.
+    let channel = {
+        let guard = relay_state.0.lock().await;
+        let session = guard
+            .get(&id)
+            .ok_or_else(|| format!("db-sync SSH '{id}' not connected"))?;
+        session
+            .open_forward(&host, port)
+            .await
+            .map_err(|e| format!("tunnel open failed: {e}"))?
+    };
+
+    let stream = channel.into_stream();
+
+    let mut cfg = tokio_postgres::Config::new();
+    cfg.dbname(&conn.database);
+    match conn.user.as_deref() {
+        Some(u) if !u.is_empty() => {
+            cfg.user(u);
+        }
+        _ => {
+            if let Ok(os_user) = std::env::var("USER") {
+                cfg.user(&os_user);
+            }
+        }
+    }
+    if let Some(pw) = conn.password.as_deref() {
+        if !pw.is_empty() {
+            cfg.password(pw);
+        }
+    }
+
+    let (client, connection) = cfg
+        .connect_raw(stream, NoTls)
+        .await
+        .map_err(|e| format!("tunneled connect failed: {e}"))?;
+
+    let handle = tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("[pg-ssh-via] connection error: {e}");
+        }
+    });
+
+    let result = async {
+        let rows = client
+            .query(sql.as_str(), &[])
+            .await
+            .map_err(|e| format!("query failed: {e}"))?;
+
+        let columns: Vec<String> = if let Some(first) = rows.first() {
+            first.columns().iter().map(|c| c.name().to_string()).collect()
+        } else {
+            Vec::new()
+        };
+
+        let out: Vec<Vec<Option<String>>> = rows
+            .iter()
+            .map(|r| (0..r.columns().len()).map(|i| value_to_string(r, i)).collect())
+            .collect();
+
+        Ok::<PgResult, String>(PgResult { columns, rows: out })
+    }
+    .await;
+
+    drop(client);
+    let _ = handle.await;
+    result
+}

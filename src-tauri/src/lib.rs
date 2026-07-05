@@ -70,6 +70,7 @@ pub fn run() {
             cache::cache_clear_all,
             pg::pg_query,
             pg::pg_query_ssh,
+            pg::pg_query_ssh_via,
             sshkeys::list_ssh_keys,
             localrun::local_run,
             localrun::local_probe,

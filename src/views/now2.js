@@ -105,7 +105,7 @@ const N2_HTML = `
     .n2-mp-host { width:100%; }
 
     /* bottom panels */
-    .n2-bottom { display:grid; grid-template-columns:1.7fr 1fr 1fr; gap:12px; align-items:stretch; flex:1 0 auto; min-height:210px; }
+    .n2-bottom { display:grid; grid-template-columns:1.3fr 0.85fr 0.85fr 1.2fr; gap:12px; align-items:stretch; flex:1 1 auto; min-height:0; }  /*mf-layout-v66*//*mf-viewport-v66c*/
     .n2-bottom .n2-panel { padding:10px 14px; min-height:115px; overflow:visible; display:flex; flex-direction:column; min-width:0; }
     .n2-bp-body { display:flex; flex-direction:column; gap:11px; padding-top:8px; flex:1 1 auto; justify-content:center; }
     .n2-bp-row { display:flex; align-items:center; gap:8px; font-size:12px; }
@@ -129,12 +129,49 @@ const N2_HTML = `
     .n2-bp-tick { flex:1 1 0; min-width:2px; border-radius:2px 2px 0 0; opacity:.85; height:10%; }
     .n2-bp-strip-empty { font-size:10px; color:var(--pt-text-muted,#6f7d99); align-self:center; margin:auto; }
     .n2-bp-note { font-size:9px; color:var(--pt-text-muted,#6f7d99); text-align:center; margin-top:4px; line-height:1.3; }
-    .n2-ub-panel .pt-ub-body { overflow-y:auto; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:block; }
-    .n2-pp-panel .pt-pp-body { /*peers-scroll*/ overflow-y:auto; overflow-x:hidden; max-height:200px;
+    .n2-ub-panel .pt-ub-body { overflow-y:auto; overflow-x:hidden; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:block; }  /*mf-refine-v66b*/
+    .n2-ub-panel .pt-ub-body::-webkit-scrollbar { width:7px; }
+    .n2-ub-panel .pt-ub-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
+    .n2-ub-panel .pt-ub-body::-webkit-scrollbar-track { background:rgba(120,150,200,.06); border-radius:4px; }
+    .n2-pp-panel .pt-pp-body { /*peers-scroll*/ overflow-y:auto; overflow-x:hidden; max-height:none;   /*mf-refine2-v66e*/
       min-height:0; flex:1 1 auto; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }
     .n2-pp-panel .pt-pp-body::-webkit-scrollbar { width:7px; }
     .n2-pp-panel .pt-pp-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
     .n2-pp-panel .pt-pp-body::-webkit-scrollbar-track { background:rgba(120,150,200,.06); border-radius:4px; }
+    /* Chain messages feed (mf-layout-v66) */
+    .n2-mf-panel { min-width:0; }
+    .n2-mf-body { overflow-y:auto; overflow-x:hidden; flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:5px; padding-top:6px; position:relative; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; }  /*mf-faithful-v67b*/
+    .n2-mf-body::-webkit-scrollbar { width:7px; }
+    .n2-mf-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
+    .n2-mf-body::-webkit-scrollbar-track { background:rgba(120,150,200,.06); border-radius:4px; }
+    .n2-mf-msg { font-size:11px; line-height:1.3; color:#c8d4ea; border-left:2px solid rgba(120,150,200,.35); padding:2px 0 3px 8px; min-width:0; }
+    .n2-mf-text { white-space:pre-wrap; word-break:break-word; display:block; }
+    .n2-mf-tx { font-family:ui-monospace,monospace; font-size:8.5px; color:#6f7d99; display:block; margin-top:1px; }
+    .n2-mf-msg.n2-mf-mine { border-left-color:#36e0d4; }
+    .n2-mf-msg.n2-mf-mine .n2-mf-text { color:#8ff2e6; }
+    @keyframes mfIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }  /*mf-engine-v67*/
+    /* peers header fit + feed filter toggles (mf-refine-v66b) */
+    .n2-pp-panel .pt-panel-header { min-width:0; flex-wrap:nowrap; }
+    .n2-pp-panel .pt-panel-meta { font-size:8px; gap:7px; white-space:nowrap; letter-spacing:-0.2px; }  /*mf-refine3-v66f*/
+    .n2-pp-panel .n2-pp-pair { white-space:nowrap; }
+    .n2-mf-panel .pt-panel-header { gap:6px; align-items:center; flex-wrap:nowrap; min-width:0; }
+    .n2-mf-filters { display:flex; align-items:center; flex:0 0 auto; position:relative; }  /*mf-refine2-v66e*/
+    .n2-mf-funnel { display:flex; align-items:center; justify-content:center; width:22px; height:16px; margin:-2px 0; padding:0; border-radius:5px;
+      cursor:pointer; background:rgba(120,150,200,.08); border:1px solid rgba(120,150,200,.22); color:#8aa0c0; }
+    .n2-mf-funnel:hover { border-color:rgba(120,150,200,.45); color:#c8d4ea; }
+    .n2-mf-funnel.active { background:rgba(54,224,212,.14); border-color:rgba(54,224,212,.5); color:#8ff2e6; }
+    .n2-mf-pause { display:flex; align-items:center; justify-content:center; width:22px; height:16px; margin:-2px 6px -2px 0; padding:0; border-radius:5px; cursor:pointer; background:rgba(120,150,200,.08); border:1px solid rgba(120,150,200,.22); color:#8aa0c0; }
+    .n2-mf-pause:hover { border-color:rgba(120,150,200,.45); color:#c8d4ea; }
+    .n2-mf-pause.paused { background:rgba(255,196,74,.14); border-color:rgba(255,196,74,.5); color:#ffcf5a; }
+    .n2-mf-pause .mf-ic-play { display:none; }
+    .n2-mf-pause.paused .mf-ic-pause { display:none; }
+    .n2-mf-pause.paused .mf-ic-play { display:inline; }
+    .n2-mf-menu { position:absolute; top:24px; right:0; z-index:30; background:#141b26; border:1px solid rgba(120,150,200,.3);
+      border-radius:7px; padding:5px; display:flex; flex-direction:column; gap:1px; box-shadow:0 6px 18px rgba(0,0,0,.55); min-width:158px; }
+    .n2-mf-menu[hidden] { display:none; }
+    .n2-mf-opt { display:flex; align-items:center; gap:7px; font-size:10.5px; color:#c8d4ea; padding:4px 6px; border-radius:4px; cursor:pointer; white-space:nowrap; }
+    .n2-mf-opt:hover { background:rgba(120,150,200,.1); }
+    .n2-mf-opt input { accent-color:#36e0d4; cursor:pointer; margin:0; width:13px; height:13px; }
     .pt-ub-vert { display:flex; gap:8px; align-items:stretch; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; padding:10px 2px 8px; scrollbar-width:thin; scrollbar-color:rgba(120,150,200,.3) transparent; flex:1 1 auto; }
     .pt-ub-vert::-webkit-scrollbar { height:7px; }
     .pt-ub-vert::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
@@ -317,14 +354,38 @@ const N2_HTML = `
       <div class="n2-panel n2-pp-panel">
         <div class="pt-panel-header" style="display:flex;justify-content:space-between;">
           <span class="pt-panel-title">Peers</span>
-          <span class="pt-panel-meta" style="gap:6px;">
-            <span class="pt-muted">out</span>&nbsp;<span id="pp-out">—</span>
-            <span class="pt-muted">in</span>&nbsp;<span id="pp-in">—</span>
-            <span class="pt-muted">bidir</span>&nbsp;<span id="pp-bidir">—</span>
-            <span class="pt-muted">prn</span>&nbsp;<span id="pp-duplex">—</span>
+          <span class="pt-panel-meta">
+            <span class="n2-pp-pair"><span class="pt-muted">out</span>&nbsp;<span id="pp-out">—</span></span>
+            <span class="n2-pp-pair"><span class="pt-muted">in</span>&nbsp;<span id="pp-in">—</span></span>
+            <span class="n2-pp-pair"><span class="pt-muted">bidir</span>&nbsp;<span id="pp-bidir">—</span></span>
+            <span class="n2-pp-pair"><span class="pt-muted">prn</span>&nbsp;<span id="pp-duplex">—</span></span>
           </span>
         </div>
         <div class="pt-pp-body" id="pp-body"></div>
+      </div>
+      <div class="n2-panel n2-mf-panel">
+        <div class="pt-panel-header" style="display:flex;justify-content:space-between;">
+          <span class="pt-panel-title" title="Live CIP-20 transaction messages (metadata label 674) from across the chain, read from db-sync.">Metadata feed</span>
+          <span class="pt-panel-meta n2-mf-filters">
+            <button type="button" class="n2-mf-pause" id="mf-pause" title="Pause feed" aria-label="Pause feed"><svg class="mf-ic-pause" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg><svg class="mf-ic-play" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg></button>
+            <button type="button" class="n2-mf-funnel" id="mf-funnel" title="Filter messages" aria-label="Filter messages"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg></button>
+            <div class="n2-mf-menu" id="mf-menu" hidden>
+              <label class="n2-mf-opt"><input type="checkbox" data-mf="bots"> Hide bot / DEX spam</label>
+              <label class="n2-mf-opt"><input type="checkbox" data-mf="clean"> Hide rude words</label>
+              <label class="n2-mf-opt"><input type="checkbox" data-mf="bets"> Hide betting markets</label>
+            </div>
+          </span>
+        </div>
+        <div class="n2-mf-body" id="mf-body">
+          <!-- static preview only; live drip engine is v67 /*mf-layout-v66*/ -->
+          <div class="n2-mf-msg n2-mf-mine"><span class="n2-mf-text">GNP1 Zero-Fee Pool
+Rebate of your share of the 170 ADA min pool fee</span><span class="n2-mf-tx">tx 962c4617…</span></div>
+          <div class="n2-mf-msg"><span class="n2-mf-text">van sas ledge naar mark ledge</span><span class="n2-mf-tx">tx f113956f…</span></div>
+          <div class="n2-mf-msg"><span class="n2-mf-text">Bodega Market - Buy Position
+FIFA WC | Norway beats Brazil | July 5</span><span class="n2-mf-tx">tx 5020bd48…</span></div>
+          <div class="n2-mf-msg"><span class="n2-mf-text">cash</span><span class="n2-mf-tx">tx cb40dfea…</span></div>
+          <div class="n2-mf-msg"><span class="n2-mf-text">Surge Protocol Fee</span><span class="n2-mf-tx">tx 68f3d475…</span></div>
+        </div>
       </div>
     </div>
 
@@ -608,6 +669,128 @@ function paintGauges() {
   if (_tick === 0) { try { refreshLifetimeBlocks(); } catch (e) { /* noop */ } }
 }
 
+// ===========================================================================
+// Metadata feed - buffer-drip engine /*mf-engine-v67*/
+// ===========================================================================
+const MF_DENYLIST = /minswap|sundae|ssp:|dexhunter|danogo|ourodex|steelswap|secondfi|surf -|cnft tools|adder presale|dreptalk|vespr|binance|okx|aggregator|splash|vyfi|muesliswap|wingriders|cardem|masumi|surge protocol|wayup/i;   /*mf-filters2-v67c*/
+const MF_BODEGA = /bodega|fifa|world cup|parlay/i;
+const MF_PROFANITY = /\b(fuck\w*|shit\w*|cunt\w*|bitch\w*|asshole\w*|wanker?|bastard\w*|motherfuck\w*|bollocks|twat\w*|dickhead\w*)\b/i;
+const MF_DEMO_MSGS = [
+  { text: 'GNP1 Zero-Fee Pool\nRebate of your share of the 170 ADA min pool fee', tx: '962c4617aa11d3' },
+  { text: 'van sas ledge naar mark ledge', tx: 'f113956fe74920' },
+  { text: 'Bodega Market - Buy Position\nFIFA WC | Norway beats Brazil | July 5', tx: '5020bd4866b7a1' },
+  { text: 'cash', tx: 'cb40dfea6133ee' },
+  { text: 'Minswap: Order Executed', tx: '56a76d187b02cc' },
+  { text: 'gm frens have a great day', tx: 'a1b2c3d4e5f601' },
+  { text: 'Surge Protocol Fee', tx: '68f3d475a52799' },
+  { text: 'Dexhunter Trade', tx: '0ab765ce29b7f3' },
+  { text: 'thanks for the block ser', tx: '11aa22bb33cc44' },
+  { text: 'Bodega Market - Buy Position\nSpain vs Portugal TOTAL OVER 2.5', tx: 'b3cac3190f35d2' },
+  { text: 'wen moon', tx: 'deadbeef001122' },
+  { text: 'Minswap: Cancel Order', tx: '3df51cc362cb90' },
+  { text: 'GNP1 Zero-Fee Pool\nThank you for delegating', tx: '99aa88bb77cc66' },
+  { text: 'proof of onboarding complete', tx: '5ed040898a9d31' },
+  { text: 'sending love to the chain', tx: '7c8e9f0a1b2c3d' },
+];
+
+let _mfPollTimer = null, _mfDripTimer = null, _mfSinceId = 0, _mfBuffer = [], _mfDemo = false, _mfDemoIdx = 0, _mfPaused = false;
+
+function mfFilters(canvas) {
+  const get = (k) => { const el = canvas.querySelector('.n2-mf-menu input[data-mf="' + k + '"]'); return !!(el && el.checked); };
+  return { bots: get('bots'), clean: get('clean'), bets: get('bets') };
+}
+function mfHidden(text, f) {
+  if (f.bots && MF_DENYLIST.test(text)) return true;
+  if (f.bets && MF_BODEGA.test(text)) return true;
+  if (f.clean && MF_PROFANITY.test(text)) return true;
+  return false;
+}
+function mfTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+  return d.getDate() + ' ' + mon + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+function mfRender(canvas, msg) {
+  const body = canvas.querySelector('#mf-body');
+  if (!body) return;
+  const div = document.createElement('div');
+  div.className = 'n2-mf-msg' + (/gnp1/i.test(msg.text) ? ' n2-mf-mine' : '');
+  div.style.animation = 'mfIn .45s ease';
+  const t = document.createElement('span'); t.className = 'n2-mf-text'; t.textContent = msg.text;   // plain text only
+  const x = document.createElement('span'); x.className = 'n2-mf-tx';
+  x.textContent = (msg.tx ? ('tx ' + String(msg.tx).slice(0, 8) + '\u2026') : '') + (msg.ts ? '   \u00b7   ' + mfTime(msg.ts) : '');
+  div.appendChild(t); div.appendChild(x);
+  const atTop = body.scrollTop <= 4;   /*mf-faithful-v67b*/
+  body.insertBefore(div, body.firstChild);
+  while (body.children.length > 50) body.removeChild(body.lastChild);
+  if (atTop) body.scrollTop = 0;                       // stick to top only if already there
+  else body.scrollTop += div.offsetHeight + 5;         // otherwise hold the reader's position
+}
+function mfNext(canvas) {
+  if (!_mfBuffer.length && _mfDemo) {
+    for (let i = 0; i < 6; i++) {
+      const m = MF_DEMO_MSGS[_mfDemoIdx % MF_DEMO_MSGS.length]; _mfDemoIdx++;
+      _mfBuffer.push({ text: m.text, tx: m.tx });
+    }
+  }
+  return _mfBuffer.shift() || null;
+}
+function mfDrip(canvas) {
+  if (_mfPaused) return;   /*mf-filters2-v67c*/
+  const f = mfFilters(canvas);
+  let guard = 0, msg;
+  while ((msg = mfNext(canvas)) && guard++ < 60) {
+    if (!mfHidden(msg.text, f)) { mfRender(canvas, msg); return; }
+  }
+}
+async function mfPoll(canvas) {   /*mf-faithful-v67b*/
+  try {
+    const dq = await import('../data/dbsync-query.js');
+    if (!dq.getMessageFeed) return;
+    let pages = 0;
+    while (pages++ < 25) {   // paginate forward from the watermark until caught up
+      const res = await dq.getMessageFeed({ sinceId: _mfSinceId, limit: 200, order: 'asc' });
+      if (!res || !res.messages || !res.messages.length) break;
+      for (const m of res.messages) _mfBuffer.push(m);   // asc => already oldest-first
+      if (res.scannedMax) _mfSinceId = Math.max(_mfSinceId, res.scannedMax);
+      if (res.messages.length < 200) break;   // last page
+    }
+    if (_mfBuffer.length > 2000) _mfBuffer.splice(0, _mfBuffer.length - 2000);
+  } catch (e) { /* db-sync not reachable yet */ }
+}
+function mfScheduleDrip(canvas) {   // adaptive: calm when quiet, brisk when backed up /*mf-faithful-v67b*/
+  if (_mfDripTimer) clearTimeout(_mfDripTimer);
+  const n = _mfBuffer.length;
+  const delay = n > 40 ? 900 : n > 15 ? 1800 : 3500;
+  _mfDripTimer = setTimeout(() => { try { mfDrip(canvas); } catch (e) { /* keep ticking */ } mfScheduleDrip(canvas); }, delay);
+}
+async function mfStart(canvas) {
+  mfStop();
+  _mfBuffer = []; _mfSinceId = 0; _mfDemoIdx = 0; _mfPaused = false;
+  const body = canvas.querySelector('#mf-body');
+  if (body) body.innerHTML = '';   // clear the static preview
+  let mode = 'demo';
+  try { const idx = await import('../data/index.js'); mode = idx.getMode ? idx.getMode() : 'demo'; } catch (e) { /* default demo */ }
+  _mfDemo = (mode !== 'live');
+  if (!_mfDemo) {
+    try {
+      const dq = await import('../data/dbsync-query.js');
+      const seed = await dq.getMessageFeed({ sinceId: 0, limit: 40, order: 'desc' });   // newest first
+      if (seed && seed.messages && seed.messages.length) {
+        for (let i = seed.messages.length - 1; i >= 0; i--) _mfBuffer.push(seed.messages[i]);  // oldest-first for the drip
+        _mfSinceId = seed.scannedMax || 0;
+      }
+    } catch (e) { /* db-sync not ready */ }
+    _mfPollTimer = setInterval(() => mfPoll(canvas), 12000);
+  }
+  mfScheduleDrip(canvas);   /*mf-faithful-v67b*/
+}
+function mfStop() {
+  if (_mfPollTimer) { clearInterval(_mfPollTimer); _mfPollTimer = null; }
+  if (_mfDripTimer) { clearTimeout(_mfDripTimer); _mfDripTimer = null; }   /*mf-faithful-v67b*/
+}
+
 export function mountNow2(canvas) {
   canvas.innerHTML = N2_HTML;
   _n2Ready = false;
@@ -638,6 +821,29 @@ export function mountNow2(canvas) {
     canvas.appendChild(ov);
   }
   try { initChainPulse(); } catch (e) { /* heartbeat renders on next tick */ }
+  // Metadata-feed filter funnel menu. Checkbox state (checked = filter on) is
+  // read by the live engine in v67. /*mf-refine2-v66e*/
+  const _mfPauseBtn = canvas.querySelector('#mf-pause');   /*mf-filters2-v67c*/
+  if (_mfPauseBtn) _mfPauseBtn.addEventListener('click', () => {
+    _mfPaused = !_mfPaused;
+    _mfPauseBtn.classList.toggle('paused', _mfPaused);
+    _mfPauseBtn.title = _mfPaused ? 'Resume feed' : 'Pause feed';
+  });
+  const _mfFunnel = canvas.querySelector('#mf-funnel');
+  const _mfMenu = canvas.querySelector('#mf-menu');
+  if (_mfFunnel && _mfMenu) {
+    _mfFunnel.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (_mfMenu.hasAttribute('hidden')) { _mfMenu.removeAttribute('hidden'); _mfFunnel.classList.add('active'); }
+      else { _mfMenu.setAttribute('hidden', ''); _mfFunnel.classList.remove('active'); }
+    });
+    canvas.addEventListener('click', (e) => {
+      if (!_mfMenu.hasAttribute('hidden') && !_mfMenu.contains(e.target) && !_mfFunnel.contains(e.target)) {
+        _mfMenu.setAttribute('hidden', ''); _mfFunnel.classList.remove('active');
+      }
+    });
+  }
+  try { mfStart(canvas); } catch (e) { /* feed engine optional */ }   /*mf-engine-v67*/
   paintGauges();
   refreshLifetimeBlocks().catch(() => {});
   if (_mirrorTimer) clearInterval(_mirrorTimer);
@@ -646,6 +852,7 @@ export function mountNow2(canvas) {
 
 export function unmountNow2() {
   if (_mirrorTimer) { clearInterval(_mirrorTimer); _mirrorTimer = null; }
+  try { mfStop(); } catch (e) { /* noop */ }   /*mf-engine-v67*/
   const ov = document.getElementById('n2-loading'); if (ov) ov.remove();
   try { stopChainPulse(); } catch (e) { /* noop */ }
 }

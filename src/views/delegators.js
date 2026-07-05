@@ -618,7 +618,7 @@ const LOY_MAX_ROWS = 100;     // leaderboard renders top-N (full set still ranke
 
 // ---- Loyalty data (cache-first; computed once per epoch) ------------------
 
-async function fetchLoyaltyData(forceRecompute) {
+async function fetchLoyaltyData(forceRecompute, expectedCount) {
   if (!registry.can(DataKind.DELEGATOR_LOYALTY)) return null; // no db-sync
   let rows = [];
   const curEpoch = _currentEpoch || 0;
@@ -628,6 +628,10 @@ async function fetchLoyaltyData(forceRecompute) {
 
   if (cacheFresh && !forceRecompute) {
     try { rows = await readModel.cacheGetLoyalty() || []; } catch { rows = []; }
+    // Reject a stale cache that doesn't cover the current delegator set (e.g.
+    // computed from a partial epoch snapshot, or before a source switch) -
+    // empty rows falls through to a fresh recompute below. /*loyalty-cache-v60*/
+    if (expectedCount && rows.length < expectedCount) rows = [];
   }
   if (!rows.length) {
     setText('d-meta', forceRecompute ? 'recomputing loyalty…' : 'building loyalty data…');
@@ -977,7 +981,7 @@ export async function mountDelegators(canvas) {
     // Start from the stake list (every current delegator with live stake).
     const byStake = new Map(list.map((d) => [d.stake, { ...d }]));
     // Merge loyalty (db-sync) if available.
-    const loyRows = await fetchLoyaltyData(forceRecompute);
+    const loyRows = await fetchLoyaltyData(forceRecompute, list.length);
     if (loyRows && loyRows.length) {
       const { map } = scoreLoyalty(loyRows);
       for (const [stake, base] of byStake) {

@@ -47,6 +47,21 @@ export class DemoDataSource {
     };
   }
 
+  async getPeers() {   /*demo-peers-v66d*/
+    const ips = [
+      '34.121.55.12', '18.156.201.44', '52.14.88.203', '3.75.190.11',
+      '95.216.34.108', '65.108.201.9', '138.201.44.7', '167.99.12.55',
+      '104.248.33.19', '159.89.44.201', '45.79.201.8', '198.244.190.3',
+    ];
+    const rtts = [8, 12, 16, 22, 31, 44, 58, 77, 95, 120, 140, 165];
+    const peers = ips.map((ip, i) => ({ ip, port: 3001 + (i % 3), rtt: rtts[i] }));
+    return {
+      total: peers.length,
+      peers,
+      metrics: { outgoingConns: 8, incomingConns: 4, duplexConns: 3, prunableConns: 2 },
+    };
+  }
+
   async getNowSnapshot() {
     const e = realEpoch();
     const seed = epochSeed(e.epoch);

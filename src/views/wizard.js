@@ -216,6 +216,67 @@ const STEPS = [
     validate: (wiz) => (wiz.dbLocation ? null : 'Please choose where db-sync runs.'),
   },
   {
+    key: 'dbkey',   /*wz-guided-key-v69*/
+    title: 'SSH key for db-sync',
+    accent: 'dbsync',
+    skip: (wiz) => !(wiz.useDbsync && wiz.dbLocation === 'remote' && wizardGuided()),
+    render: (wiz) => {
+      const KI = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 2 2.5 2.5M14 5l2.5 2.5"/></svg>';
+      const mode = wiz._keyMode || '';
+      const kp = wiz.sshKeyPath || '';
+      const card = (id, title, sub) =>
+        `<button class="wz-card wz-card-ico ${mode === id ? 'wz-card-on' : ''}" data-keymode="${id}" type="button">`
+        + `<span class="wz-card-ic">${KI}</span><span class="wz-card-body"><span class="wz-card-h">${title}</span>`
+        + `<span class="wz-card-d">${sub}</span></span></button>`;
+      const genBlock = `
+          ${mode === 'walk' ? '<div class="wz-subhead">Step 1 — create the key on this machine</div>' : ''}
+          <div class="wz-genrow">
+            <button type="button" class="pt-btn" id="wz-key-gen">Generate key</button>
+            <span class="wz-test-result" id="wz-key-gen-result"></span>
+          </div>
+          ${mode === 'walk' ? `<div class="wz-info">Prefer to run it yourself? This is the exact command:</div>
+          <div class="wz-info-cmd"><code>ssh-keygen -t ed25519 -f ~/.ssh/pt_dbsync -N ''</code><button type="button" class="wz-info-copy" data-copy="ssh-keygen -t ed25519 -f ~/.ssh/pt_dbsync -N ''">copy</button></div>` : ''}
+          <div class="wz-field"><label>Private key path <span class="wz-opt">(on this machine)</span></label>
+            <input id="wz-key-path" type="text" value="${esc(kp)}" placeholder="(fills in after you generate)" autocomplete="off"></div>
+          <div class="wz-reveal" id="wz-key-authorise">
+            ${mode === 'walk'
+              ? '<div class="wz-subhead">Step 2 — authorise it on the db-sync machine</div><div class="wz-info">The key has two halves. The private half stays here; the public half below must be added to the db-sync machine so it recognises this computer. Run these <strong>on the db-sync machine</strong>:</div>'
+              : '<div class="wz-info">Now authorise this key on the db-sync machine — copy the public key and run these <strong>on that machine</strong>:</div>'}
+            <div class="wz-info-cmd"><code id="wz-key-pub">(generate first)</code><button type="button" class="wz-info-copy" id="wz-key-pub-copy">copy</button></div>
+            <div class="wz-info-cmd"><code>cat ~/.ssh/authorized_keys 2&gt;/dev/null; echo 'PASTE_PUBLIC_KEY' &gt;&gt; ~/.ssh/authorized_keys</code><button type="button" class="wz-info-copy" data-copy="echo 'PASTE_THE_PUBLIC_KEY_HERE' >> ~/.ssh/authorized_keys">copy</button></div>
+            <div class="wz-info-cmd"><code>chmod 700 ~/.ssh &amp;&amp; chmod 600 ~/.ssh/authorized_keys</code><button type="button" class="wz-info-copy" data-copy="chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys">copy</button></div>
+            ${mode === 'walk' ? '<div class="wz-info">That permissions step matters: if <code>~/.ssh</code> is left too open, SSH silently ignores the key and falls back to asking for a password.</div>' : ''}
+          </div>`;
+      return `
+      ${wzHead(ICON_DB, "PoolTerminal signs in to the db-sync machine with an <strong>SSH key</strong> rather than a password, because it reconnects on its own in the background and can't type a password or 2FA code each time. How would you like to sort the key out?")}
+      <div class="wz-cards">
+        ${card('have', 'I already have a key', 'Point PoolTerminal at an existing private key on this machine.')}
+        ${card('gen', 'Generate one for me', 'Create a dedicated key on this machine, ready to authorise on the db-sync host.')}
+        ${card('walk', 'Walk me through it', 'The same as generate, with each step explained — what the key is for and how to authorise it.')}
+      </div>
+      <div class="wz-reveal ${mode ? 'wz-reveal-open' : ''}" id="wz-key-reveal">
+        ${mode === 'have' ? `
+          <div class="wz-field"><label>Path to your private key <span class="wz-opt">(on this machine)</span></label>
+            <input id="wz-key-path" type="text" value="${esc(kp)}" placeholder="/home/you/.ssh/id_ed25519" autocomplete="off"></div>
+          <div class="wz-info">Make sure this key's public half (the <code>.pub</code>) is already in <code>~/.ssh/authorized_keys</code> on the db-sync machine, with <code>~/.ssh</code> at <code>700</code> and <code>authorized_keys</code> at <code>600</code> there.</div>
+        ` : ''}
+        ${(mode === 'gen' || mode === 'walk') ? genBlock : ''}
+      </div>
+      <div class="wz-foot">Experienced operators can pick "I already have a key" and just enter the path.</div>`;
+    },
+    collect: (wiz, root) => {
+      const el = root.querySelector('#wz-key-path');
+      if (el) wiz.sshKeyPath = el.value.trim();
+    },
+    validate: (wiz, root) => {
+      if (!(wiz.useDbsync && wiz.dbLocation === 'remote' && wizardGuided())) return null;
+      if (!wiz._keyMode) return 'Choose how to set up the SSH key.';
+      const el = root && root.querySelector('#wz-key-path');
+      const v = el ? el.value.trim() : '';
+      return v ? null : 'Generate or enter the SSH key path to continue.';
+    },
+  },
+  {
     key: 'dbconn',
     title: 'db-sync connection',
     accent: 'dbsync',
@@ -263,10 +324,11 @@ const STEPS = [
 
       const auth = `
         <div class="wz-field"><label>Database access</label>
-          <select id="wz-db-auth">
-            <option value="password" ${authMode === 'password' ? 'selected' : ''}>Password (simplest)</option>
-            <option value="trust" ${authMode === 'trust' ? 'selected' : ''}>No password - loopback trust (advanced)</option>
-          </select>
+          <input type="hidden" id="wz-db-auth" value="${authMode}">
+          <div class="wz-seg" id="wz-db-auth-seg">
+            <button type="button" class="wz-seg-btn ${authMode === 'password' ? 'wz-seg-on' : ''}" data-auth="password">Password (simplest)</button>
+            <button type="button" class="wz-seg-btn ${authMode === 'trust' ? 'wz-seg-on' : ''}" data-auth="trust">No password - loopback trust</button>
+          </div>
         </div>
         <div class="wz-field ${authMode === 'password' ? '' : 'wz-creds-hidden'}" id="wz-db-passrow"><label>Database password</label>
           <input id="wz-db-pass" type="password" value="${esc(db.password || '')}" autocomplete="off">
@@ -301,7 +363,7 @@ const STEPS = [
         <div class="wz-field" style="flex:0.4"><label>Port</label><input id="wz-ssh-port" type="number" value="${ssh.port || 22}" autocomplete="off"></div>
       </div>
       <div class="wz-field"><label>SSH username</label><input id="wz-ssh-user" type="text" value="${esc(ssh.username || '')}" autocomplete="off"></div>
-      <div class="wz-field"><label>SSH private key path <span class="wz-opt">(on this machine)</span></label><input id="wz-ssh-key" type="text" value="${esc((ssh.auth && ssh.auth.path) || '')}" placeholder="/home/you/.ssh/id_ed25519" autocomplete="off"></div>
+      <div class="wz-field"><label>SSH private key path <span class="wz-opt">(on this machine)</span></label><input id="wz-ssh-key" type="text" value="${esc(wiz.sshKeyPath || (ssh.auth && ssh.auth.path) || '')}" placeholder="/home/you/.ssh/id_ed25519" autocomplete="off"></div>
       <div class="wz-field"><label>Key passphrase <span class="wz-opt">(only if your key has one)</span></label><input id="wz-ssh-pass" type="password" value="${esc((ssh.auth && ssh.auth.passphrase) || '')}" autocomplete="off"></div>
       <div class="wz-subhead">Database on that machine</div>
       ${pgHostPort}
@@ -568,6 +630,12 @@ const STYLE = `
   background-position: right 14px center, right 9px center !important; background-size: 5px 5px, 5px 5px !important;
   background-repeat: no-repeat, no-repeat !important; padding-right: 28px !important; cursor: pointer; }
 .pt-modal-wizard select option { background-color: #0e1620 !important; color: #fff !important; -webkit-text-fill-color: #fff !important; }
+/* segmented toggle - native-select-free (wz-authseg-v63a4) */
+.wz-seg { display:flex; gap:6px; }
+.wz-seg-btn { flex:1; padding:8px 10px; border-radius:5px; cursor:pointer; font:600 12px ui-monospace, monospace; text-align:center; background:#0e1620; border:1px solid rgba(120,150,190,.5); color:#9fb4cc; }
+.wz-seg-btn:hover { border-color:rgba(120,150,190,.85); }
+.wz-seg-btn.wz-seg-on { background:rgba(54,224,212,.16); border-color:rgba(54,224,212,.6); color:#8ff2e6; }
+.wz-genrow { display:flex; align-items:center; gap:12px; margin:8px 0 10px; }   /*wz-guided-key-v69*/
 .pt-modal-wizard input[type="checkbox"] { width: auto !important; }
 .wz-hero { text-align: center; padding: 8px 0 2px; }
 .wz-hero-mark { width: 54px; height: 54px; border-radius: 12px; margin: 0 auto 14px; display: flex; align-items: center; justify-content: center;
@@ -689,6 +757,10 @@ function showInfoPop(modal, anchorEl, info) {
   if (top > maxTop) top = Math.max(8, ar.top - pop.offsetHeight - 6);
   pop.style.left = left + 'px';
   pop.style.top = top + 'px';
+}
+
+function wizardGuided() {   /*wz-guided-key-v69*/
+  try { return localStorage.getItem('pt.wizard.guided') !== 'off'; } catch (e) { return true; }
 }
 
 export function showSetupWizard(opts = {}) {
@@ -830,6 +902,46 @@ export function showSetupWizard(opts = {}) {
       });
     }
 
+    if (step.key === 'dbkey') {   /*wz-guided-key-v69*/
+      modal.querySelectorAll('.wz-card[data-keymode]').forEach((c) => {
+        c.addEventListener('click', () => { wiz._keyMode = c.dataset.keymode; paint(); });
+      });
+      modal.querySelectorAll('#wz-key-reveal .wz-info-copy[data-copy]').forEach((b) => {
+        b.addEventListener('click', () => wzCopyCmd(b.dataset.copy, b));
+      });
+      const gen = modal.querySelector('#wz-key-gen');
+      if (gen) gen.addEventListener('click', async () => {
+        const res = modal.querySelector('#wz-key-gen-result');
+        const pathEl = modal.querySelector('#wz-key-path');
+        const pubEl = modal.querySelector('#wz-key-pub');
+        const authRev = modal.querySelector('#wz-key-authorise');
+        if (res) { res.textContent = 'Generating…'; res.className = 'wz-test-result wz-test-pending'; }
+        gen.disabled = true;
+        try {
+          const { invoke } = await import('../data/tauri.js');
+          const cmd = 'KP="$HOME/.ssh/pt_dbsync"; if [ -f "$KP" ]; then ST=exists; else ssh-keygen -t ed25519 -f "$KP" -N "" >/dev/null 2>&1 && ST=created || ST=failed; fi; echo "PATH=$KP"; echo "STATUS=$ST"; echo "PUB=$(cat "$KP.pub" 2>/dev/null)"';
+          const r = await invoke('local_run', { command: cmd });
+          const out = (r && r.stdout) || '';
+          const path = ((out.match(/PATH=(.*)/) || [])[1] || '').trim();
+          const status = ((out.match(/STATUS=(.*)/) || [])[1] || '').trim();
+          const pub = ((out.match(/PUB=(.*)/) || [])[1] || '').trim();
+          if (status === 'failed' || !pub) {
+            if (res) { res.textContent = 'Could not generate the key — is ssh-keygen installed?'; res.className = 'wz-test-result wz-test-bad'; }
+          } else {
+            if (pathEl && path) pathEl.value = path;
+            if (pubEl) pubEl.textContent = pub;
+            if (authRev) authRev.classList.add('wz-reveal-open');
+            const pubCopy = modal.querySelector('#wz-key-pub-copy');
+            if (pubCopy) pubCopy.onclick = () => wzCopyCmd(pub, pubCopy);
+            if (res) { res.textContent = status === 'exists' ? 'Key already existed — reusing it ✓' : 'Key created ✓'; res.className = 'wz-test-result wz-test-good'; }
+            refreshNext();
+          }
+        } catch (e) {
+          if (res) { res.textContent = 'Could not generate the key: ' + (e.message || e); res.className = 'wz-test-result wz-test-bad'; }
+        } finally { gen.disabled = false; }
+      });
+    }
+
     if (step.key === 'dbconn') {
       modal.querySelectorAll('.wz-info-i').forEach((ic) => {   /*wz-infoicons-v63b*/
         ic.addEventListener('click', (e) => { e.stopPropagation(); showInfoPop(modal, ic, WZ_INFO[ic.dataset.info]); });
@@ -839,13 +951,20 @@ export function showSetupWizard(opts = {}) {
         if (pop && !pop.contains(e.target) && !(e.target.classList && e.target.classList.contains('wz-info-i'))) closeInfoPop(modal);
       });
       // Auth-method toggle: show/hide the password row and the trust note.
-      const authEl = modal.querySelector('#wz-db-auth');
-      if (authEl) authEl.addEventListener('change', () => {
+      const authEl = modal.querySelector('#wz-db-auth');   /*wz-authseg-v63a4*/
+      const applyAuthReveal = () => {
         const pw = modal.querySelector('#wz-db-passrow');
         const tn = modal.querySelector('#wz-db-trustnote');
-        const isPw = authEl.value === 'password';
+        const isPw = !authEl || authEl.value === 'password';
         if (pw) pw.classList.toggle('wz-creds-hidden', !isPw);
         if (tn) tn.classList.toggle('wz-creds-hidden', isPw);
+      };
+      modal.querySelectorAll('#wz-db-auth-seg .wz-seg-btn').forEach((b) => {
+        b.addEventListener('click', () => {
+          if (authEl) authEl.value = b.dataset.auth;
+          modal.querySelectorAll('#wz-db-auth-seg .wz-seg-btn').forEach((x) => x.classList.toggle('wz-seg-on', x === b));
+          applyAuthReveal();
+        });
       });
       const dbTest = modal.querySelector('#wz-db-test');
       if (dbTest) dbTest.addEventListener('click', async () => {   /*wz-wire-v63*/

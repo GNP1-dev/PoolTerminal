@@ -2,6 +2,8 @@
 
 _Independent code and security review. Latest pass: 8 July 2026._
 
+> **Editorial note (added after delivery).** The two items listed under "Outstanding before public release" below — the missing `LICENSE` file (A) and the hardcoded pool identifier (B) — were both resolved in commit `8ac69db`, after this review was delivered. All five security findings were already resolved at the time of review. The text below is preserved as originally written.
+
 ## Scope
 
 PoolTerminal is a Tauri 2 desktop application (Rust backend, vanilla-JS frontend) providing a read-only operational dashboard for Cardano stake pool operators. It connects to the operator's own block-producer and relay nodes over SSH, and optionally enriches from the operator's own db-sync Postgres, the Koios public API, and Blockfrost. It performs no transaction signing, holds no key material, and exercises no node control from the GUI.

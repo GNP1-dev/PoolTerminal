@@ -21,8 +21,17 @@ use russh::keys::{load_secret_key, ssh_key, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, Disconnect};
 use tokio::sync::Mutex;
 
-/// SSH client event handler.
-struct ClientHandler;
+/// Recorded when a presented host key does not match the stored one, so `open()`
+/// can turn russh's generic abort into a descriptive, actionable error. (tofu-v72)
+enum HostKeyReport {
+    Mismatch { stored: String, presented: String },
+}
+
+/// SSH client event handler with trust-on-first-use host-key verification. (tofu-v72)
+struct ClientHandler {
+    host_id: String,
+    report: Arc<std::sync::Mutex<Option<HostKeyReport>>>,
+}
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
@@ -31,14 +40,87 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // SECURITY (Phase 0): accept any host key, but log its fingerprint.
-        // Pre-release requirement: trust-on-first-use / known_hosts verification
-        // so the operator is warned if their BP host key ever changes.
-        // Tracked in HANDOVER "known carry-over issues".
-        let fp = server_public_key.fingerprint(ssh_key::HashAlg::Sha256);
-        eprintln!("[ssh] accepting server host key (UNVERIFIED): {fp}");
-        Ok(true)
+        // Trust-on-first-use: store the fingerprint on first connect, accept it on
+        // later connects only if it matches, and hard-block on mismatch (possible
+        // MITM or rebuilt host). ssh_forget_host clears a stored key to trust a new
+        // one after an explicit operator warning. (tofu-v72)
+        let fp = server_public_key
+            .fingerprint(ssh_key::HashAlg::Sha256)
+            .to_string();
+        match known_hosts_lookup(&self.host_id) {
+            None => {
+                let _ = known_hosts_store(&self.host_id, &fp);
+                eprintln!("[ssh] TOFU first connect to {} - stored host key {}", self.host_id, fp);
+                Ok(true)
+            }
+            Some(stored) if stored == fp => Ok(true),
+            Some(stored) => {
+                eprintln!(
+                    "[ssh] HOST KEY MISMATCH for {} - stored {} presented {} - BLOCKED",
+                    self.host_id, stored, fp
+                );
+                if let Ok(mut r) = self.report.lock() {
+                    *r = Some(HostKeyReport::Mismatch { stored, presented: fp });
+                }
+                Ok(false)
+            }
+        }
     }
+}
+
+/// Path to the app known-hosts file (lines: `host:port  SHA256fingerprint`). (tofu-v72)
+fn known_hosts_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::Path::new(&home)
+        .join(".local/share/com.gnp1.poolterminal")
+        .join("known_hosts")
+}
+
+fn known_hosts_lookup(host_id: &str) -> Option<String> {
+    let content = std::fs::read_to_string(known_hosts_path()).ok()?;
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(h), Some(fp)) = (parts.next(), parts.next()) {
+            if h == host_id {
+                return Some(fp.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn known_hosts_store(host_id: &str, fp: &str) -> std::io::Result<()> {
+    let path = known_hosts_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(f, "{host_id} {fp}")
+}
+
+fn known_hosts_forget(host_id: &str) -> std::io::Result<()> {
+    let path = known_hosts_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|l| l.split_whitespace().next() != Some(host_id))
+        .collect();
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    std::fs::write(&path, out)
+}
+
+/// Clear a saved host key so the next connection re-trusts it (TOFU). Called after
+/// the operator confirms a legitimate host rebuild. (tofu-v72)
+#[tauri::command]
+pub async fn ssh_forget_host(host: String, port: u16) -> Result<(), String> {
+    known_hosts_forget(&format!("{host}:{port}")).map_err(|e| e.to_string())
 }
 
 /// Credential ordering for keyboard-interactive 2FA. Different nodes prompt in
@@ -65,8 +147,24 @@ impl SshSession {
         // open), which suits a persistent polling connection. Keepalive tuning
         // comes when we build the Phase 1 poll loop.
         let config = Arc::new(client::Config::default());
-        let handle = client::connect(config, (host, port), ClientHandler).await?;
-        Ok(handle)
+        let host_id = format!("{host}:{port}");
+        let report = Arc::new(std::sync::Mutex::new(None));
+        let handler = ClientHandler { host_id: host_id.clone(), report: report.clone() };
+        match client::connect(config, (host, port), handler).await {
+            Ok(handle) => Ok(handle),
+            Err(e) => {
+                // Turn a host-key mismatch abort into a clear, actionable error. (tofu-v72)
+                let mismatch = report.lock().ok().and_then(|mut r| r.take());
+                if let Some(HostKeyReport::Mismatch { stored, presented }) = mismatch {
+                    anyhow::bail!(
+                        "SSH host key mismatch for {host_id}: stored {stored} but server presented {presented}. \
+                         Connection BLOCKED - this can mean the host was rebuilt, or a possible man-in-the-middle. \
+                         If you deliberately rebuilt this machine, clear its saved key to trust the new one."
+                    );
+                }
+                Err(e.into())
+            }
+        }
     }
 
     /// Connect using public-key authentication.

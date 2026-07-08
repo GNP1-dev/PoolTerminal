@@ -1162,7 +1162,7 @@ function saveSourceChoice(wiz) {
         auth: {
           type: 'key',
           path: (d.ssh.auth && d.ssh.auth.path) || '',
-          passphrase: (d.ssh.auth && d.ssh.auth.passphrase) || null,
+          passphrase: null,   /*no-passphrase-at-rest-v73*/ // never persisted; use ssh-agent or re-enter per session
         },
       };
     }

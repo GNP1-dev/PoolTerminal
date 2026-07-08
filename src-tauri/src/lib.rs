@@ -46,6 +46,7 @@ pub fn run() {
             ssh::ssh_run,
             ssh::ssh_disconnect,
             ssh::ssh_is_connected,
+            ssh::ssh_forget_host,
             ssh::relay_ssh_connect,
             ssh::relay_ssh_run,
             ssh::relay_ssh_disconnect,

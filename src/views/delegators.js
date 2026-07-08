@@ -24,6 +24,12 @@ const OUR_POOL = 'pool1fv9f8phzn7hp623ypw6ctf73a98hd7nrh8wm7glpcuhf64856g2';
 // Latest epoch, captured on mount — passed to the deep-dive so the stake-history
 // cache knows which epoch is still mutable (re-fetch) vs immutable (use cache).
 let _currentEpoch = null;
+
+function esc(s) {   /*xss-journey-esc-v70*/
+  return String(s == null ? '' : s).replace(/[<>&"']/g, (c) => (
+    { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]
+  ));
+}
 // Deterministic colour per pool id, so each pool keeps a consistent hue.
 function poolColor(id, isUs) {
   if (isUs) return '#b8860b';
@@ -368,8 +374,8 @@ function renderJourney(runs) {
   const hops = runs.map((r, i) => {
     const isUs = r.poolId === OUR_POOL;
     const col = poolColor(r.poolId, isUs);
-    const tkr = r.ticker || (r.poolId ? r.poolId.slice(0, 9) + '\u2026' : '?');
-    const nm = r.name || '';
+    const tkr = esc(r.ticker || (r.poolId ? r.poolId.slice(0, 9) + '\u2026' : '?'));
+    const nm = esc(r.name || '');
     const entry = `<div class="dd-flow"><span class="dd-flow-l">in \u00b7 ep ${r.entryEpoch ?? '?'}</span><span class="dd-flow-v">${fmt(r.entryStake)} \u20b3</span></div>`;
     const exit = r.isCurrent
       ? `<div class="dd-flow dd-here"><span class="dd-flow-l">still here</span><span class="dd-flow-v">${fmt(r.exitStake)} \u20b3 now</span></div>`

@@ -249,7 +249,7 @@ async function cacheGetNotifEvents(limit) {
 // ============================================================
 
 let _bech32 = null;
-function ensurePoolBech32() {
+export function ensurePoolBech32() {   /*pool-id-runtime-B*/
   if (_bech32) return _bech32;
   const hex = poolHex();
   if (!/^[0-9a-f]{56}$/.test(hex)) {

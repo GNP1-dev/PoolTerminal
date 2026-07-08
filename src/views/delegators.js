@@ -19,8 +19,8 @@ import * as readModel from '../data/read-model.js';
 import { registry, DataKind } from '../data/capabilities.js';
 import * as blockfrost from '../data/blockfrost-query.js';
 
-// Our own pool — to highlight the destination node in the journey.
-const OUR_POOL = 'pool1fv9f8phzn7hp623ypw6ctf73a98hd7nrh8wm7glpcuhf64856g2';
+// Our own pool is resolved at runtime from the connected node (not hardcoded),
+// so anyone running PoolTerminal sees their own pool highlighted. /*pool-id-runtime-B*/
 // Latest epoch, captured on mount — passed to the deep-dive so the stake-history
 // cache knows which epoch is still mutable (re-fetch) vs immutable (use cache).
 let _currentEpoch = null;
@@ -371,8 +371,9 @@ function renderJourney(runs) {
   if (!runs || !runs.length) return '<div class="v-muted">No delegation history available.</div>';
   const fmt = (n) => n == null ? '\u2014' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
   const lastIdx = runs.length - 1;
+  const ourPool = readModel.ensurePoolBech32();
   const hops = runs.map((r, i) => {
-    const isUs = r.poolId === OUR_POOL;
+    const isUs = !!ourPool && r.poolId === ourPool;
     const col = poolColor(r.poolId, isUs);
     const tkr = esc(r.ticker || (r.poolId ? r.poolId.slice(0, 9) + '\u2026' : '?'));
     const nm = esc(r.name || '');

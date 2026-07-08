@@ -442,9 +442,45 @@ pub async fn ssh_run(
     state: tauri::State<'_, SshState>,
     command: String,
 ) -> Result<CommandResult, String> {
-    let mut guard = state.0.lock().await;
-    let session = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
-    session.run(&command).await.map_err(|e| e.to_string())
+    // Open the channel under a brief lock, then release the lock before exec and
+    // the (possibly long) read, so commands run concurrently on independent
+    // channels. A slow query (leadership-schedule, up to 2 min) no longer blocks
+    // fast ones like mempool/tip. The channel owns its own stream and is
+    // independent of the session lock (same pattern as the db-sync tunnel).
+    // (concurrent-channels-v90)
+    let mut channel = {
+        let mut guard = state.0.lock().await;
+        let session = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+        session
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    channel.exec(true, &*command).await.map_err(|e| e.to_string())?;   // &str for Into<Vec<u8>> /*v90-exec-deref*/
+
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    let mut exit_code: i32 = -1;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { ref data } => stdout.extend_from_slice(data),
+            ChannelMsg::ExtendedData { ref data, ext } => {
+                if ext == 1 {
+                    stderr.extend_from_slice(data);
+                } else {
+                    stdout.extend_from_slice(data);
+                }
+            }
+            ChannelMsg::ExitStatus { exit_status } => exit_code = exit_status as i32,
+            _ => {}
+        }
+    }
+    Ok(CommandResult {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code,
+    })
 }
 
 #[tauri::command]

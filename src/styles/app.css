@@ -104,16 +104,16 @@
   margin-left: 10px;
   padding: 3px 10px;
   font: 600 11px ui-monospace, monospace;
-  color: #cdd6e4;
+  color: #e79a9a;   /*disconnect-danger-v84*/
   background: #1b2430;
-  border: 1px solid #2c3a4d;
+  border: 1px solid rgba(239,68,68,0.55);
   border-radius: var(--pt-radius-sm);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
   transition: background 120ms ease-out, border-color 120ms ease-out;
 }
-.pt-reconnect-btn:hover { background: #232f3f; border-color: #3a4d66; }
+.pt-reconnect-btn:hover { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.9); color: #f7a5a5; }
 
 /* ---------- Tabs ---------- */
 

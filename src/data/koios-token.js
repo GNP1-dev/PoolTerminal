@@ -17,7 +17,11 @@ try { _token = (localStorage.getItem(TOKEN_KEY) || '').trim() || null; } catch (
 
 /** Set (or clear, with empty/null) the Koios token and persist it. */
 export function setKoiosToken(t) {
-  _token = (t && String(t).trim()) || null;
+  const clean = (t && String(t).trim()) || null;
+  // Koios JWTs are [A-Za-z0-9_.-] only. Reject anything else so a malformed
+  // token can't smuggle characters into a header. (koios-http-v74)
+  _token = (clean && /^[A-Za-z0-9_.-]+$/.test(clean)) ? clean : null;
+  if (clean && !_token) console.warn('[koios] ignored token with unexpected characters');
   try {
     if (_token) localStorage.setItem(TOKEN_KEY, _token);
     else localStorage.removeItem(TOKEN_KEY);

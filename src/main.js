@@ -22,6 +22,7 @@ import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import { renderPeersPanel, resetPeersPanel } from './ui/peers-panel.js';
+import { confirmDialog } from './ui/dialog.js';   /*disconnect-danger-v84*/
 import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
@@ -39,8 +40,10 @@ import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal, resumeLive } from './views/connect.js';
 import { showSettingsModal } from './views/settings.js';
 import { showSetupWizard } from './views/wizard.js';
-import { nodeExec } from './data/tauri.js';
-import { getSession, setNodeProbe, getNodeProbe, loadConfig } from './data/session.js';
+import { resetReadModel } from './data/read-model.js';   /*change-node-reset-v80*/
+import { resetNowLoading } from './views/now.js';
+import { nodeExec, invoke } from './data/tauri.js';
+import { getSession, setNodeProbe, getNodeProbe, loadConfig, markDisconnected } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
 import { initToasts } from './ui/toast.js';
@@ -66,6 +69,16 @@ let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
 
 let activeView = 'now2';
+
+// Manual soft-refresh from the dashboard button: repaint the current dashboard
+// from cached data (no app reload). /*dash-refresh-v75*/
+window.addEventListener('pt:refresh', () => {
+  if (activeView !== 'now2' && activeView !== 'now') return;
+  try { if (latestSnap) updateNowFast(latestSnap); } catch (e) { /* */ }
+  try { if (_lastPeers) renderPeersPanel(_lastPeers); } catch (e) { /* */ }
+  try { refreshMempool(dataSource(), latestSnap?.tipBlock).catch(() => {}); } catch (e) { /* */ }
+  try { refreshUpcomingBlocks(dataSource()).catch(() => {}); } catch (e) { /* */ }
+});
 
 // Relay Only Mode: nav tabs that don't apply to a relay node. /*relay-tablock*/
 const RELAY_LOCKED_VIEWS = ['history', 'delegators', 'notifications', 'data'];
@@ -389,25 +402,49 @@ window.addEventListener('DOMContentLoaded', () => {
   // The Live badge is a static status indicator now; reconnecting /
   // changing node is this explicit button next to it. /*reconnect-btn*/
   const reconnectBtn = document.getElementById('ttape-reconnect');
-  if (reconnectBtn) reconnectBtn.addEventListener('click', () => {
-    showConnectModal(() => {
-      paintMode();
-      clearLastMetrics();   // drop stale metrics so the dashboard shows its loading overlay until fresh data arrives
-      lastFastError = null;
-      lastSeenBlock = null;
-      lastPollTime = null;
-      lastMempoolRefreshTime = 0;
-      lastPeersRefreshTime = 0;
-      _lastPeers = null;
-      lastUpcomingRefreshTime = 0;
-      bootstrapStarted = false;
-      setPeerCounts(null, null);
-      resetPeersPanel();
-      resetRelayMap();
-      if (activeView === 'now') mountNow(canvasEl); else if (activeView === 'now2') mountNow2(canvasEl);
-      runProbeAndPaintRole();
-      fastPollTick();
+  if (reconnectBtn) reconnectBtn.addEventListener('click', async () => {   /*change-node-reset-v80*/
+    // Confirm first - this cuts the live connection, clears the cache and
+    // restarts setup, so guard against an accidental click. /*disconnect-danger-v84*/
+    const _ok = await confirmDialog({
+      title: 'Disconnect and change node?',
+      message: 'This disconnects from the current node, clears cached data, and restarts setup.\n\nContinue?',
+      confirmLabel: 'Disconnect',
+      cancelLabel: 'Cancel',
+      danger: true,
     });
+    if (!_ok) return;
+    // Change Node = clean slate: wipe all in-memory state AND the disk cache,
+    // then re-run the setup wizard, so no data from the previous node bleeds
+    // into the tabs. cache_clear_all is best-effort (pool-keyed tables, so a
+    // different pool wouldn't collide anyway, but we clear to be certain).
+    // First, actually disconnect: stop the poll timer (startPolling() no-ops if
+    // fastTimer is still set, so it MUST be cleared), close the SSH session, and
+    // clear the session flag so the wizard sees a disconnected node. /*change-node-disconnect-v81*/
+    if (fastTimer) { clearInterval(fastTimer); fastTimer = null; }
+    try { await invoke('ssh_disconnect'); } catch (e) { /* no live session / local */ }
+    try { markDisconnected(); } catch (e) { /* */ }
+    try { resetReadModel(); } catch (e) { /* */ }
+    try { resetNowLoading(); } catch (e) { /* */ }
+    try { await invoke('cache_clear_all'); } catch (e) { /* best-effort */ }
+    clearLastMetrics();
+    latestSnap = null;   // force firstSnap on the next poll so bootstrap() re-arms the read-model /*change-node-bootstrap-v82*/
+    lastFastError = null;
+    lastSeenBlock = null;
+    lastPollTime = null;
+    lastMempoolRefreshTime = 0;
+    lastPeersRefreshTime = 0;
+    _lastPeers = null;
+    lastUpcomingRefreshTime = 0;
+    bootstrapStarted = false;
+    setPeerCounts(null, null);
+    resetPeersPanel();
+    resetRelayMap();
+    showSetupWizard({ onComplete: () => {
+      mountView('now2');
+      paintMode();
+      runProbeAndPaintRole();
+      startPolling();
+    } });
   });
 
   const settingsGear = document.getElementById('ttape-settings');

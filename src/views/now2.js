@@ -40,6 +40,10 @@ const N2_HTML = `
     .n2-attip { font-weight:700; letter-spacing:1px; color:#5dff9b; text-shadow:0 0 8px rgba(93,255,155,.5); }
     .n2-tip-sep { color:rgba(120,150,200,.3); }
     .n2-poll { display:flex; align-items:center; gap:6px; }
+    .n2-refresh { display:inline-flex; align-items:center; justify-content:center; width:24px; height:20px; padding:0; margin-left:2px; border-radius:5px; cursor:pointer; background:rgba(120,150,200,.08); border:1px solid rgba(120,150,200,.22); color:#8aa0c0; vertical-align:middle; }  /*dash-refresh-v75*/
+    .n2-refresh:hover { border-color:rgba(54,224,212,.5); color:#8ff2e6; }
+    .n2-refresh.spin svg { animation:n2spin .6s linear; }
+    @keyframes n2spin { to { transform:rotate(360deg); } }
 
     .n2-hero-main { display:flex; align-items:stretch; gap:16px; }
     .n2-blockbox { flex:0 0 auto; width:236px; display:flex; flex-direction:column; gap:9px; padding-right:16px; border-right:1px solid rgba(135,165,215,.24); }
@@ -216,6 +220,7 @@ const N2_HTML = `
             <span class="pt-cp-tab" data-window="900">15m</span>
             <span class="pt-cp-tab" data-window="3600">1h</span>
           </span>
+          <button type="button" class="n2-refresh" id="n2-refresh" title="Refresh dashboard display" aria-label="Refresh dashboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
         </div>
       </div>
 
@@ -589,7 +594,7 @@ function paintGauges() {
     } else if (pr.role && pr.role !== 'BP') {
       oc.textContent = '';   // relays have no op cert
     } else {
-      ocv.textContent = '— on disk · — on chain';
+      ocv.textContent = 'querying node…';   /*slow-msg-v85*/
       ocv.style.color = '';
     }
   }
@@ -748,6 +753,17 @@ async function mfPoll(canvas) {   /*mf-faithful-v67b*/
   try {
     const dq = await import('../data/dbsync-query.js');
     if (!dq.getMessageFeed) return;
+    // Self-heal: if the mount-time seed never established a watermark (db-sync
+    // wasn't ready yet), seed from the NEWEST messages now rather than walking
+    // ascending from id 0 (which replays the table from the beginning). /*mf-seedfix-v77*/
+    if (!_mfSinceId) {
+      const seed = await dq.getMessageFeed({ sinceId: 0, limit: 40, order: 'desc' });
+      if (seed && seed.messages && seed.messages.length) {
+        for (let i = seed.messages.length - 1; i >= 0; i--) _mfBuffer.push(seed.messages[i]);
+        _mfSinceId = seed.scannedMax || 0;
+      }
+      return;   // watermark set; the next poll paginates forward from here
+    }
     let pages = 0;
     while (pages++ < 25) {   // paginate forward from the watermark until caught up
       const res = await dq.getMessageFeed({ sinceId: _mfSinceId, limit: 200, order: 'asc' });
@@ -844,6 +860,15 @@ export function mountNow2(canvas) {
     });
   }
   try { mfStart(canvas); } catch (e) { /* feed engine optional */ }   /*mf-engine-v67*/
+  const _n2refresh = canvas.querySelector('#n2-refresh');   /*dash-refresh-v75*/
+  if (_n2refresh) _n2refresh.addEventListener('click', () => {
+    _n2refresh.classList.remove('spin'); void _n2refresh.offsetWidth; _n2refresh.classList.add('spin');
+    try { paintGauges(); } catch (e) { /* */ }
+    try { renderProp(); } catch (e) { /* */ }
+    try { renderMempoolFlow(canvas); } catch (e) { /* */ }
+    try { renderBpStrip(); } catch (e) { /* */ }
+    try { window.dispatchEvent(new CustomEvent('pt:refresh')); } catch (e) { /* */ }
+  });
   paintGauges();
   refreshLifetimeBlocks().catch(() => {});
   if (_mirrorTimer) clearInterval(_mirrorTimer);

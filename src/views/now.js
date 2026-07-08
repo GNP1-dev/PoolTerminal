@@ -592,6 +592,14 @@ export async function refreshMempool(src, tipBlock) {
 }
 
 export async function refreshUpcomingBlocks(src) {
+  // Paint the cached schedule immediately so a re-mount (navigating back to the
+  // dashboard) doesn't flash an empty "no upcoming blocks" state while the async
+  // fetch is in flight. Fresh data replaces it below. /*ub-cache-paint-v76*/
+  if (_lastUpcoming) {
+    try {
+      renderUpcomingBlocks(_lastUpcoming, { isRelay: isRelayConfirmed(), scheduleState: readModel.upcomingScheduleState() });
+    } catch (e) { /* panel not mounted yet */ }
+  }
   const list = await src.getUpcomingBlocks();
   _lastUpcoming = list;
   renderUpcomingBlocks(list, { isRelay: isRelayConfirmed(), scheduleState: readModel.upcomingScheduleState() });

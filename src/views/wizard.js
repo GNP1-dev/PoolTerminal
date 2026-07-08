@@ -96,9 +96,9 @@ const STEPS = [
   },
   {
     key: 'transport',
-    title: 'Where does PoolTerminal run?',
+    title: 'Where does your node run?',   /*wz-reword-v83*/
     render: (wiz) => `
-      ${wzHead(ICON_LOC, 'Pick where this app is running, relative to your Cardano node.')}
+      ${wzHead(ICON_LOC, 'Tell us where your Cardano node is, relative to this machine (where PoolTerminal is running).')}
       <div class="wz-cards">
         <button class="wz-card wz-card-ico ${wiz.transport === 'ssh' ? 'wz-card-on' : ''}" data-choice="ssh" type="button">
           <span class="wz-card-ic">${ICON_NETWORK}</span>
@@ -110,13 +110,21 @@ const STEPS = [
         <button class="wz-card wz-card-ico ${wiz.transport === 'local' ? 'wz-card-on' : ''}" data-choice="local" type="button">
           <span class="wz-card-ic">${ICON_DESKTOP}</span>
           <span class="wz-card-body">
-            <span class="wz-card-h">On the node itself</span>
+            <span class="wz-card-h">On this machine</span>
             <span class="wz-card-d">PoolTerminal runs commands locally - no SSH or password needed.</span>
           </span>
         </button>
       </div>
+      <div class="wz-note wz-note-tip"><strong>Recommended for a block producer:</strong> run PoolTerminal on a separate machine and connect over SSH. It keeps a GUI and extra software off your production node (better security) and keeps the node lean for producing blocks (better performance). Running it on the same machine as the node works fine, but a separate machine that tunnels in is the cleaner, safer setup.<label class="wz-ack-row wz-ack-hidden" id="wz-node-ack-row"><input type="checkbox" id="wz-node-ack"> I understand it is recommended to run PoolTerminal on a separate machine, and choose to run it on the node anyway.</label></div>
       <div class="wz-foot">Change later: ⚙ Settings, or the connection screen (click the LIVE badge).</div>`,
-    validate: (wiz) => (wiz.transport ? null : 'Please choose where PoolTerminal is running.'),
+    validate: (wiz, root) => {   /*wz-node-ack-v79*/
+      if (!wiz.transport) return 'Please choose where PoolTerminal is running.';
+      if (wiz.transport === 'local') {
+        const ack = root && root.querySelector('#wz-node-ack');
+        if (!ack || !ack.checked) return 'Please tick the box to acknowledge the recommendation.';
+      }
+      return null;
+    },
   },
   {
     key: 'connect',
@@ -513,7 +521,7 @@ const STEPS = [
       <div class="wz-sumchips">${chips.join('')}</div>
       <div class="wz-summary">
         <div class="wz-sum-row"><span class="wz-sum-k">Runs</span><span class="wz-sum-v">${
-          wiz.transport === 'local' ? 'On the node (local)' : wiz.transport === 'ssh' ? 'On a different machine (SSH)' : '-'}</span></div>
+          wiz.transport === 'local' ? 'On this machine (local)' : wiz.transport === 'ssh' ? 'On a different machine (SSH)' : '-'}</span></div>
         <div class="wz-sum-row"><span class="wz-sum-k">Loyalty leaderboard</span><span class="wz-sum-v">${
           wiz.useDbsync ? 'On (db-sync)' : 'Needs db-sync'}</span></div>
         <div class="wz-sum-row"><span class="wz-sum-k">Deep-dive</span><span class="wz-sum-v">${
@@ -546,6 +554,10 @@ const STYLE = `
 .wz-note { font-size: 12.5px; line-height: 1.55; color: var(--pt-text-secondary, #b9c4d0);
   background: rgba(74,163,255,0.08); border: 1px solid rgba(74,163,255,0.25); border-radius: 8px; padding: 11px 13px; margin: 12px 0 0; }
 .wz-note-amber { background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.28); }
+.wz-note-tip { background: rgba(54,224,212,0.08); border-color: rgba(54,224,212,0.32); }  /*wz-bp-advisory-v78*/
+.wz-ack-row { display:flex; align-items:flex-start; gap:8px; margin-top:10px; font-size:12px; color:#e6edf3; cursor:pointer; }  /*wz-node-ack-v79*/
+.wz-ack-row.wz-ack-hidden { display:none; }
+.wz-ack-row input { margin-top:2px; accent-color:#36e0d4; cursor:pointer; flex:0 0 auto; }
 .wz-note-h { font-weight: 700; color: var(--pt-text-primary, #e6edf3); margin-bottom: 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
 .wz-ver { margin-top: 8px; font-family: ui-monospace, monospace; font-size: 11px; color: var(--pt-text-muted, #9aa7b4); }
 .wz-foot { margin-top: 14px; font-size: 11px; color: var(--pt-text-muted, #9aa7b4); opacity: .85; }
@@ -855,13 +867,26 @@ export function showSetupWizard(opts = {}) {
       });
     }
 
-    if (step.key === 'transport') {
+    if (step.key === 'transport') {   /*wz-node-ack-v79*/
+      const ackRow = modal.querySelector('#wz-node-ack-row');
+      const ackBox = modal.querySelector('#wz-node-ack');
+      if (ackBox) ackBox.addEventListener('change', refreshNext);
       modal.querySelectorAll('.wz-card').forEach((card) => {
         card.addEventListener('click', () => {
           wiz.transport = card.dataset.choice;
           modal.querySelectorAll('.wz-card').forEach((c) => c.classList.toggle('wz-card-on', c === card));
           $('#wz-err').textContent = '';
-          setTimeout(() => { const nb = $('#wz-next'); if (nb) nb.click(); }, 180);   // auto-advance /*wz-flow-v35*/
+          if (wiz.transport === 'local') {
+            // Require explicit acknowledgement: reveal the box, show Next (gated
+            // by validate), do NOT auto-advance.
+            if (ackRow) ackRow.classList.remove('wz-ack-hidden');
+            const nb = $('#wz-next'); if (nb) nb.style.display = '';
+            refreshNext();
+          } else {
+            if (ackRow) ackRow.classList.add('wz-ack-hidden');
+            if (ackBox) ackBox.checked = false;
+            setTimeout(() => { const nb = $('#wz-next'); if (nb) nb.click(); }, 180);   // auto-advance /*wz-flow-v35*/
+          }
         });
       });
     }

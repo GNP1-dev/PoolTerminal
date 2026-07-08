@@ -30,7 +30,7 @@
  */
 
 import { invoke } from './tauri.js';
-import { withKoiosAuth } from './koios-token.js';
+import { getKoiosToken } from './koios-token.js';
 import { DataKind, registry } from './capabilities.js';
 import * as meter from './koios-meter.js';
 
@@ -50,11 +50,29 @@ const PROVIDES = [
 let _bech32 = null;
 let _ready = false;
 
+function parseKoiosCurl(command) {   // koios-http-v74
+  const method = /-X\s+POST/.test(command) ? 'POST' : 'GET';
+  const urlM = command.match(/'(https?:\/\/[^']+)'/);
+  const dM = command.match(/-d\s+'([\s\S]*)'\s*$/);
+  const mtM = command.match(/--max-time\s+(\d+)/);
+  return {
+    url: urlM ? urlM[1] : null,
+    method,
+    body: dM ? dM[1].replace(/'\\''/g, "'") : null,
+    maxTime: mtM ? Number(mtM[1]) : 8,
+  };
+}
+
 async function runCmd(command) {
   if (meter.isPaused()) return '';
   meter.recordCall();
-  const r = await invoke('ssh_run', { command: withKoiosAuth(command) });
-  const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
+  const { url, method, body, maxTime } = parseKoiosCurl(command);
+  if (!url) return '';
+  let out;
+  try {
+    out = await invoke('koios_http', { url, method, body, token: getKoiosToken(), maxTime });
+  } catch (e) { return ''; }
+  out = (typeof out === 'string') ? out : '';
   if (meter.looksLikeLimit(out)) return '';
   return out;
 }

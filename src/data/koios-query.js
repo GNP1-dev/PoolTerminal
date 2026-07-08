@@ -28,7 +28,7 @@
  */
 
 import { invoke } from './tauri.js';
-import { withKoiosAuth } from './koios-token.js';
+import { getKoiosToken } from './koios-token.js';
 import { DataKind, registry } from './capabilities.js';
 import * as meter from './koios-meter.js';
 
@@ -40,13 +40,33 @@ const ACCOUNT_INFO_MAX_TIME = 15; // account_info pages (50 addrs) are heavier â
  * Run a command on the node over SSH, returning stdout (or '' on failure).
  * Mirrors the helper in geo-query.js so behaviour is identical across modules.
  */
+// Parse a Koios curl string into a structured request so it can go direct over
+// HTTPS from the host (token as a real header, never on a command line). (koios-http-v74)
+function parseKoiosCurl(command) {
+  const method = /-X\s+POST/.test(command) ? 'POST' : 'GET';
+  const urlM = command.match(/'(https?:\/\/[^']+)'/);
+  const dM = command.match(/-d\s+'([\s\S]*)'\s*$/);
+  const mtM = command.match(/--max-time\s+(\d+)/);
+  return {
+    url: urlM ? urlM[1] : null,
+    method,
+    body: dM ? dM[1].replace(/'\\''/g, "'") : null,
+    maxTime: mtM ? Number(mtM[1]) : 8,
+  };
+}
+
 async function runCmd(command) {
   // Respect the pause switch: when paused (manually or auto on hitting the
   // daily cap), make no Koios call at all - return empty so callers fall back.
   if (meter.isPaused()) return '';
   meter.recordCall();
-  const r = await invoke('ssh_run', { command: withKoiosAuth(command) });
-  const out = (typeof r === 'string') ? r : (r?.stdout ?? '');
+  const { url, method, body, maxTime } = parseKoiosCurl(command);
+  if (!url) return '';
+  let out;
+  try {
+    out = await invoke('koios_http', { url, method, body, token: getKoiosToken(), maxTime });
+  } catch (e) { return ''; }
+  out = (typeof out === 'string') ? out : '';
   // Detect Koios tier-limit response and auto-pause (captures the real count).
   if (meter.looksLikeLimit(out)) return '';
   return out;

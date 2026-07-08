@@ -13,6 +13,8 @@
  * never on continuously-ticking values (epoch progress).
  */
 
+import { getNodeProbe } from '../data/session.js';   /*opcert-msg-v86*/
+
 let prev = {};
 
 function byId(id) { return document.getElementById(id); }
@@ -103,7 +105,7 @@ export function renderHero(snap) {
   if (snap.kesDaysRemaining == null) {
     if (kesVal) { kesVal.innerHTML = '—'; kesVal.style.color = 'var(--pt-text-muted)'; }
     if (kesBar) { kesBar.style.width = '0%'; }
-    if (kesSub) { kesSub.textContent = 'no op.cert'; }
+    if (kesSub) { const _r = (getNodeProbe() || {}).role; kesSub.textContent = (_r && _r !== 'BP') ? 'n/a on relay' : 'querying…'; }
   } else {
     setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit"> days</span>`);
     kesVal.style.color = kesColor(snap.kesDaysRemaining);

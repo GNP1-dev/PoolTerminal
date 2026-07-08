@@ -112,9 +112,9 @@ export function renderUpcomingBlocks(list, opts = {}) {
     } else if (opts.scheduleState === 'unavailable') {
       count.textContent = 'schedule unavailable';
       body.innerHTML = '<div class="pt-ub-empty">Leadership schedule unavailable. This panel needs <b>cardano-cli query leadership-schedule</b>, which requires the pool\'s VRF signing key and a reachable node socket on this node.</div>';
-    } else if (opts.scheduleState === 'loading') {
-      count.textContent = 'detecting…';
-      body.innerHTML = '<div class="pt-ub-empty">Detecting upcoming blocks…</div>';
+    } else if (opts.scheduleState === 'loading') {   /*slow-msg-v85*/
+      count.textContent = 'querying…';
+      body.innerHTML = '<div class="pt-ub-empty">Querying the leadership schedule on your block producer. This can take up to 2 minutes on a busy node - it is working, not stuck.</div>';
     } else {
       count.textContent = 'none upcoming · next epoch shows ~36h before end';
       body.innerHTML = '<div class="pt-ub-empty">No assigned slots this epoch.</div>';

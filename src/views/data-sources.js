@@ -19,7 +19,7 @@ import { getMode } from '../data/index.js';
 import { getSession } from '../data/session.js';
 import { invoke } from '../data/tauri.js';
 import { confirmDialog, alertDialog } from '../ui/dialog.js';
-import { forceRefreshHistory } from '../data/read-model.js';
+import { forceRefreshHistory, dbsyncMachine } from '../data/read-model.js';   /*machine-col*/
 import { getUsage } from '../data/koios-meter.js';
 import { hasKoiosToken } from '../data/koios-token.js';
 
@@ -65,13 +65,40 @@ const HISTORY_FEATURES = [
   { label: 'Pool parameters', desc: 'Margin, fixed cost and pledge.', kind: DataKind.POOL_PARAMS, needs: 'Koios or db-sync' },
 ];
 
+/* --- machine attribution: which host each data category is sourced from --- */ /*machine-col*/
+function nodeMachine() {
+  const s = (() => { try { return getSession(); } catch { return null; } })();
+  if (!s || !s.connected) return null;
+  if (s.transport === 'local') return { label: 'local', remote: false };
+  return { label: s.host || 'remote node', remote: true };
+}
+function extMachine(sourceId) {
+  if (!sourceId) return null;
+  const base = String(sourceId).replace('-live', '');
+  if (base === 'koios' || base === 'blockfrost') return { label: 'local', remote: false };
+  if (base === 'dbsync') {
+    const m = (() => { try { return dbsyncMachine(); } catch { return null; } })();
+    if (!m) return null;
+    return { label: m, remote: m !== 'local' };
+  }
+  if (base === 'node' || base === 'node-cli' || base === 'cli') return nodeMachine();
+  return null;
+}
+function machineBadge(m) {
+  if (!m) return '';
+  const cls = m.remote ? 'ds-machine ds-machine-remote' : 'ds-machine ds-machine-local';
+  const suffix = m.remote ? ' \u00b7 remote' : '';
+  return `<span class="${cls}" title="Machine this data is sourced from">${esc(m.label)}${suffix}</span>`;
+}
+
 function nodeRow(f, live) {
   const badge = live
     ? `<span class="ds-badge ds-node">Node</span>`
     : `<span class="ds-badge ds-none">Connect to view</span>`;
   const note = f.note ? `<div class="ds-note">${esc(f.note)}</div>` : '';
+  const mach = live ? machineBadge(nodeMachine()) : '';   /*machine-col*/
   return `<div class="ds-row"><div class="ds-row-main"><div class="ds-row-l">${esc(f.label)}</div>
-    <div class="ds-row-d">${esc(f.desc)}</div>${note}</div><div class="ds-row-src">${badge}</div></div>`;
+    <div class="ds-row-d">${esc(f.desc)}</div>${note}</div><div class="ds-row-src">${badge}${mach}</div></div>`;
 }
 
 function extRow(f) {
@@ -84,8 +111,9 @@ function extRow(f) {
   let note = '';
   if (!can) note = `<div class="ds-note ds-note-warn">${esc(f.noteUnavail || `Needs ${f.needs}.`)}</div>`;
   else if (f.enhance) note = `<div class="ds-note">${esc(f.enhance)}</div>`;
+  const mach = can ? machineBadge(extMachine(active.id)) : '';   /*machine-col*/
   return `<div class="ds-row"><div class="ds-row-main"><div class="ds-row-l">${esc(f.label)}</div>
-    <div class="ds-row-d">${esc(f.desc)}</div>${note}</div><div class="ds-row-src">${badge}</div></div>`;
+    <div class="ds-row-d">${esc(f.desc)}</div>${note}</div><div class="ds-row-src">${badge}${mach}</div></div>`;
 }
 
 function summaryHtml(live) {
@@ -170,7 +198,10 @@ function ensureStyle() {
     .ds-note { font-size: 11px; color: var(--pt-text-secondary, #b9c4d0); margin-top: 5px; line-height: 1.4;
       border-left: 2px solid rgba(120,150,190,0.3); padding-left: 8px; }
     .ds-note-warn { color: #fbbf24; border-left-color: rgba(251,191,36,0.5); }
-    .ds-row-src { flex: 0 0 auto; }
+    .ds-row-src { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    .ds-machine { display:inline-block; font-size:10px; font-weight:600; padding:3px 8px; border-radius:20px; white-space:nowrap; border:1px solid; font-family:ui-monospace,monospace; }   /*machine-col*/
+    .ds-machine-local  { color:#4ade80; border-color:rgba(74,222,128,0.35); background:rgba(74,222,128,0.08); }
+    .ds-machine-remote { color:#9fb0d0; border-color:rgba(159,176,208,0.3); background:rgba(159,176,208,0.06); }
     .ds-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px;
       white-space: nowrap; border: 1px solid; }
     .ds-ver { font-weight: 400; opacity: 0.7; font-family: ui-monospace, monospace; font-size: 10px; }

@@ -42,6 +42,9 @@ const DELEGATORS_HTML = `
     .pt-delegators { display: flex; flex-direction: column; gap: var(--pt-gap, 8px); padding: 8px; height: 100%; overflow-y: auto; }
     .pt-delegators .pt-hero-row-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--pt-gap, 8px); }
     .pt-delegators .pt-hero-row-6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--pt-gap, 8px); }
+    .pt-delegators .pt-hero-row-7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: var(--pt-gap, 8px); }   /*ada-price-hero*/
+    .pt-delegators .pt-hero-ada .pt-hero-value { color: var(--pt-good, #5dff9b); }
+    .pt-delegators .pt-hero-ada .pt-hero-unit { color: var(--pt-text-secondary); margin-right: 1px; }
     .pt-delegators .pt-hero-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .pt-delegators .pt-tbl-wrap { max-height: 460px; overflow: auto; }
     .pt-delegators table { width: 100%; border-collapse: collapse; font: 400 11px ui-monospace, monospace; white-space: nowrap; }
@@ -243,7 +246,8 @@ const DELEGATORS_HTML = `
     .loy-stats .sub { display: block; margin-top: 2px; }
   </style>
   <div class="pt-delegators" id="pt-delegators">
-    <div class="pt-hero-row pt-hero-row-6">
+    <div class="pt-hero-row pt-hero-row-7">   <!--ada-price-hero-->
+      <div class="pt-hero-card pt-hero-ada"><div class="pt-hero-label">ADA / USD</div><div class="pt-hero-value" id="d-ada-price">—</div><div class="pt-hero-sub" id="d-ada-price-sub">loading…</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Delegators</div><div class="pt-hero-value" id="d-count">—</div><div class="pt-hero-sub" id="d-count-sub">live</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Live stake</div><div class="pt-hero-value" id="d-stake">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-stake-sub">delegated</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Active stake</div><div class="pt-hero-value" id="d-active">—<span class="pt-hero-unit">₳</span></div><div class="pt-hero-sub" id="d-active-sub">set snapshot</div></div>
@@ -903,8 +907,50 @@ function setLoadProgress(floor, stage, ceil) {
   if (!_loadTimer) _startLoadCreep();
 }
 
+/* --- ADA/USD price hero: host-side fetch, never touches the node --- */ /*ada-price-hero*/
+let _adaPriceTimer = null;
+let _adaPriceLast = null;
+async function fetchAdaPrice() {
+  const valEl = document.getElementById('d-ada-price');
+  const subEl = document.getElementById('d-ada-price-sub');
+  if (!valEl) return;
+  try {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd&include_24hr_change=true';
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    const c = j && j.cardano ? j.cardano : null;
+    const p = c && typeof c.usd === 'number' ? c.usd : null;
+    const chg = c && typeof c.usd_24h_change === 'number' ? c.usd_24h_change : null;
+    if (p == null) throw new Error('no price');
+    _adaPriceLast = p;
+    valEl.innerHTML = '<span class="pt-hero-unit">$</span>' + p.toFixed(4);
+    if (subEl) {
+      if (chg != null) {
+        const up = chg >= 0;
+        subEl.textContent = (up ? '\u25b2 ' : '\u25bc ') + Math.abs(chg).toFixed(2) + '% 24h';
+        subEl.style.color = up ? 'var(--pt-good, #5dff9b)' : 'var(--pt-bad, #ff5a3c)';
+      } else {
+        subEl.textContent = 'CoinGecko'; subEl.style.color = '';
+      }
+    }
+  } catch (e) {
+    if (_adaPriceLast == null && valEl) valEl.textContent = 'n/a';
+    if (subEl) { subEl.textContent = 'price unavailable'; subEl.style.color = ''; }
+  }
+}
+function startAdaPrice() {
+  fetchAdaPrice();
+  if (_adaPriceTimer) clearInterval(_adaPriceTimer);
+  _adaPriceTimer = setInterval(fetchAdaPrice, 60000);
+}
+function stopAdaPrice() {
+  if (_adaPriceTimer) { clearInterval(_adaPriceTimer); _adaPriceTimer = null; }
+}
+
 export async function mountDelegators(canvas) {
   canvas.innerHTML = DELEGATORS_HTML;
+  startAdaPrice();   /*ada-price-hero*/
   const root = canvas.querySelector('#pt-delegators');
   // Instant re-nav: reuse a recently fetched delegator list from memory rather
   // than re-querying the source (Koios pool_delegators can take ~20s). /*du-cache*/
@@ -1048,4 +1094,4 @@ export async function mountDelegators(canvas) {
   stopLoadCreep();
 }
 
-export function unmountDelegators() { stopLoadCreep(); closeDeepDive(); }
+export function unmountDelegators() { stopLoadCreep(); stopAdaPrice(); closeDeepDive(); }

@@ -881,6 +881,20 @@ function dbsyncConfigFromChoice() {
   return cfg;
 }
 
+/* Which machine db-sync is sourced from, for the Data tab. Returns 'local' for
+   local/loopback db-sync, or the configured remote host. null if not enabled.
+   (machine-col) */
+export function dbsyncMachine() {
+  const c = savedSourceChoice();
+  if (!c || c.useDbsync !== true) return null;
+  const mode = c.dbsyncMode || 'local';
+  if (mode === 'local') return 'local';
+  const ssh = (c.dbsync && c.dbsync.ssh) || {};
+  const host = ssh.host || (c.dbsync && c.dbsync.host) || '';
+  if (!host || host === '127.0.0.1' || host === 'localhost') return 'local';
+  return host;
+}
+
 async function ensureDbsync() {
   if (_dbsyncInit) return dbsync.dbsyncSource.reachable();
   const _dbCfg = dbsyncConfigFromChoice();

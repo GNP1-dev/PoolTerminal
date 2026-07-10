@@ -812,12 +812,23 @@ export function isUpcomingReady() { return _ubCurSlots !== null && _ubCurSlots !
  *  'ready' = computed (the slot list may legitimately be empty). The schedule
  *  comes from `cardano-cli query leadership-schedule`, not cncli. */
 export function upcomingScheduleState() {
-  if (Array.isArray(_ubCurSlots)) return 'ready';
-  // Not resolved yet: distinguish "still detecting" (just launched, or retrying
-  // within the grace window) from a genuine, settled "unavailable".
-  if (_ubCurFirstTryAt === 0) return 'loading';
-  if (Date.now() - _ubCurFirstTryAt < UB_CUR_GRACE_MS) return 'loading';
-  return 'unavailable';
+  const curArr  = Array.isArray(_ubCurSlots);
+  const nextArr = Array.isArray(_ubNextSlots);
+  // Anything to actually show -> ready.
+  if ((curArr && _ubCurSlots.length > 0) || (nextArr && _ubNextSlots.length > 0)) return 'ready';
+  // Current-epoch schedule not resolved yet: distinguish "still detecting" (just
+  // launched, or retrying within the grace window) from a settled "unavailable".
+  if (!curArr) {
+    if (_ubCurFirstTryAt === 0) return 'loading';
+    if (Date.now() - _ubCurFirstTryAt < UB_CUR_GRACE_MS) return 'loading';
+    return 'unavailable';
+  }
+  // Current resolved but empty. Stay 'loading' until the NEXT-epoch probe has
+  // also settled, so we don't flash "no upcoming blocks" while that query is
+  // still queued behind the current one on the single SSH session. Once next is
+  // known (has slots, or probed and window not open), show the final state. /*ub-nextwait-v91*/
+  const nextSettled = nextArr || (_ubNextCheckedAt > 0 && _ubNextSlots === null);
+  return nextSettled ? 'ready' : 'loading';
 }
 
 

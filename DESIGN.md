@@ -63,7 +63,7 @@ Mono uses tabular numerals automatically. Only two weights: 400 regular, 500 med
 ┌──────────────────────────────────────────────────────┐
 │ Tickertape strip — global, always visible            │
 ├──────────────────────────────────────────────────────┤
-│ Tab bar — NOW · HISTORY · DELEGATORS · ...           │
+│ Tab bar — DASHBOARD · HISTORY · DELEGATORS · ...           │
 ├──────────────────────────────────────────────────────┤
 │                                                       │
 │ View canvas — fluid, view-specific layout             │
@@ -137,7 +137,7 @@ Tap the pulse badge → drill-down panel showing each component score with worst
 
 ## 12. Chain pulse spec
 
-Located in the NOW view. Three stacked elements inside one panel:
+Located in the DASHBOARD view. Three stacked elements inside one panel:
 
 1. **"Since last block"** — large mono readout, neutral colour, never red. Right side shows avg/max/min over 5 min window.
 2. **Heartbeat strip** — last 5 min, vertical tick at every block arrival. Latest tick brighter blue. Dashed green "now" marker at right edge. Visually irregular (like AF arrhythmia trace) — that's Praos doing what Praos does.

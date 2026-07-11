@@ -8,7 +8,17 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 > **v0.1.0 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development — star to follow progress.
 
-> _Last updated: 11 July 2026_ <!-- readme-release-v1 -->
+> _Last updated: 11 July 2026_ <!-- readme-beta-v1 -->
+
+> ### ⚠️ This is a beta. I need your help testing it.
+>
+> PoolTerminal runs every day against a live block producer, but it is **early software and I do not expect it to be working 100% yet**. There will be bugs, rough edges and things I haven't hit on my own setup.
+>
+> **That's where you come in.** Every pool is configured differently — different distros, node layouts, db-sync setups, pool sizes. If you're an SPO, the most useful thing you can do is **run it, try to break it, and tell me what went wrong.**
+>
+> 🐛 **[Report a bug or tell me what broke](https://github.com/GNP1-dev/PoolTerminal/issues)** — include what you were doing, your setup (distro, node, data source), and any error text. Rough reports are fine; I'd rather hear it than not.
+>
+> It is **read-only** — it cannot sign, spend, or change anything on your node — so the worst a bug can do is show you something wrong or fail to load. Your pool is never at risk from it.
 
 ![PoolTerminal dashboard](docs/screenshot.png)
 
@@ -169,11 +179,23 @@ PoolTerminal is built with Cardano's regular hard fork cycle in mind. See `HARDF
 
 ## Status
 
-Active development. Core data layer (all sources), connection (SSH + local), the setup wizard, and the NOW / HISTORY / DELEGATORS / NODE HEALTH / NOTIFICATIONS / DATA / MAP views are working, including per-delegator stake history, op cert counter monitoring, and honest returning-delegator labelling. Dedicated **Relay 1 / Relay 2** monitoring tabs are now working too: isolated, node-only relay dashboards with heartbeat, density, mempool, tip/sync, epoch, block propagation, a scrollable peer list, a geolocated relay map, background-persistent polling, and automatic node selection for co-located BP+relay hosts. Next: REWARDS / GOVERNANCE views.
+**Beta — active development.** It works, and it's in daily use on a live pool. But it has only really been exercised on *one* operator's setup (mine), and every pool is different. Expect rough edges.
+
+**Working:** the full data layer (node, Koios, db-sync, Blockfrost), connection (SSH + local), the setup wizard, and the NOW / HISTORY / DELEGATORS / NODE HEALTH / NOTIFICATIONS / DATA / MAP views — including per-delegator stake history, op-cert counter monitoring and honest returning-delegator labelling. Dedicated **Relay 1 / Relay 2** tabs work too: isolated, node-only relay dashboards with heartbeat, density, mempool, tip/sync, epoch, block propagation, a scrollable peer list, a geolocated relay map, background-persistent polling, and automatic node selection for co-located BP+relay hosts.
+
+**Known rough edges:** the setup wizard is still being refined. Slow queries on a busy block producer (the leadership schedule especially) can take up to two minutes on first connect — that's the node, not the app, and it's signposted in the UI. Some things have only ever been tested against a single node layout.
+
+**Next:** REWARDS and GOVERNANCE (DRep) views; Windows and macOS builds.
 
 ## Contributing
 
-Contributions welcome once the foundation is in place. For now, watch and star — feedback on the design is genuinely useful.
+**The single most useful contribution right now is testing.** Run it against your own pool and tell me what breaks.
+
+- 🐛 **[Open an issue](https://github.com/GNP1-dev/PoolTerminal/issues)** for anything that goes wrong — a crash, a wrong number, a confusing screen, a setup step that didn't work. Include your distro, node layout, and which data sources you're using.
+- 💡 **Feature ideas and design feedback** are welcome too — this is built by one SPO, and other operators will want things I haven't thought of.
+- 🔧 **Code contributions** are welcome. It's Apache 2.0; open an issue first if it's a big change so we don't duplicate work.
+
+If you'd rather not run a binary, build it from source (above) — the whole point is that you can check it yourself.
 
 ## Licence
 

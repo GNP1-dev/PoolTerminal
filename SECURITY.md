@@ -3,7 +3,7 @@
 PoolTerminal is a read-only operational dashboard for Cardano stake pool
 operators. It performs no transaction signing, holds no key material, and
 exercises no node control from the GUI. Even so, it connects to your block
-producer over SSH, so its security matters — and the project's trust model is
+producer over SSH, so its security matters - and the project's trust model is
 simple: **audit the code before you trust it.**
 
 ## Independent review
@@ -34,5 +34,5 @@ In scope: the PoolTerminal application code in this repository (the Rust backend
 and the JavaScript frontend).
 
 Out of scope: the security of your own node, SSH server, db-sync instance, or
-third-party services (Koios, Blockfrost) — those are operated and secured by you
+third-party services (Koios, Blockfrost) - those are operated and secured by you
 or their respective providers, consistent with the project's trust model.

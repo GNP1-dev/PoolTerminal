@@ -1,4 +1,4 @@
-# PoolTerminal — Design specification
+# PoolTerminal - Design specification
 
 **Canonical reference for every visual decision in PoolTerminal. Anything that ships should be checkable against this document.**
 
@@ -8,7 +8,7 @@
 
 Bloomberg-terminal-dense, Cardano-blue accented, on charcoal. Every pixel earns its place. Read-only by design. Numbers read as numbers (monospace, tabular). Status is colour, not noise. Real-time updates flash so the operator sees what changed.
 
-Praos is probabilistic — long gaps between blocks are normal. Colour is reserved for actual node health, never the chain's natural rhythm.
+Praos is probabilistic - long gaps between blocks are normal. Colour is reserved for actual node health, never the chain's natural rhythm.
 
 ## 2. Colour palette
 
@@ -18,7 +18,7 @@ Praos is probabilistic — long gaps between blocks are normal. Colour is reserv
 | `--pt-bg-panel` | `#161B26` | Card / panel surface |
 | `--pt-bg-strip` | `#0A0E15` | Tickertape and panel header strip |
 | `--pt-border` | `#1F2937` | All borders (0.5px solid) |
-| `--pt-accent-blue` | `#4A8FE7` | Primary accent — Cardano-inspired, readable on dark |
+| `--pt-accent-blue` | `#4A8FE7` | Primary accent - Cardano-inspired, readable on dark |
 | `--pt-accent-blue-soft` | `#2C4763` | Chart fills, secondary blue |
 | `--pt-accent-blue-bright` | `#7BB0F5` | Active state, just-changed marker |
 | `--pt-status-good` | `#10B981` | Healthy state, value up |
@@ -33,8 +33,8 @@ Praos is probabilistic — long gaps between blocks are normal. Colour is reserv
 
 Two-family hybrid:
 
-- **Sans** (`system-ui` stack) — chrome, labels, panel titles, prose
-- **Mono** (`ui-monospace` stack) — all data values, numbers, hashes, addresses
+- **Sans** (`system-ui` stack) - chrome, labels, panel titles, prose
+- **Mono** (`ui-monospace` stack) - all data values, numbers, hashes, addresses
 
 Mono uses tabular numerals automatically. Only two weights: 400 regular, 500 medium. Sentence case for prose; ALLCAPS reserved for labels (0.7px letter-spacing).
 
@@ -80,15 +80,15 @@ Every panel has:
 1. **Header strip** (7px vertical pad, `--pt-bg-strip` background, 0.5px bottom border)
    - Title left: sans, 11px, uppercase, 0.7px tracking, `--pt-text-secondary`
    - Optional right-side metadata: mono, 11px, `--pt-text-muted`
-2. **Body** — varies by panel type, 9-11px padding
+2. **Body** - varies by panel type, 9-11px padding
 
 ## 7. View grammar
 
 Every view follows the same skeleton:
 
-- **Hero row** — 4-5 hero cards spanning full width (the headline metrics)
-- **Middle** — 2-column grid of medium panels (charts, tables, lists)
-- **Bottom** — full-width panel for the deepest single data structure (waterfall, log feed, full table, map)
+- **Hero row** - 4-5 hero cards spanning full width (the headline metrics)
+- **Middle** - 2-column grid of medium panels (charts, tables, lists)
+- **Bottom** - full-width panel for the deepest single data structure (waterfall, log feed, full table, map)
 
 ## 8. Animation
 
@@ -103,20 +103,20 @@ No spinners. No loading shimmer. Stale data shown at 60% opacity, replaced when 
 
 ## 9. Status semantics
 
-- **Cardano blue** — primary accent, informational ("this is a value worth noting")
-- **Green** — healthy, value increased, success
-- **Amber** — warning, value approaching threshold (KES < 30d, saturation > 80%, etc)
-- **Red** — error, failure, value past hard threshold (KES < 7d, sync lost, etc)
+- **Cardano blue** - primary accent, informational ("this is a value worth noting")
+- **Green** - healthy, value increased, success
+- **Amber** - warning, value approaching threshold (KES < 30d, saturation > 80%, etc)
+- **Red** - error, failure, value past hard threshold (KES < 7d, sync lost, etc)
 
 Pulse score badge: green ≥ 85, amber 60-84, red < 60.
 
-**Reserved rule:** the "since last block" readout and tip difference are NEVER colour-coded red. They are informational. The single health signal for chain alignment is the AT TIP badge — green if synced, amber if behind, red if significantly behind.
+**Reserved rule:** the "since last block" readout and tip difference are NEVER colour-coded red. They are informational. The single health signal for chain alignment is the AT TIP badge - green if synced, amber if behind, red if significantly behind.
 
 ## 10. Number formatting
 
-- **Cards** — abbreviated (50M ADA, 1.2K delegators, 47s)
-- **Tables, detail views, tooltips** — full precision (50,123,456 ADA)
-- **All numeric output** — tabular numerals via monospace
+- **Cards** - abbreviated (50M ADA, 1.2K delegators, 47s)
+- **Tables, detail views, tooltips** - full precision (50,123,456 ADA)
+- **All numeric output** - tabular numerals via monospace
 
 ## 11. Pool pulse formula
 
@@ -139,9 +139,9 @@ Tap the pulse badge → drill-down panel showing each component score with worst
 
 Located in the DASHBOARD view. Three stacked elements inside one panel:
 
-1. **"Since last block"** — large mono readout, neutral colour, never red. Right side shows avg/max/min over 5 min window.
-2. **Heartbeat strip** — last 5 min, vertical tick at every block arrival. Latest tick brighter blue. Dashed green "now" marker at right edge. Visually irregular (like AF arrhythmia trace) — that's Praos doing what Praos does.
-3. **Density readouts** — 5min / 1h / 24h / 7d / epoch density (blocks ÷ slots). Healthy mainnet ~5%. Within ±0.5% green, further amber, way off red.
+1. **"Since last block"** - large mono readout, neutral colour, never red. Right side shows avg/max/min over 5 min window.
+2. **Heartbeat strip** - last 5 min, vertical tick at every block arrival. Latest tick brighter blue. Dashed green "now" marker at right edge. Visually irregular (like AF arrhythmia trace) - that's Praos doing what Praos does.
+3. **Density readouts** - 5min / 1h / 24h / 7d / epoch density (blocks ÷ slots). Healthy mainnet ~5%. Within ±0.5% green, further amber, way off red.
 
 The only red/amber indicator on the panel is the AT TIP badge in the header.
 
@@ -152,7 +152,7 @@ A LIVE / DEMO toggle sits at the right end of the tickertape strip. In DEMO mode
 - All data sourced from `src/data/demo.js`
 - Persistent "DEMO MODE" tint across the whole UI (subtle amber border at app edge)
 - All side-effect actions disabled
-- Synthetic pool "DEMO1" — 50M live stake, ~20 blocks/epoch, 500 delegators
+- Synthetic pool "DEMO1" - 50M live stake, ~20 blocks/epoch, 500 delegators
 
 ## 14. Hard fork awareness
 

@@ -1,8 +1,8 @@
-# PoolTerminal — Security Review Summary
+# PoolTerminal - Security Review Summary
 
 _Independent code and security review. Latest pass: 8 July 2026._
 
-> **Editorial note (added after delivery).** The two items listed under "Outstanding before public release" below — the missing `LICENSE` file (A) and the hardcoded pool identifier (B) — were both resolved in commit `8ac69db`, after this review was delivered. All five security findings were already resolved at the time of review. The text below is preserved as originally written.
+> **Editorial note (added after delivery).** The two items listed under "Outstanding before public release" below - the missing `LICENSE` file (A) and the hardcoded pool identifier (B) - were both resolved in commit `8ac69db`, after this review was delivered. All five security findings were already resolved at the time of review. The text below is preserved as originally written.
 
 ## Scope
 
@@ -26,7 +26,7 @@ All five priority security findings from the initial review have been verified a
 
 **5. db-sync SSH tunnel and loopback-trust model.** The tunnelled-Postgres design is sound: the connection is presented to Postgres as arriving on the remote host's loopback interface, so a loopback-trust authentication line is satisfied without a stored password. Key-based SSH authentication is handled correctly and key contents are never read by the key-discovery routine. This model now rests on genuine host-key verification (finding 2), which it previously did not.
 
-Operators are advised to point the db-sync tunnel at a role with read-only (SELECT) grants as defense in depth, and to note that a `127.0.0.1/32 trust` line grants database access to any local process on the db-sync host — appropriate for a single-operator machine, but worth understanding before it is applied on a shared one.
+Operators are advised to point the db-sync tunnel at a role with read-only (SELECT) grants as defense in depth, and to note that a `127.0.0.1/32 trust` line grants database access to any local process on the db-sync host - appropriate for a single-operator machine, but worth understanding before it is applied on a shared one.
 
 ## Outstanding before public release
 
@@ -36,7 +36,7 @@ Operators are advised to point the db-sync tunnel at a role with read-only (SELE
 
 ## Non-blocking notes
 
-The connection screen prefills an example host address and username taken from the original development environment; generic placeholders would read better for a general audience, though these are user-overwritable defaults and carry no risk. The project has no automated test coverage; the data layer — the capability-resolution rules, the read-model calculations, and the input-validation guards — is well shaped for it and is the highest-value place to begin. `read-model.js` contains several near-duplicate backfill routines that would benefit from a shared factory. None of these affect release safety.
+The connection screen prefills an example host address and username taken from the original development environment; generic placeholders would read better for a general audience, though these are user-overwritable defaults and carry no risk. The project has no automated test coverage; the data layer - the capability-resolution rules, the read-model calculations, and the input-validation guards - is well shaped for it and is the highest-value place to begin. `read-model.js` contains several near-duplicate backfill routines that would benefit from a shared factory. None of these affect release safety.
 
 ---
 

@@ -1,4 +1,4 @@
-# Hard fork awareness — PoolTerminal
+# Hard fork awareness - PoolTerminal
 
 This document tracks all areas of PoolTerminal that may need attention when a Cardano hard fork is upcoming or has just occurred. It's a running list, updated as the codebase grows.
 
@@ -13,13 +13,13 @@ If you're forking PoolTerminal or auditing it ahead of a hard fork, this is the 
 Status: PoolTerminal not yet released. Will support Van Rossem from v1.0.
 
 Known impacts:
-- Cost model adjustments expected — Plutus serialisation unchanged
+- Cost model adjustments expected - Plutus serialisation unchanged
 - Node version target: 10.7.x (current mainnet: 10.5.4)
 - Watch [IOG SPO Announcements Telegram](https://t.me/CardanoStakePoolWorkgroup) for go signal
 
 ## Past forks supported
 
-_None yet — PoolTerminal is pre-release._
+_None yet - PoolTerminal is pre-release._
 
 ## Code areas marked for fork attention
 
@@ -31,14 +31,14 @@ The output schema of `cardano-cli latest query protocol-parameters` can gain fie
 
 ### Cost models
 
-New Plutus cost model versions are introduced at hard forks. The cost-model viewer in PoolTerminal shows current vs previous era — needs updating to include each new era as it arrives.
+New Plutus cost model versions are introduced at hard forks. The cost-model viewer in PoolTerminal shows current vs previous era - needs updating to include each new era as it arrives.
 
 ### cardano-cli command syntax
 
-Where possible, PoolTerminal uses `cardano-cli latest <command>` which auto-selects the current era. Some specific queries that don't have a `latest` alias are pinned to the current era — those need updating per fork.
+Where possible, PoolTerminal uses `cardano-cli latest <command>` which auto-selects the current era. Some specific queries that don't have a `latest` alias are pinned to the current era - those need updating per fork.
 
 Pinned queries (audit on fork):
-- _(none currently — to be populated as code is written)_
+- _(none currently - to be populated as code is written)_
 
 ### Tip query JSON structure
 
@@ -53,7 +53,7 @@ Pinned queries (audit on fork):
 Governance queries were entirely new in Conway era. They will continue to evolve. PoolTerminal's GOVERNANCE view must be re-validated at every Conway-line fork.
 
 Active governance query usage:
-- _(none currently — to be populated as code is written)_
+- _(none currently - to be populated as code is written)_
 
 ### DRep registration / voting
 

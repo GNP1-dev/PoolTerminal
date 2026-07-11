@@ -6,9 +6,13 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> ⚠️ **Early development.** Not yet released. Star to follow progress.
+> **v0.1.0 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development — star to follow progress.
 
-> _Last updated: 6 July 2026_ <!-- readme-v69 -->
+> _Last updated: 11 July 2026_ <!-- readme-release-v1 -->
+
+![PoolTerminal dashboard](docs/screenshot.png)
+
+_The NOW dashboard: chain pulse, KES, mempool flow, block propagation, upcoming leader slots and a live chain metadata feed. (Node address and peer IPs redacted.)_
 
 ## What it is
 
@@ -86,23 +90,54 @@ Relays have their own dedicated **Relay 1 / Relay 2** tabs (see Features) — pu
 
 ## Platform support
 
-Linux is the only supported platform. The vast majority of SPOs run Linux desktops or have Linux VMs. macOS and Windows builds would require code signing fees and platform-specific testing that the project can't currently justify. Contributions welcome if anyone wants to port.
+**Linux** is the primary and fully supported platform — most SPOs run Linux desktops or have a Linux VM to hand.
+
+**Windows and macOS builds are planned.** They will be shipped **unsigned**: PoolTerminal is a free, open-source hobby project for SPOs, not a commercial product, so it doesn't carry a code-signing certificate. Windows (SmartScreen) and macOS (Gatekeeper) will therefore warn that the developer is unidentified. That warning is expected — you can click through it, or, if you'd rather not trust a binary at all, build it yourself from source. The code is all here to audit.
 
 ## Installation
 
-> 🚧 Not yet available. First release expected Q3 2026.
+Download the latest build from **[Releases](https://github.com/GNP1-dev/PoolTerminal/releases/latest)**.
 
-When the first release lands, you'll be able to download:
-- `.AppImage` — universal Linux binary, no install needed
-- `.deb` — for Debian/Ubuntu
+**AppImage** (recommended — any Linux distro, no install):
+
+```bash
+chmod +x PoolTerminal_0.1.0_amd64.AppImage
+./PoolTerminal_0.1.0_amd64.AppImage
+```
+
+If it won't start, your system may be missing FUSE. Either install it
+(`sudo apt install libfuse2` on Debian/Ubuntu) or run without it:
+
+```bash
+./PoolTerminal_0.1.0_amd64.AppImage --appimage-extract-and-run
+```
+
+**.deb** (Debian / Ubuntu):
+
+```bash
+sudo dpkg -i PoolTerminal_0.1.0_amd64.deb
+```
+
+On first run, the setup wizard walks you through connecting to your node.
+You can also explore the whole interface with no node at all via **Demo mode**.
 
 ## Build from source
 
-> 🚧 Will be documented once the build is stabilised. Development run:
+You need [Rust](https://rustup.rs/), [Node.js](https://nodejs.org/), and the
+Tauri 2 Linux prerequisites (WebKitGTK 4.1 and friends — see the
+[Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)).
 
 ```bash
+git clone https://github.com/GNP1-dev/PoolTerminal.git
+cd PoolTerminal
 npm install
+
+# run in development
 cargo tauri dev
+
+# or build release bundles (AppImage + .deb into
+# src-tauri/target/release/bundle/)
+cargo tauri build
 ```
 
 ## Trust & security

@@ -550,6 +550,7 @@ let _bpScheduleEpoch = null;   // epoch the leadership-schedule last ran for
 let _bpAssigned = null;        // array of assigned slots, or null if unknown
 let _bpProducedAt = 0;
 let _bpProduced = 0;
+let _bpProducedLoaded = false;   // true once Koios produced-count has returned at least once
 let _bpInfoWritten = false;
 
 /** Run leadership-schedule for 'current' or 'next', paths from the node probe.
@@ -632,7 +633,7 @@ export async function refreshBlockProduction(epoch, ideal) {
       _bpProducedAt = now;
       try {
         const bech32 = ensurePoolBech32();
-        if (bech32) _bpProduced = await koios.getEpochBlockCount(bech32, epoch);
+        if (bech32) { _bpProduced = await koios.getEpochBlockCount(bech32, epoch); _bpProducedLoaded = true; }
       } catch (e) {
         console.warn('[bp] produced count fetch failed:', e.message ?? e);
       }
@@ -659,10 +660,29 @@ export async function refreshBlockProduction(epoch, ideal) {
           return w != null && (nowMs - w) > LOST_GRACE_MS;
         }).length
       : 0;
-    const lost = leaderKnown ? Math.max(0, settledPassed - adopted) : 0;
+    // Until the produced-count has actually loaded once, we cannot know if a
+    // passed slot is lost or just not-yet-reported. Report null (unknown)
+    // rather than counting it as lost — fixes the first-load "Lost 1" flash
+    // on a block that in fact minted to chain.
+    // lost = passed − produced is only trustworthy once the produced-count
+    // (adopted) is demonstrably live for this epoch. Koios can return a stale 0
+    // for minutes after a block is actually on-chain, which would otherwise show
+    // a passed-but-not-yet-reported slot as LOST. So:
+    //   - produced-count never loaded yet            -> lost unknown (null)
+    //   - slots have passed but adopted is still 0    -> lost unknown (null)
+    //     (almost certainly Koios lag, not a real loss)
+    //   - otherwise                                   -> passed − adopted
+    let lost;
+    if (!leaderKnown || !_bpProducedLoaded) {
+      lost = null;
+    } else if (settledPassed > 0 && adopted === 0) {
+      lost = null;                       // passed slots but nothing reported yet: unknown, not lost
+    } else {
+      lost = Math.max(0, settledPassed - adopted);
+    }
     const luckPercent = ideal && ideal > 0 ? Math.round((adopted / ideal) * 100) : 0;
 
-    _bp = { leader, ideal: ideal ?? 0, adopted, confirmed: adopted, lost, luckPercent, leaderKnown };
+    _bp = { leader, ideal: ideal ?? 0, adopted, confirmed: adopted, lost, luckPercent, leaderKnown };  // lost may be null until produced-count loads
 
     if (dirty) {
       const info = liveInfo();
@@ -671,7 +691,7 @@ export async function refreshBlockProduction(epoch, ideal) {
         leader: leaderKnown ? leader : null,
         ideal: ideal ?? null,
         adopted, confirmed: adopted,
-        lost: leaderKnown ? lost : null,
+        lost,   // already null when unknown per the rule above
         luck: luckPercent,
         delegators:          info ? info.liveDelegators : null,
         activeStake:         info ? info.activeStake : null,            // Set snapshot ≈ live epoch

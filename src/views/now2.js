@@ -20,6 +20,7 @@ import { refreshLifetimeBlocks, getEpochEndMs, isRelayConfirmed } from './now.js
 import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
 import { getNodeProbe } from '../data/session.js';
+import { attachPanelLoader, markPanelReady } from '../ui/panel-loader.js';
 
 let _mirrorTimer = null;
 let _tick = 0;
@@ -225,7 +226,7 @@ const N2_HTML = `
       </div>
 
       <div class="n2-hero-main">
-        <div class="n2-blockbox">
+        <div class="n2-blockbox" id="n2-blockbox">
           <div class="n2-bb-grid">
             <span class="n2-bb-stat" id="hero-blocks"><span class="k">Blocks</span><span class="v" id="hero-blocks-val" style="color:#36e0d4">—</span><span class="s" id="hero-blocks-sub">lifetime</span></span>
             <span class="n2-bb-stat" id="hero-leader"><span class="k">Leader</span><span class="v" id="hero-leader-val" style="color:#36e0d4">—</span></span>
@@ -558,18 +559,9 @@ function applyRelayMode() {
 function paintGauges() {
   const root = document;
   applyRelayMode();
-  // Lift the loading overlay once the first real data has arrived. Demo mode
-  // has no node Prometheus metrics (getLastMetrics stays null) but does fill the
-  // dashboard from its snapshot, so treat demo as ready or it hangs forever.
-  if (!_n2Ready) {
-    let haveData = false;
-    try { haveData = getMode() === 'demo' || getLastMetrics() != null; } catch (e) { haveData = false; }
-    if (haveData) {
-      _n2Ready = true;
-      const ov = document.getElementById('n2-loading');
-      if (ov) { ov.classList.add('fade'); setTimeout(() => ov.remove(), 400); }
-    }
-  }
+  // Per-panel spinners: check each panel's readiness probe and reveal the ones
+  // whose data has arrived. Runs every tick (1s) alongside the rest of paint.
+  try { tickPanelLoaders(); } catch (e) { /* non-critical */ }
   // KES thermometer: days remaining out of ~90, colour-coded (green >30, amber 10-30, red <10)
   const kes = numFrom('hero-kes-val');
   if (kes != null) {
@@ -807,35 +799,81 @@ function mfStop() {
   if (_mfDripTimer) { clearTimeout(_mfDripTimer); _mfDripTimer = null; }   /*mf-faithful-v67b*/
 }
 
+// ── Per-panel loading spinners ───────────────────────────────────────────────
+// Panels reveal independently as their own data arrives. Each entry: the panel
+// element selector, the spinner label, and a probe() that returns true once the
+// panel holds real (non-placeholder) data. A panel with its own informative
+// waiting message (Upcoming Blocks) is omitted so we don't hide that text.
+let _plStart = 0;
+const _PL_TIMEOUT_MS = 100000;   // safety net: lift any stuck spinner after 100s
+
+function _txt(id) {
+  const el = document.getElementById(id);
+  return el ? (el.textContent || '').trim() : '';
+}
+function _real(id) {
+  const t = _txt(id);
+  return t !== '' && t !== '\u2014' && t !== '-';   // not empty, not em/hyphen dash
+}
+
+// probes return true when the panel's real data has landed
+const _PANEL_LOADERS = [
+  { sel: '#n2-blockbox',   label: 'Waiting for block data',
+    probe: () => { const b = document.getElementById('n2-blockbox');
+                   return !!b && b.getAttribute('data-ready') === '1'; } },
+  { sel: '.n2-hero-trace', label: 'Waiting for chain pulse',
+    probe: () => { const svg = document.getElementById('cp-heartbeat');
+                   return !!svg && svg.querySelector('path') != null; } },
+  { sel: '#hero-kes',      label: 'Reading KES',
+    probe: () => _real('hero-kes-val') },
+  { sel: '#hero-epoch',    label: 'Syncing epoch',
+    probe: () => _real('n2-ep-d') || _real('n2-ep-h') || _real('n2-ep-m') },
+  { selFn: () => { const h = document.getElementById('n2-mp-host');
+                   return h ? h.closest('.n2-cell') : null; }, label: 'Reading mempool',
+    probe: () => { const v = document.querySelector('.n2-mpbar-val');
+                   return !!v && /\d/.test(v.textContent || ''); } },
+  { sel: '.n2-pp-panel',   label: 'Finding peers',
+    probe: () => { const b = document.querySelector('.n2-pp-panel');
+                   return !!b && /\d/.test((b.textContent || '').replace(/Peers?/gi, '')); } },
+  { sel: '.n2-ub-panel',   label: 'Computing leader schedule (up to 2 min)',
+    probe: () => { const p = document.querySelector('.n2-ub-panel');
+                   // ready when the panel exists and is NOT in the loading state.
+                   // null attr = not yet rendered = still loading (keep spinner).
+                   return !!p && p.getAttribute('data-ub-loading') === '0'; } },
+  { sel: '.n2-mf-panel',   label: 'Waiting for metadata feed',
+    probe: () => { const b = document.querySelector('.n2-mf-body');
+                   return !!b && b.querySelector('.n2-mf-msg') != null; } },
+];
+
+function setupPanelLoaders(canvas) {
+  _plStart = Date.now();
+  for (const cfg of _PANEL_LOADERS) {
+    let el = null;
+    try { el = cfg.selFn ? cfg.selFn() : canvas.querySelector(cfg.sel); } catch (e) { el = null; }
+    if (el) { cfg._el = el; attachPanelLoader(el, cfg.label); }
+  }
+}
+
+function tickPanelLoaders() {
+  const timedOut = _plStart && (Date.now() - _plStart) > _PL_TIMEOUT_MS;
+  for (const cfg of _PANEL_LOADERS) {
+    const el = cfg._el;
+    if (!el) continue;
+    let ready = false;
+    try { ready = !!cfg.probe(); } catch (e) { ready = false; }
+    if (ready || timedOut) markPanelReady(el);
+  }
+}
+
 export function mountNow2(canvas) {
   canvas.innerHTML = N2_HTML;
   _n2Ready = false;
-  // Loading overlay until the first real data lands (avoids the empty-then-trickle
-  // cold start). Cleared in paintGauges() once getLastMetrics() is non-null.
-  if (!document.getElementById('n2-loading')) {
-    const ov = document.createElement('div');
-    ov.id = 'n2-loading';
-    ov.innerHTML =
-      '<style>' +
-      '#n2-loading{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;' +
-      'align-items:center;justify-content:center;gap:14px;background:var(--pt-bg,#0d1117);' +
-      'transition:opacity .35s ease;}' +
-      '#n2-loading.fade{opacity:0;pointer-events:none;}' +
-      '#n2-loading .n2l-ring{width:42px;height:42px;border:3px solid rgba(123,176,245,0.25);' +
-      'border-top-color:#7BB0F5;border-radius:50%;animation:n2lspin .8s linear infinite;}' +
-      '#n2-loading .n2l-txt{font:600 12px ui-monospace,monospace;letter-spacing:.5px;' +
-      'text-transform:uppercase;color:var(--pt-accent-blue-bright,#7BB0F5);}' +
-      '#n2-loading .n2l-sub{font:11px ui-monospace,monospace;color:var(--pt-text-muted,#97A0B0);}' +
-      '@keyframes n2lspin{to{transform:rotate(360deg);}}' +
-      '</style>' +
-      '<div class="n2l-ring"></div>' +
-      '<div class="n2l-txt">Starting dashboard</div>' +
-      '<div class="n2l-sub">connecting to node and fetching live data\u2026</div>' +
-      '<div class="n2l-sub" style="opacity:.75;font-style:italic;">please allow up to 90 seconds to populate</div>';
-    // canvas is the positioning context; ensure it can host an absolute overlay.
-    if (getComputedStyle(canvas).position === 'static') canvas.style.position = 'relative';
-    canvas.appendChild(ov);
-  }
+  // ── Per-panel loading spinners (single load process; no full-screen overlay) ──
+  // Each panel shows a rotating spinner + label until ITS OWN data arrives, then
+  // reveals. Panels that print their own informative waiting text (e.g. Upcoming
+  // Blocks: "querying the leadership schedule…") are intentionally NOT covered.
+  // A safety timeout lifts any spinner after 100s so none can get stuck.
+  try { setupPanelLoaders(canvas); } catch (e) { /* loaders are non-critical */ }
   try { initChainPulse(); } catch (e) { /* heartbeat renders on next tick */ }
   // Metadata-feed filter funnel menu. Checkbox state (checked = filter on) is
   // read by the live engine in v67. /*mf-refine2-v66e*/

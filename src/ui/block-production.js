@@ -47,8 +47,15 @@ export function renderBlockProduction(bp) {
   }
   const lostEl = byId('bp-lost');
   if (lostEl) {
-    lostEl.textContent = bp.lost;
-    lostEl.style.color = bp.lost > 0 ? 'var(--pt-status-bad)' : 'var(--pt-text-primary)';
+    // lost === null means "not known yet" (produced-count still loading on first
+    // paint) — show a neutral dash, never "null" and never a misleading 0/red.
+    if (bp.lost == null) {
+      lostEl.textContent = '\u2013';                       // en dash
+      lostEl.style.color = 'var(--pt-text-muted)';
+    } else {
+      lostEl.textContent = bp.lost;
+      lostEl.style.color = bp.lost > 0 ? 'var(--pt-status-bad)' : 'var(--pt-text-primary)';
+    }
   }
 
   flash('bp-cell-adopt', bp.adopted, prev.adopted);

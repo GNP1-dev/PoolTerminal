@@ -105,6 +105,24 @@ export function renderUpcomingBlocks(list, opts = {}) {
   const count = byId('ub-count');
   if (!body || !count) return;
 
+  // Tell the panel spinner whether the schedule is still resolving. The spinner
+  // must stay up through the ENTIRE query, including the gap where scheduleState
+  // has left 'loading' but no slots have rendered yet (that gap is what briefly
+  // flashed the "querying…" message). Resolved ONLY when: real slots exist, or a
+  // definite terminal empty reason (relay / unavailable / a settled no-slots that
+  // is not itself the loading message). /*panel-loader-v2*/
+  {
+    const panel = body.closest('.n2-ub-panel');
+    if (panel) {
+      // upcomingScheduleState() returns exactly: 'loading' | 'ready' | 'unavailable'.
+      // 'ready' covers both "has slots" and "resolved but genuinely none".
+      const st = opts.scheduleState;
+      const resolved = (blocks.length > 0) || opts.isRelay
+                       || st === 'ready' || st === 'unavailable';
+      panel.setAttribute('data-ub-loading', resolved ? '0' : '1');
+    }
+  }
+
   if (blocks.length === 0) {
     if (opts.isRelay) {
       count.textContent = 'relay';

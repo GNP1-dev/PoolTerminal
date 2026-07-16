@@ -75,6 +75,17 @@ export function renderHero(snap) {
   byId('hero-epoch-bar').style.width = epPct + '%';
 
   // --- Leader / Ideal / Adopt / Conf / Lost ---
+  // Mark the block box ready only when the leader schedule is genuinely known
+  // (currentBlockProduction() populated leaderKnown). Before that, bp is the
+  // ZERO_BP cold-start default and the values are placeholder zeros — the panel
+  // spinner keys on this attribute so it doesn't lift on those fake zeros.
+  {
+    const bbEl = byId('n2-blockbox');
+    if (bbEl) {
+      if (bp.leaderKnown) bbEl.setAttribute('data-ready', '1');
+      else bbEl.removeAttribute('data-ready');
+    }
+  }
   setText('hero-leader-val', bp.leader);
   setText('hero-ideal-val', bp.ideal);
   setText('hero-adopt-val', bp.adopted);

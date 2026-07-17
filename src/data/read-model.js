@@ -1256,7 +1256,77 @@ export async function sampleHealth(host, metrics) {
     await put('peers_warm',    metrics.peersWarm);
     await put('peers_cold',    metrics.peersCold);
     await put('density',       metrics.density);
+    // Propagation history: record each block's delay once. blockDelayLast holds
+    // steady between blocks, so we only sample when it changes -> one row/block.
+    await capturePropagation(metrics);
   }
+}
+
+// ---- Propagation history --------------------------------------------------
+// Persists block propagation delay (seconds) as time-series samples under the
+// 'prop_delay' metric, plus a richer JSON record per SLOW block (>2s) in the
+// meta store so the operator can review problem blocks long after they scroll
+// off the live strip. All via the existing cache — no schema/Rust changes.
+let _lastPropDelay = null;
+const PROP_SLOW_THRESHOLD_S = 2.0;
+const PROP_META_KEY = 'prop_slow_blocks';   // JSON array of slow-block records
+const PROP_SLOW_MAX = 500;                   // cap the slow-block log
+
+async function capturePropagation(metrics) {
+  const d = metrics.blockDelayLast;
+  if (d == null || !Number.isFinite(d) || d <= 0) return;
+  // dedupe: same delay value = same block, skip. (Float compare with epsilon.)
+  if (_lastPropDelay != null && Math.abs(d - _lastPropDelay) < 1e-6) return;
+  _lastPropDelay = d;
+  // time-series sample (every distinct block)
+  await cachePutSample('prop_delay', d);
+  // rich record for slow blocks
+  if (d >= PROP_SLOW_THRESHOLD_S) {
+    try {
+      const rec = {
+        ts: Date.now(),
+        delay: d,
+        cdf1: metrics.blockDelayCdfOne ?? null,
+        cdf3: metrics.blockDelayCdfThree ?? null,
+        cdf5: metrics.blockDelayCdfFive ?? null,
+      };
+      let arr = [];
+      try { const raw = await cacheMetaGet(PROP_META_KEY); if (raw) arr = JSON.parse(raw); } catch { arr = []; }
+      arr.push(rec);
+      if (arr.length > PROP_SLOW_MAX) arr = arr.slice(arr.length - PROP_SLOW_MAX);
+      await cacheMetaSet(PROP_META_KEY, JSON.stringify(arr));
+    } catch (e) { console.warn('[read-model] prop slow record:', e.message ?? e); }
+  }
+}
+
+// Retrieval for the propagation history view.
+export async function getPropagationHistory(sinceTs) {
+  const raw = await cacheGetSamplesRaw('prop_delay', sinceTs || 0);
+  const series = (raw || []).map((r) => ({ t: r.captured_at, v: r.value }))
+                            .filter((x) => x.v != null)
+                            .sort((a, b) => a.t - b.t);
+  let slow = [];
+  try { const j = await cacheMetaGet(PROP_META_KEY); if (j) slow = JSON.parse(j); } catch { slow = []; }
+  slow = (slow || []).slice().sort((a, b) => b.ts - a.ts);   // newest slow block first
+  // summary stats over the returned window
+  let stats = null;
+  if (series.length) {
+    const vals = series.map((x) => x.v).sort((a, b) => a - b);
+    const sum = vals.reduce((a, b) => a + b, 0);
+    const pct = (p) => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))];
+    stats = {
+      count: vals.length,
+      min: vals[0],
+      max: vals[vals.length - 1],
+      mean: sum / vals.length,
+      median: pct(0.5),
+      p95: pct(0.95),
+      over1: vals.filter((v) => v >= 1).length,
+      over2: vals.filter((v) => v >= 2).length,
+      over5: vals.filter((v) => v >= 5).length,
+    };
+  }
+  return { series, slow, stats };
 }
 
 // ============================================================

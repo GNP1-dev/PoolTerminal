@@ -15,7 +15,7 @@
  */
 
 import { initChainPulse, stopChainPulse, getActiveWindow, densityPctForWindow } from '../ui/chain-pulse.js';
-import { speedoSVG, setSpeedo, thermoHTML, setThermo, tanksHTML, paintTanks, flashMint } from '../ui/now-gauges.js';
+import { speedoSVG, setSpeedo, thermoHTML, setThermo, hourglassHTML, setHourglass, tanksHTML, paintTanks, flashMint } from '../ui/now-gauges.js';
 import { refreshLifetimeBlocks, getEpochEndMs, isRelayConfirmed } from './now.js';
 import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
@@ -69,6 +69,12 @@ const N2_HTML = `
     .n2-cell .n2-lbl { margin-bottom:8px; }
     .n2-val { font-family:ui-monospace,monospace; font-weight:700; font-size:17px; margin-top:6px; }
     .n2-sub { font-size:11px; color:var(--pt-text-muted,#6f7d99); margin-top:2px; }
+    /* KES cell: centre the periods/date sub-lines and the opcert block */
+    #hero-kes .n2-sub { text-align:center; }
+    .n2-kes-opcert { margin-top:8px; text-align:center; }
+    .n2-kes-opcert-lbl { font-size:9px; letter-spacing:.6px; text-transform:uppercase; color:var(--pt-text-muted,#97A0B0); margin-bottom:3px; }
+    .n2-kes-opcert-lines { font-size:11px; line-height:1.35; }
+    .n2-kes-note { font-size:9px; color:var(--pt-text-muted,#6f7d99); opacity:.8; }
     .pt-speedo-tick { font-family:ui-monospace,monospace; font-size:9px; fill:#6f7d99; }
     .n2-density-grid { display:grid; grid-template-columns:repeat(3,auto); gap:3px 12px; justify-content:center; margin-top:8px; font-size:11px; font-family:ui-monospace,monospace; }
     .n2-gaps { width:100%; margin-top:12px; }
@@ -82,6 +88,13 @@ const N2_HTML = `
 
     /* thermometers + tanks */
     .pt-thermo { position:relative; width:62px; height:126px; margin-top:2px; }
+    /* KES hourglass — replaces the thermometer as a time-running-out metaphor */
+    .pt-hg { position:relative; width:96px; height:126px; margin:2px auto 0; display:flex; align-items:center; justify-content:center; }
+    .pt-hg-svg { width:100%; height:100%; overflow:visible; }
+    .pt-hg-svg path { transition: d .6s ease, fill .3s, stroke .3s; }
+    .pt-hg-svg rect[rx="2"] { transition: fill .3s; }
+    /* drips are animated in-SVG via SMIL (see now-gauges.js) so they move in
+       viewBox units and land on the growing bottom pile. */
     .pt-thermo-tube { position:absolute; left:16px; top:0; width:16px; height:108px; border-radius:9px; background:rgba(120,150,200,.10); border:1.5px solid rgba(160,185,225,.5); overflow:hidden; box-shadow:inset 0 0 6px rgba(0,0,0,.3); }
     .pt-thermo-ticks { position:absolute; left:0; top:0; width:100%; height:108px; pointer-events:none; }
     .pt-thermo-tick { position:absolute; left:34px; transform:translateY(50%); display:flex; align-items:center; gap:3px; }
@@ -130,10 +143,16 @@ const N2_HTML = `
     .n2-bp-late .n2-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
     .n2-bp-body { gap:8px; }
     .n2-bp-obs .n2-bp-bar { background:#7bb0f5; }
-    .n2-bp-strip { display:flex; align-items:flex-end; gap:2px; height:30px; margin-top:6px; }
+    .n2-bp-striparea { position:relative; margin-top:6px; padding-right:46px; }
+    .n2-bp-strip { display:flex; align-items:flex-end; gap:2px; height:46px; }
+    .n2-bp-1sline { position:absolute; left:0; right:46px; top:22%; border-top:1px dotted var(--pt-text-muted,#6f7d99); opacity:.7; pointer-events:none; }
+    .n2-bp-1slabel { position:absolute; right:2px; top:22%; transform:translateY(-50%); font:600 8px ui-monospace,monospace; color:var(--pt-text-muted,#6f7d99); letter-spacing:.3px; }
+    .n2-bp-overlabel { position:absolute; left:2px; top:1px; font:600 8px ui-monospace,monospace; color:var(--pt-status-warn,#ffc24a); letter-spacing:.3px; }
     .n2-bp-tick { flex:1 1 0; min-width:2px; border-radius:2px 2px 0 0; opacity:.85; height:10%; }
     .n2-bp-strip-empty { font-size:10px; color:var(--pt-text-muted,#6f7d99); align-self:center; margin:auto; }
     .n2-bp-note { font-size:9px; color:var(--pt-text-muted,#6f7d99); text-align:center; margin-top:4px; line-height:1.3; }
+    .n2-bp-history-btn { margin-top:8px; width:100%; background:var(--pt-bg-strip,#161b24); border:0.5px solid var(--pt-border,#2a3340); border-radius:6px; color:var(--pt-accent-blue-bright,#7BB0F5); cursor:pointer; font:600 10px ui-monospace,monospace; text-transform:uppercase; letter-spacing:0.5px; padding:7px; transition:border-color 0.12s,color 0.12s; }
+    .n2-bp-history-btn:hover { border-color:var(--pt-accent-blue-bright,#7BB0F5); color:#fff; }
     .n2-ub-panel .pt-ub-body { overflow-y:auto; overflow-x:hidden; max-height:none; flex:1 1 auto; min-height:0; min-width:0; display:block; }  /*mf-refine-v66b*/
     .n2-ub-panel .pt-ub-body::-webkit-scrollbar { width:7px; }
     .n2-ub-panel .pt-ub-body::-webkit-scrollbar-thumb { background:rgba(120,150,200,.3); border-radius:4px; }
@@ -254,10 +273,16 @@ const N2_HTML = `
     <div class="n2-deck">
       <div class="n2-panel n2-cell" id="hero-kes">
         <div class="n2-lbl">KES</div>
-        ${thermoHTML({ id: 'n2-kes', color: '#ffc24a', ticks: [{ frac: 0, label: '0' }, { frac: 0.5, label: '45' }, { frac: 1, label: '90' }] })}
+        ${hourglassHTML({ id: 'n2-kes', color: '#ffc24a' })}
         <div class="n2-val" id="hero-kes-val" style="color:#ffc24a">—</div>
         <div class="n2-sub" id="hero-kes-sub">—</div>
-        <div class="n2-sub" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when they match, or disk is one ahead just after a KES rotation."><!--/*opcert-label*/--><span style="font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--pt-text-muted,#97A0B0);margin-right:5px;">opcert</span><span id="hero-kes-opcert-val">— on disk · — on chain</span></div>
+        <div class="n2-kes-opcert" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when they match, or disk is one ahead just after a KES rotation.">
+          <div class="n2-kes-opcert-lbl">opcert</div>
+          <div class="n2-kes-opcert-lines" id="hero-kes-opcert-val">
+            <div id="hero-kes-opcert-disk">— on disk</div>
+            <div id="hero-kes-opcert-chain">— on chain</div>
+          </div>
+        </div>
         <div id="hero-kes-bar" style="display:none"></div>
       </div>
 
@@ -353,8 +378,14 @@ const N2_HTML = `
           <div class="n2-bp-row"><span class="n2-bp-k">within 3s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar3"></span></span><span class="n2-bp-v" id="bp-cdf3">&mdash;</span></div>
           <div class="n2-bp-row"><span class="n2-bp-k">within 5s</span><span class="n2-bp-track"><span class="n2-bp-bar" id="bp-bar5"></span></span><span class="n2-bp-v" id="bp-cdf5">&mdash;</span></div>
           <div class="n2-bp-row n2-bp-late"><span class="n2-bp-k">last block</span><span class="n2-bp-v" id="bp-last">&mdash;</span></div>
-          <div class="n2-bp-strip" id="bp-strip"></div>
+          <div class="n2-bp-striparea">
+            <div class="n2-bp-strip" id="bp-strip"></div>
+            <div class="n2-bp-1sline"></div>
+            <div class="n2-bp-overlabel">1+ secs</div>
+            <div class="n2-bp-1slabel">1 sec</div>
+          </div>
           <div class="n2-bp-note">0.2s / 0.5s and the strip are observed live and build as blocks arrive.</div>
+          <button class="n2-bp-history-btn" id="bp-see-history" type="button">See history \u2192</button>
         </div>
       </div>
       <div class="n2-panel n2-pp-panel">
@@ -455,10 +486,16 @@ function renderBpStrip() {
   if (!el) return;
   const items = bpHistLoad().items.slice(-40);
   if (items.length === 0) { el.innerHTML = '<span class="n2-bp-strip-empty">builds as blocks arrive</span>'; return; }
-  const CAP = 5;
+  // The dotted 1s reference line sits at 78% height. Blocks under 1s fill the
+  // lower 0-78% band (so normal sub-second variance is clearly visible); blocks
+  // at/above 1s rise into the top 'over' band (78->100% across 1..3s), capped.
+  const LINE = 78;   // % height of the 1s line
   el.innerHTML = items.map((x) => {
     const col = x.d < 1 ? '#5dff9b' : x.d < 3 ? '#ffc24a' : '#ff5a3c';
-    const h = Math.max(10, Math.min(100, (Math.min(x.d, CAP) / CAP) * 100));
+    let h;
+    if (x.d < 1) h = (x.d / 1.0) * LINE;
+    else h = LINE + ((Math.min(x.d, 3) - 1) / 2) * (100 - LINE);
+    h = Math.max(6, Math.min(100, h));
     return `<span class="n2-bp-tick" style="height:${h.toFixed(0)}%;background:${col}" title="block ${x.b}: ${x.d.toFixed(2)}s"></span>`;
   }).join('');
 }
@@ -562,11 +599,15 @@ function paintGauges() {
   // Per-panel spinners: check each panel's readiness probe and reveal the ones
   // whose data has arrived. Runs every tick (1s) alongside the rest of paint.
   try { tickPanelLoaders(); } catch (e) { /* non-critical */ }
-  // KES thermometer: days remaining out of ~90, colour-coded (green >30, amber 10-30, red <10)
-  const kes = numFrom('hero-kes-val');
+  // KES hourglass: driven by DAYS remaining (the value shown) out of a full KES
+  // lifetime of ~93 days (62 periods x ~1.5 days). So 47 days => ~half full,
+  // matching the periods reading (32/62). Colours are day-based: green >21 days
+  // (~2 weeks warning), amber 7-21, red <7 (rotate now).
+  const KES_TOTAL_DAYS = 93;
+  const kes = numFrom('hero-kes-val');   // days remaining
   if (kes != null) {
-    const kesCol = kes > 30 ? '#5dff9b' : (kes >= 10 ? '#ffc24a' : '#ff5a5a');
-    setThermo(root, 'n2-kes', kes / 90, kesCol);
+    const kesCol = kes > 21 ? '#5dff9b' : (kes >= 7 ? '#ffc24a' : '#ff5a5a');
+    setHourglass(root, 'n2-kes', kes / KES_TOTAL_DAYS, kesCol);
     const kv = root.querySelector('#hero-kes-val'); if (kv) kv.style.color = kesCol;
   }
   // Op cert counters (disk/chain) - gLiveView health rule: green when disk == chain
@@ -578,15 +619,21 @@ function paintGauges() {
     const ocv = oc.querySelector('#hero-kes-opcert-val') || oc;
     if (Number.isFinite(d) && Number.isFinite(c)) {
       const ok = (d === c) || (d === c + 1);
-      ocv.textContent = `${d} on disk · ${c} on chain`;
+      const diskEl = oc.querySelector('#hero-kes-opcert-disk');
+      const chainEl = oc.querySelector('#hero-kes-opcert-chain');
+      if (diskEl) diskEl.textContent = `${d} on disk`;
+      if (chainEl) chainEl.textContent = `${c} on chain`;
       ocv.style.color = ok ? '#5dff9b' : '#ff5a5a';
       oc.title = ok
         ? `Operational certificate counter healthy: disk ${d}, chain ${c}.`
         : `Operational certificate counter MISMATCH: disk ${d}, chain ${c}. Expected disk == chain or one ahead.`;
     } else if (pr.role && pr.role !== 'BP') {
-      oc.textContent = '';   // relays have no op cert
+      oc.style.display = 'none';   // relays have no op cert
     } else {
-      ocv.textContent = 'querying node…';   /*slow-msg-v85*/
+      const diskEl = oc.querySelector('#hero-kes-opcert-disk');
+      const chainEl = oc.querySelector('#hero-kes-opcert-chain');
+      if (diskEl) diskEl.textContent = 'querying';
+      if (chainEl) chainEl.textContent = 'node…';
       ocv.style.color = '';
     }
   }
@@ -874,6 +921,15 @@ export function mountNow2(canvas) {
   // Blocks: "querying the leadership schedule…") are intentionally NOT covered.
   // A safety timeout lifts any spinner after 100s so none can get stuck.
   try { setupPanelLoaders(canvas); } catch (e) { /* loaders are non-critical */ }
+  // "See history" -> jump to the Logs tab and open the propagation view
+  try {
+    const histBtn = canvas.querySelector('#bp-see-history');
+    if (histBtn) histBtn.addEventListener('click', () => {
+      try { window.__ptOpenLogsQuery = 'propagation'; } catch (e) { /* */ }
+      const logsTab = document.querySelector('.pt-tab[data-view="logs"]');
+      if (logsTab) logsTab.click();
+    });
+  } catch (e) { /* non-critical */ }
   try { initChainPulse(); } catch (e) { /* heartbeat renders on next tick */ }
   // Metadata-feed filter funnel menu. Checkbox state (checked = filter on) is
   // read by the live engine in v67. /*mf-refine2-v66e*/

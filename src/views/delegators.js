@@ -107,6 +107,14 @@ const DELEGATORS_HTML = `
     .sh-axis { fill: var(--pt-text-muted, #97A0B0); font: 9px ui-monospace, monospace; }
     .sh-cur { fill: #7BB0F5; font: 600 10px ui-monospace, monospace; }
     .sh-src { font: 11px ui-monospace, monospace; color: var(--pt-text-secondary, #C4CCD8); margin-bottom: 10px; }
+    .sh-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--pt-border); margin-bottom: 12px; }
+    .sh-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--pt-text-muted); cursor: pointer; font: 600 11px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 14px; margin-bottom: -1px; transition: color 0.12s, border-color 0.12s; }
+    .sh-tab:hover { color: var(--pt-text-secondary, #C4CCD8); }
+    .sh-tab-on { color: var(--pt-accent-blue-bright, #7BB0F5); border-bottom-color: var(--pt-accent-blue-bright, #7BB0F5); }
+    .sh-pane { display: none; }
+    .sh-pane-on { display: block; }
+    .sh-move-note { font: 400 11px ui-monospace, monospace; line-height: 1.5; color: var(--pt-text-secondary, #C4CCD8); background: var(--pt-bg-strip); border: 0.5px solid var(--pt-border); border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
+    .sh-move-note b { color: var(--pt-text-primary); font-weight: 700; }
     .sh-subhead { font: 600 11px ui-monospace, monospace; color: var(--pt-accent-blue-bright, #7BB0F5); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 6px; }
     .sh-dim { color: var(--pt-text-muted, #97A0B0); font-weight: 400; text-transform: none; letter-spacing: 0; }
     .sh-table { width: 100%; border-collapse: collapse; font: 11px ui-monospace, monospace; }
@@ -129,9 +137,19 @@ const DELEGATORS_HTML = `
       border-radius: 6px; padding: 5px 11px; font: 600 12px ui-monospace, monospace; flex: 0 0 auto; }
     .dd-body { padding: 18px 20px 24px; }
     .dd-loading { padding: 48px; text-align: center; color: var(--pt-text-muted); font: 400 12px ui-monospace, monospace; }
-    .dd-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px; }
+    .dd-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px; }
+    @media (max-width: 720px) { .dd-stats { grid-template-columns: repeat(3, 1fr); } }
     .dd-stat { background: var(--pt-bg-strip); border: 0.5px solid var(--pt-border); border-radius: 7px; padding: 10px 12px; }
     .dd-stat .l { font: 500 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.5px; color: var(--pt-text-muted); }
+    .dd-stat .l .l-sub { display: block; font-size: 8px; letter-spacing: 0.3px; opacity: 0.8; margin-top: 1px; text-transform: none; }
+    .dd-stat-gov .v { font-size: 12px; }
+    .dd-gov-id { display: flex; align-items: center; gap: 6px; }
+    .dd-gov-t { color: #b39dff; }
+    .dd-gov-special { color: #b39dff; font-size: 13px; }
+    .dd-gov-none { color: var(--pt-text-muted); font-size: 13px; }
+    .dd-stat-gov .dd-copy { flex: 0 0 auto; background: rgba(120,90,220,0.18); border: 0.5px solid rgba(150,120,240,0.5); border-radius: 4px; color: #b39dff; cursor: pointer; font: 600 9px ui-monospace, monospace; letter-spacing: 0.3px; line-height: 1; padding: 3px 7px; }
+    .dd-stat-gov .dd-copy:hover { background: rgba(150,120,240,0.5); color: #fff; }
+    .dd-stat-gov .dd-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; }
     .dd-stat .v { font: 600 17px ui-monospace, monospace; color: var(--pt-text-primary); margin-top: 4px; }
     .dd-stat .v .u { font-size: 11px; color: var(--pt-text-muted); margin-left: 2px; }
     .dd-section-title { font: 600 11px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.6px;
@@ -144,7 +162,10 @@ const DELEGATORS_HTML = `
     .dd-hop { display: flex; align-items: center; flex: 0 0 auto; }
     .dd-node { width: 132px; border-radius: 9px; padding: 12px 12px 11px; color: #fff; position: relative;
       box-shadow: 0 4px 14px rgba(0,0,0,0.35); }
-    .dd-node .tkr { font: 700 14px ui-monospace, monospace; letter-spacing: 0.3px; }
+    .dd-node .tkr { font: 700 14px ui-monospace, monospace; letter-spacing: 0.3px; display: flex; align-items: center; gap: 6px; }
+    .dd-node .dd-copy { flex: 0 0 auto; background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.28); border-radius: 4px; color: #fff; cursor: pointer; font: 600 9px ui-monospace, monospace; letter-spacing: 0.3px; line-height: 1; padding: 3px 7px; transition: background 0.12s; }
+    .dd-node .dd-copy:hover { background: rgba(255,255,255,0.32); }
+    .dd-node .dd-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; border-color: var(--pt-accent-gold, #d6b246); }
     .dd-node .nm { font: 400 10px ui-monospace, monospace; opacity: 0.85; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dd-node .amt { font: 600 11px ui-monospace, monospace; margin-top: 8px; }
     .dd-node .amt .amt-lbl { display: block; font: 400 8px ui-monospace, monospace; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 1px; }
@@ -210,8 +231,11 @@ const DELEGATORS_HTML = `
     .du-copy { flex: 0 0 auto; background: rgba(90,140,220,0.14); border: 1px solid var(--pt-border); border-radius: 4px; color: var(--pt-accent-blue); cursor: pointer; font: 600 9px ui-monospace, monospace; line-height: 1; padding: 3px 5px; letter-spacing: 0.3px; transition: background 0.12s, color 0.12s; }
     .du-copy:hover { background: var(--pt-accent-blue); color: #fff; }
     .du-copy.copied { background: var(--pt-accent-gold, #d6b246); color: #1a1205; border-color: var(--pt-accent-gold, #d6b246); }
-    .du-row.hit { animation: duhit 2.4s ease-out 1; }
-    @keyframes duhit { 0% { background: rgba(214,178,70,0.55); } 100% { background: transparent; } }
+    /* Search hit stays highlighted until Clear or a new search (was a 2.4s fade,
+       which vanished before you could switch to the Deleg/Stake buttons). */
+    .du-row.hit, .du-row.hit td { background: rgba(214,178,70,0.30) !important; }
+    .du-row.hit { box-shadow: inset 3px 0 0 var(--pt-accent-gold, #d6b246); }
+    @keyframes duhit { 0% { background: rgba(214,178,70,0.55); } 100% { background: rgba(214,178,70,0.30); } }
     .d-search { display: flex; align-items: center; gap: 8px; margin: 8px 8px 4px; }
     .d-search input { flex: 1; min-width: 0; background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border); border-radius: 6px; color: var(--pt-text-primary); font: 400 11px ui-monospace, monospace; padding: 6px 9px; }
     .d-search button { background: #1b2430; color: var(--pt-text-secondary); border: 1px solid var(--pt-border); border-radius: 6px; font-size: 11px; padding: 6px 12px; cursor: pointer; }
@@ -328,10 +352,14 @@ function jumpToStake(raw) {
   if (_duDrawPage) _duDrawPage();
   const wrap = document.getElementById('d-table');
   const full = _duView[i].stake;
+  // remember which row is highlighted so it survives paging re-renders, and
+  // clear any previous highlight first (a new search moves it).
+  _duHitStake = full;
+  if (wrap) wrap.querySelectorAll('.du-row.hit').forEach((r) => r.classList.remove('hit'));
   const row = wrap && wrap.querySelector('.du-row[data-stake="' + full + '"]');
   if (row) {
     row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    row.classList.remove('hit'); void row.offsetWidth; row.classList.add('hit');
+    void row.offsetWidth; row.classList.add('hit');
   }
   if (msg) msg.innerHTML = 'Found at rank ' + (i + 1) + ': <span class="full" data-copy="' + full + '" title="Click to copy">' + full + '</span>';
 }
@@ -381,6 +409,10 @@ function renderJourney(runs) {
     const col = poolColor(r.poolId, isUs);
     const tkr = esc(r.ticker || (r.poolId ? r.poolId.slice(0, 9) + '\u2026' : '?'));
     const nm = esc(r.name || '');
+    // Full pool id is truncated in the label; this button copies the whole thing.
+    const copyBtn = r.poolId
+      ? `<button class="dd-copy du-copy" type="button" data-copy="${esc(r.poolId)}" title="Copy full pool ID\n${esc(r.poolId)}">\u29C9 copy</button>`
+      : '';
     const entry = `<div class="dd-flow"><span class="dd-flow-l">in \u00b7 ep ${r.entryEpoch ?? '?'}</span><span class="dd-flow-v">${fmt(r.entryStake)} \u20b3</span></div>`;
     const exit = r.isCurrent
       ? `<div class="dd-flow dd-here"><span class="dd-flow-l">still here</span><span class="dd-flow-v">${fmt(r.exitStake)} \u20b3 now</span></div>`
@@ -388,7 +420,7 @@ function renderJourney(runs) {
     const node = `
       <div class="dd-node${isUs ? ' dest' : ''}" style="background:${col}">
         ${isUs ? '<span class="you">your pool</span>' : ''}
-        <div class="tkr">${tkr}</div>
+        <div class="tkr">${tkr}${copyBtn}</div>
         <div class="nm">${nm}</div>
         ${entry}
         ${exit}
@@ -482,7 +514,7 @@ async function openStakeHistory(stake) {
       return `<tr><td class="sh-ep">${v.epoch ?? '\u2014'}</td><td>${label}</td><td class="sh-delta">${amt} \u20b3</td><td>${tx}</td></tr>`;
     }).join('');
     eventsHtml = `
-      <div class="sh-subhead">Intra-epoch movements <span class="sh-dim">(rewards &amp; withdrawals, exact from db-sync)</span></div>
+      <div class="sh-subhead">Rewards &amp; withdrawals <span class="sh-dim">(exact from db-sync, newest first)</span></div>
       <table class="sh-table">
         <thead><tr><th>epoch</th><th>type</th><th class="sh-delta">amount</th><th>tx</th></tr></thead>
         <tbody>${evRows}</tbody>
@@ -491,24 +523,55 @@ async function openStakeHistory(stake) {
 
   const chart = _shSparkline(data.epochs);
 
+  // Two tabs: Active stake (per-epoch table + running-balance chart) and
+  // Intra-epoch movements (rewards in / withdrawals out from db-sync). The
+  // movements tab is only offered when there are events (db-sync path).
+  const hasEvents = Array.isArray(data.events) && data.events.length > 0;
+  const moveTabBtn = hasEvents
+    ? `<button class="sh-tab" type="button" data-shtab="moves">Intra-epoch movements</button>`
+    : '';
+
   body.innerHTML = `
     <div class="sh-src">Source: <strong>${src}</strong> \u00b7 ${grain}${note}</div>
-    <div class="sh-split">
-      <div class="sh-top">
-        <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first)</span></div>
-        <div class="sh-tablewrap">
-          <table class="sh-table">
-            <thead><tr><th>epoch</th><th class="sh-bal">balance</th><th class="sh-delta">change</th></tr></thead><!--/*sh-align*/-->
-            <tbody>${rowsHtml}</tbody>
-          </table>
-          ${eventsHtml}
+    <div class="sh-tabs">
+      <button class="sh-tab sh-tab-on" type="button" data-shtab="stake">Active stake</button>
+      ${moveTabBtn}
+    </div>
+
+    <div class="sh-pane sh-pane-on" data-shpane="stake">
+      <div class="sh-split">
+        <div class="sh-top">
+          <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first)</span></div>
+          <div class="sh-tablewrap">
+            <table class="sh-table">
+              <thead><tr><th>epoch</th><th class="sh-bal">balance</th><th class="sh-delta">change</th></tr></thead><!--/*sh-align*/-->
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="sh-bottom">
+          <div class="sh-subhead">Running balance <span class="sh-dim">(all ${data.epochs.length} epochs, oldest \u2192 newest)</span></div>
+          ${chart}
         </div>
       </div>
-      <div class="sh-bottom">
-        <div class="sh-subhead">Running balance <span class="sh-dim">(all ${data.epochs.length} epochs, oldest \u2192 newest)</span></div>
-        ${chart}
-      </div>
-    </div>`;
+    </div>
+
+    <div class="sh-pane" data-shpane="moves">
+      <div class="sh-move-note">Rewards are shown against the epoch they were <b>earned</b>. They settle into active stake about two epochs later, so a reward here lines up with a balance rise a couple of epochs on in the Active stake tab - that lag is expected, not a discrepancy.</div>
+      ${eventsHtml || '<div class="sh-dim" style="padding:12px">No intra-epoch movements recorded.</div>'}
+    </div>
+  `;
+
+  // tab switching
+  body.querySelectorAll('.sh-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const which = btn.getAttribute('data-shtab');
+      body.querySelectorAll('.sh-tab').forEach((b) => b.classList.toggle('sh-tab-on', b === btn));
+      body.querySelectorAll('.sh-pane').forEach((pane) => {
+        pane.classList.toggle('sh-pane-on', pane.getAttribute('data-shpane') === which);
+      });
+    });
+  });
 }
 
 /* Inline SVG line chart of running balance across all epochs. No chart library:
@@ -572,6 +635,7 @@ async function openDeepDive(stake) {
   const runs = Array.isArray(detail.runs) ? detail.runs.slice() : [];
   await Promise.all(runs.map(async (r) => {
     if (!r.poolId) return;
+    if (r.ticker) return;   // db-sync already resolved the ticker locally
     try { const m = await blockfrost.getPoolMeta(r.poolId); if (m) { r.ticker = m.ticker; r.name = m.name; } } catch { /* ignore */ }
   }));
 
@@ -585,20 +649,40 @@ async function openDeepDive(stake) {
     originHtml = `<div class="dd-origin-note">Your pool appears to be their first (or earliest tracked) delegation.</div>`;
   }
 
-  const drep = detail.drepId ? `<span class="dd-drep">DRep</span>` : '';
+  // Governance (DRep vote delegation): a real DRep id, a special ledger option,
+  // or none. Real ids get truncated + a copy button.
+  let drepBox;
+  {
+    const raw = detail.drepId;
+    if (!raw) {
+      drepBox = '<div class="dd-stat dd-stat-gov" title="This account has not delegated its voting power to a DRep."><div class="l">Governance</div><div class="v dd-gov-none">Not delegated</div></div>';
+    } else if (/abstain/i.test(raw)) {
+      drepBox = '<div class="dd-stat dd-stat-gov" title="Voting power set to Always Abstain."><div class="l">Governance (DRep)</div><div class="v dd-gov-special">Always Abstain</div></div>';
+    } else if (/no.?confidence/i.test(raw)) {
+      drepBox = '<div class="dd-stat dd-stat-gov" title="Voting power set to Always No Confidence."><div class="l">Governance (DRep)</div><div class="v dd-gov-special">No Confidence</div></div>';
+    } else {
+      const shortDrep = raw.length > 20 ? raw.slice(0, 12) + '\u2026' + raw.slice(-6) : raw;
+      drepBox = `<div class="dd-stat dd-stat-gov" title="Delegates voting power to DRep\n${esc(raw)}"><div class="l">Governance (DRep)</div><div class="v dd-gov-id"><span class="dd-gov-t">${esc(shortDrep)}</span><button class="dd-copy du-copy" type="button" data-copy="${esc(raw)}" title="Copy full DRep ID">\u29C9 copy</button></div></div>`;
+    }
+  }
   const fmt = (n) => n == null ? '\u2014' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   body.innerHTML = `
     <div class="dd-stats">
-      <div class="dd-stat"><div class="l">Balance</div><div class="v">${fmt(detail.balance)}<span class="u">\u20b3</span></div></div>
-      <div class="dd-stat"><div class="l">Rewards earned</div><div class="v">${fmt(detail.rewardsSum)}<span class="u">\u20b3</span></div></div>
-      <div class="dd-stat"><div class="l">Withdrawn</div><div class="v">${fmt(detail.withdrawalsSum)}<span class="u">\u20b3</span></div></div>
-      <div class="dd-stat"><div class="l">Since epoch</div><div class="v">${detail.sinceEpoch ?? '\u2014'}${drep}</div></div>
+      <div class="dd-stat" title="Total delegated stake at the latest epoch snapshot. Includes un-withdrawn rewards, which stake automatically each epoch. This is a per-epoch snapshot, not a live figure."><div class="l">Active stake<span class="l-sub">(incl. undrawn rewards)</span></div><div class="v">${fmt(detail.balance)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Lifetime total rewards ever earned by this stake account, across all pools."><div class="l">Rewards earned</div><div class="v">${fmt(detail.rewardsSum)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Lifetime total withdrawn from the reward account to spendable balance."><div class="l">Withdrawn</div><div class="v">${fmt(detail.withdrawalsSum)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="The first epoch this account appears with active stake anywhere on-chain - not necessarily when they joined your pool."><div class="l">First staked</div><div class="v">${detail.sinceEpoch ?? '\u2014'}</div></div>
+      ${drepBox}
     </div>
     <div class="dd-section-title">Pool movement</div>
     ${originHtml}
     ${renderJourney(runs)}
   `;
+  // Wire the pool-id copy buttons in the movement trail.
+  body.querySelectorAll('.dd-copy[data-copy]').forEach((b) => {
+    b.addEventListener('click', (e) => { e.stopPropagation(); copyStake(b.getAttribute('data-copy'), b); });
+  });
 }
 
 
@@ -741,6 +825,7 @@ let _duTotalStake = 0;
 let _duPage = 0;         // current page (paginated, replace-style)
 let _duView = [];        // last-rendered sorted/filtered view (for search-jump)
 let _duDrawPage = null;  // active drawPage() closure (jump-to-page)
+let _duHitStake = null;  // stake address currently highlighted by search (persists)
 let _duListCache = null; // last fetched delegator list (instant re-nav cache)
 let _duLiveCache = null; // last fetched POOL_LIVE hero stats
 let _duCacheTs = 0;      // when the cache above was fetched
@@ -790,6 +875,11 @@ function renderUnified() {
     wrap.querySelectorAll('.du-copy[data-copy]').forEach((b) => {
       b.addEventListener('click', (e) => { e.stopPropagation(); copyStake(b.getAttribute('data-copy'), b); });
     });
+    // Re-apply the search highlight if its row is on this page (survives paging).
+    if (_duHitStake) {
+      const hitRow = wrap.querySelector('.du-row[data-stake="' + _duHitStake + '"]');
+      if (hitRow) hitRow.classList.add('hit');
+    }
     // WebKitGTK lays out %-width flex children at 0 on first paint; re-apply
     // the width after layout to force a correct reflow so bars show first time. /*barfix*/
     requestAnimationFrame(() => {
@@ -1056,7 +1146,12 @@ export async function mountDelegators(canvas) {
   const sMsg = document.getElementById('d-search-msg');
   if (sGo) sGo.addEventListener('click', () => jumpToStake(sInput?.value));
   if (sInput) sInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') jumpToStake(sInput.value); });
-  if (sClear) sClear.addEventListener('click', () => { if (sInput) sInput.value = ''; if (sMsg) sMsg.textContent = ''; });
+  if (sClear) sClear.addEventListener('click', () => {
+    if (sInput) sInput.value = '';
+    if (sMsg) sMsg.textContent = '';
+    _duHitStake = null;
+    document.querySelectorAll('.du-row.hit').forEach((r) => r.classList.remove('hit'));
+  });
   if (sMsg) sMsg.addEventListener('click', (e) => { const f = e.target.closest('[data-copy]'); if (f) copyStake(f.getAttribute('data-copy'), null); });
 
   // Sort buttons.

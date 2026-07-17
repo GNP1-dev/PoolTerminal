@@ -33,6 +33,7 @@ import { mountRelay1, unmountRelay1, mountRelay2, unmountRelay2 } from './views/
 import { clearLastMetrics } from './data/metrics-query.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
+import { mountLogs, unmountLogs } from './views/logs.js';
 import { mountDataSources, unmountDataSources } from './views/data-sources.js';
 import { mountAbout, unmountAbout, APP_VERSION } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
@@ -81,7 +82,7 @@ window.addEventListener('pt:refresh', () => {
 });
 
 // Relay Only Mode: nav tabs that don't apply to a relay node. /*relay-tablock*/
-const RELAY_LOCKED_VIEWS = ['history', 'delegators', 'notifications', 'data'];
+const RELAY_LOCKED_VIEWS = ['history', 'delegators', 'notifications', 'data', 'logs'];
 function applyRelayTabLock() {
   let relay = false;
   try { relay = isRelayConfirmed(); } catch { relay = false; }
@@ -114,6 +115,7 @@ function mountView(view) {
   if (activeView === "map" && view !== "map") unmountMap();
   if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
   if (activeView === 'data' && view !== 'data') unmountDataSources();
+  if (activeView === 'logs' && view !== 'logs') unmountLogs();
   if (activeView === 'about' && view !== 'about') unmountAbout();
   if (activeView === 'relay1' && view !== 'relay1') unmountRelay1();
   if (activeView === 'relay2' && view !== 'relay2') unmountRelay2();
@@ -145,6 +147,8 @@ function mountView(view) {
     mountNotifications(canvasEl);
   } else if (view === 'data') {
     mountDataSources(canvasEl);
+  } else if (view === 'logs') {
+    mountLogs(canvasEl);
   } else if (view === 'about') {
     mountAbout(canvasEl);
   } else if (view === 'relay1') {

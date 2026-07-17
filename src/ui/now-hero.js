@@ -141,10 +141,23 @@ export function renderHero(snap) {
     const yyyy = expiry.getFullYear();
     const hh   = String(expiry.getHours()).padStart(2, '0');
     const mm   = String(expiry.getMinutes()).padStart(2, '0');
-    const periods = snap.kesPeriodsRemaining != null
-      ? `${snap.kesPeriodsRemaining} KES periods<br>`
-      : '';
-    setHTML('hero-kes-sub', `${periods}${dd} ${mmm} ${yyyy} ${hh}:${mm}`);
+    // Fixed KES constants (mainnet): 1 period = 129600 slots = 1.5 days; max 62
+    // periods = 93 days. Derive days from periods so both numbers are exact and
+    // consistent (periods x 1.5), rather than the node's rounded day figure.
+    const DAYS_PER_PERIOD = 1.5;
+    const pr = snap.kesPeriodsRemaining;
+    let line1 = '';
+    let line2 = '';
+    if (pr != null) {
+      const daysLeft = pr * DAYS_PER_PERIOD;
+      const totalDays = KES_MAX_PERIODS * DAYS_PER_PERIOD;   // 93
+      const fmtD = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+      line1 = `${fmtD(daysLeft)} of ${fmtD(totalDays)} days remaining<br>`;
+      line2 = `${pr} of ${KES_MAX_PERIODS} KES periods remaining<br>`;
+    } else {
+      line1 = `${snap.kesDaysRemaining} days remaining<br>`;
+    }
+    setHTML('hero-kes-sub', `${line1}${line2}Expires ${dd} ${mmm} ${yyyy} ${hh}:${mm}<br><span class="n2-kes-note">1 KES period = 1.5 days</span>`);
   }
 
   prev = {

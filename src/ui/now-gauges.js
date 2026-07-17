@@ -122,6 +122,121 @@ export function setThermo(root, id, frac, color) {
 }
 
 /**
+ * Hourglass gauge for KES time-remaining. Full sand (top) = fresh KES; as
+ * periods run down, the top bulb empties and the bottom bulb fills, with a
+ * thin falling stream in the neck. A better "time running out" metaphor than a
+ * thermometer level. frac = periods_remaining / total (1 = full, 0 = expired).
+ *
+ * Creates elements: #${id}-top (top sand, drains), #${id}-bot (bottom sand,
+ * fills), #${id}-stream (neck stream, hidden when empty), #${id}-glass (frame,
+ * recolours on warn/critical).
+ */
+export function hourglassHTML(opts) {
+  const id = opts.id, col = opts.color || '#ffc24a';
+  // viewBox 0..100 x, 0..120 y. Two trapezoid bulbs meeting at a neck ~y=60.
+  // Sand is drawn as PATHS so the surfaces can be curved (a concave dip on the
+  // top pile, a convex bump on the bottom pile). Drips fall in the neck and
+  // land on top of the growing bottom pile.
+  return `
+  <div class="pt-hg">
+    <svg class="pt-hg-svg" viewBox="0 0 100 120" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <clipPath id="${id}-clip-top"><path d="M18 10 H82 L58 58 H42 Z"/></clipPath>
+        <clipPath id="${id}-clip-bot"><path d="M42 62 H58 L82 110 H18 Z"/></clipPath>
+      </defs>
+      <!-- glass frame -->
+      <path class="pt-hg-frame" id="${id}-glass" d="M18 10 H82 L58 58 H42 Z M42 62 H58 L82 110 H18 Z"
+            fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" opacity="0.85"/>
+      <!-- caps -->
+      <rect x="14" y="7" width="72" height="4" rx="2" fill="${col}" opacity="0.9"/>
+      <rect x="14" y="109" width="72" height="4" rx="2" fill="${col}" opacity="0.9"/>
+      <!-- top sand pile (surface has a concave dip funnelling to the neck) -->
+      <g clip-path="url(#${id}-clip-top)">
+        <path id="${id}-top" d="" fill="${col}"/>
+      </g>
+      <!-- bottom sand pile (surface has a convex bump/mound) -->
+      <g clip-path="url(#${id}-clip-bot)">
+        <path id="${id}-bot" d="" fill="${col}"/>
+      </g>
+      <!-- falling drips in the neck: three staggered dashes, animated in SVG
+           units so they always land on the bottom pile (id-land set per update) -->
+      <g id="${id}-stream" fill="${col}">
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
+          <animate id="${id}-d1" attributeName="y" values="58;92" dur="0.9s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" repeatCount="indefinite"/>
+        </rect>
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
+          <animate id="${id}-d2" attributeName="y" values="58;92" dur="0.9s" begin="0.3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" begin="0.3s" repeatCount="indefinite"/>
+        </rect>
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
+          <animate id="${id}-d3" attributeName="y" values="58;92" dur="0.9s" begin="0.6s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" begin="0.6s" repeatCount="indefinite"/>
+        </rect>
+      </g>
+    </svg>
+  </div>`;
+}
+
+/** Set the hourglass to a fraction (0..1) of sand remaining, with colour. */
+export function setHourglass(root, id, frac, color) {
+  const r = root || document;
+  const f = clamp01(frac);
+  const top = r.querySelector('#' + id + '-top');
+  const bot = r.querySelector('#' + id + '-bot');
+  const stream = r.querySelector('#' + id + '-stream');
+  const glass = r.querySelector('#' + id + '-glass');
+
+  // Volume-correct surfaces. The bulbs are trapezoids (wide at the ends, narrow
+  // at the neck), so sand HEIGHT is not linear in volume. Solving area(surface)
+  // = target volume for each bulb, both share the same discriminant. Result:
+  // when half-drained the top sand sits high and the bottom pile sits low,
+  // matching how a real hourglass looks given its shape.
+  //   Top bulb:    y 10 (full) .. 58 (empty),  width 64 -> 16
+  //   Bottom bulb: y 62 (full) .. 110 (empty), width 16 -> 64
+  const disc = Math.sqrt(1024 + 15360 * f);
+  const topSurf = (148 - disc) / 2;   // top-chamber sand surface y
+  const botSurf = (92 + disc) / 2;    // bottom-chamber sand surface y
+
+  // --- TOP pile: from the surface line down to the neck (y=58), with a concave
+  // funnel dip in the surface. Clip-path cuts the full-width rect to the bulb.
+  if (top) {
+    const dip = 6 * f;
+    top.setAttribute('d',
+      `M0 ${topSurf.toFixed(1)} ` +
+      `L0 58 L100 58 L100 ${topSurf.toFixed(1)} ` +
+      `Q50 ${(topSurf + dip).toFixed(1)} 0 ${topSurf.toFixed(1)} Z`);
+  }
+
+  // --- BOTTOM pile: from the base (y=110) up to the surface, with a convex mound.
+  if (bot) {
+    const bump = 7 * (1 - f);
+    bot.setAttribute('d',
+      `M0 110 L100 110 L100 ${botSurf.toFixed(1)} ` +
+      `Q50 ${(botSurf - bump).toFixed(1)} 0 ${botSurf.toFixed(1)} Z`);
+  }
+
+  // --- Drips: land on top of the (volume-correct) bottom mound while draining.
+  if (stream) {
+    const draining = (f > 0.001 && f < 0.999);
+    stream.style.display = draining ? '' : 'none';
+    const land = Math.max(64, botSurf - 5).toFixed(1);
+    stream.querySelectorAll('animate[attributeName="y"]').forEach((a) => {
+      a.setAttribute('values', `58;${land}`);
+    });
+  }
+
+  if (color) {
+    if (top) top.setAttribute('fill', color);
+    if (bot) bot.setAttribute('fill', color);
+    if (stream) stream.setAttribute('fill', color);
+    if (glass) glass.setAttribute('stroke', color);
+    const svg = glass && glass.closest('svg');
+    if (svg) svg.querySelectorAll('rect[rx="2"]').forEach((c) => c.setAttribute('fill', color));
+  }
+}
+
+/**
  * Build chained mempool tanks. Returns an HTML string.
  * opts: { ntanks (default 3) }. Each tank = one block body (MAX_BLOCK_BODY).
  * Creates `mp-tank-${i}` (container) and `mp-liq-${i}` (liquid) + `mp-mf-${i}`.

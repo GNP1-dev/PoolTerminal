@@ -47,6 +47,9 @@ const NODE_FEATURES = [
   { label: 'Mempool', desc: 'Pending transactions and capacity.' },
   { label: 'Chain pulse', desc: 'Recent block timing and density.' },
   { label: 'Host resources', desc: 'CPU, memory and node process metrics.' },
+  { label: 'Node logs (Logs tab)', desc: 'Read-only journalctl queries against your systemd units (e.g. cnode_bp.service and the CNCLI leaderlog / validate services).', note: 'Read-only, run at low CPU/IO priority. Nothing is written to the node.' },
+  { label: 'Blocks minted (Logs tab)', desc: 'Forged blocks from two sources you can switch between: the local CNCLI blocklog DB (recent blocks with confirmed / ghosted / stolen status), and db-sync (full lifetime history of every block the pool has forged on-chain).', note: 'The CNCLI source has richer status but only recent blocks; the db-sync source is the complete record back to the pool\'s first block. db-sync is used by default when available.' },
+  { label: 'Propagation history', desc: 'Per-block propagation delay, captured each block and persisted to the local cache for later review.', note: 'Built from the node blockdelay metric; slow blocks (>2s) are kept for diagnosis.' },
 ];
 
 // ── external features (registry-governed) ────────────────────────────────────

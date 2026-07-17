@@ -115,6 +115,38 @@ export async function getNetBlocks(from, to) {
   return m;
 }
 
+/**
+ * Full lifetime block history for the pool from db-sync — every block this pool
+ * ever forged that made it on-chain, oldest-recorded to newest. Unlike the local
+ * CNCLI blocklog (recent, with confirmed/ghosted/stolen fate), db-sync holds the
+ * COMPLETE record back to the pool's first block, but only for blocks that made
+ * the chain (a ghosted/stolen block never appears here, by definition).
+ */
+export async function getBlockHistory(limit) {
+  if (!_poolId) return [];
+  const lim = Math.max(1, Math.min(100000, Number(limit) || 100000));
+  const rows = await pgQuery(_cfg, `
+    SELECT b.epoch_no::text        AS epoch,
+           b.epoch_slot_no::text   AS slot_in_epoch,
+           b.block_no::text        AS block,
+           to_char(b.time,'YYYY-MM-DD"T"HH24:MI:SS"+00:00"') AS at,
+           b.size::text            AS size,
+           substr(encode(b.hash,'hex'),1,12) AS hash
+    FROM block b
+    WHERE b.slot_leader_id IN (SELECT id FROM slot_leader WHERE pool_hash_id = ${_poolId})
+    ORDER BY b.block_no DESC
+    LIMIT ${lim}`);
+  return rows.map((r) => ({
+    epoch: Number(r.epoch),
+    slotInEpoch: Number(r.slot_in_epoch),
+    block: Number(r.block),
+    at: r.at,
+    size: Number(r.size),
+    hash: r.hash,
+    status: 'onchain',   // db-sync only holds blocks that made the chain
+  }));
+}
+
 /** The pool's first epoch with active stake — bounds backfill to its lifetime. */
 export async function getPoolFirstEpoch() {
   const rows = await pgQuery(_cfg,
@@ -525,10 +557,15 @@ async function getDelegatorDetail(stake, _currentEpoch) {
 
   // Per-epoch stake history across ALL pools (oldest first) -> pool-movement runs.
   const hist = await pgQuery(_cfg, `
-    SELECT es.epoch_no::text AS epoch, ph.view AS pool, es.amount::text AS amount
+    SELECT es.epoch_no::text AS epoch, ph.view AS pool, es.amount::text AS amount,
+           ocp.ticker_name AS ticker
     FROM epoch_stake es
     JOIN stake_address sa ON sa.id = es.addr_id
     JOIN pool_hash ph ON ph.id = es.pool_id
+    LEFT JOIN LATERAL (
+      SELECT ticker_name FROM off_chain_pool_data
+      WHERE pool_id = es.pool_id ORDER BY id DESC LIMIT 1
+    ) ocp ON true
     WHERE sa.view = '${esc}'
     ORDER BY es.epoch_no ASC`);
 
@@ -566,6 +603,7 @@ async function getDelegatorDetail(stake, _currentEpoch) {
     } else {
       runs.push({
         poolId: row.pool,
+        ticker: row.ticker || null,   // from off_chain_pool_data (db-sync local)
         entryEpoch: Number(row.epoch), entryStake: lovelaceToAda(row.amount),
         exitEpoch: Number(row.epoch), exitStake: lovelaceToAda(row.amount),
       });

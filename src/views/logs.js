@@ -16,6 +16,18 @@ import { invoke } from '../data/tauri.js';
 import { getMode } from '../data/index.js';
 import { getBlockHistory } from '../data/dbsync-query.js';
 import { getPropagationHistory } from '../data/read-model.js';
+
+// Propagation history time-window (ms). null = all time. Default 24h so the
+// sparkline stays granular instead of squashing months of blocks into one strip.
+const PROP_WINDOWS = [
+  { id: '1h',  label: '1h',  ms: 3600e3 },
+  { id: '6h',  label: '6h',  ms: 6 * 3600e3 },
+  { id: '12h', label: '12h', ms: 12 * 3600e3 },
+  { id: '24h', label: '24h', ms: 24 * 3600e3 },
+  { id: '7d',  label: '7d',  ms: 7 * 24 * 3600e3 },
+  { id: 'all', label: 'All', ms: null },
+];
+let _propWindow = '24h';
 import { dbsyncMachine } from '../data/read-model.js';
 
 // The Cardano systemd units typically present on a Guild/CNTools node. The user
@@ -137,6 +149,12 @@ const QUERIES = [
     kind: 'propagation',
   },
   {
+    id: 'epochtx',
+    label: 'Epoch transition',
+    hint: 'Block production and propagation around epoch / hard-fork boundaries \u2014 shades production gaps and marks the late first block after a gap',
+    kind: 'epochtx',
+  },
+  {
     id: 'leader',
     label: 'Leader slots (CNCLI)',
     hint: 'Scheduled leader slots for this / next epoch from the leaderlog service',
@@ -231,6 +249,23 @@ const CSS = `
   .lg-pp-table td.lg-num, .lg-pp-table th.lg-num { width: 64px; font-variant-numeric: tabular-nums; }
   .lg-bl-table .lg-hash { color: var(--pt-text-muted); }
   .lg-bl-table tr:hover td { background: rgba(255,255,255,0.03); }
+  /* propagation window selector */
+  .lg-pw-bar { display:flex; align-items:center; gap:5px; padding:8px 12px 2px; }
+  .lg-pw-lbl { font:600 9px ui-monospace,monospace; text-transform:uppercase; letter-spacing:.5px; color:var(--pt-text-muted,#6f7d99); margin-right:4px; }
+  .lg-pw-btn { background:var(--pt-bg-strip,#161b24); border:0.5px solid var(--pt-border,#2a3340); border-radius:5px; color:var(--pt-text-muted,#97A0B0); cursor:pointer; font:600 10px ui-monospace,monospace; padding:3px 9px; transition:all .12s; }
+  .lg-pw-btn:hover { color:var(--pt-text-primary,#e8e8e8); border-color:var(--pt-accent-blue-bright,#7BB0F5); }
+  .lg-pw-btn.on { background:var(--pt-accent-blue,#4d7fd6); border-color:var(--pt-accent-blue,#4d7fd6); color:#fff; }
+  /* epoch transition view */
+  .etx-wrap { padding:6px 12px 12px; }
+  .etx-head { font:12px ui-monospace,monospace; color:var(--pt-text-muted,#97A0B0); padding:4px 0 8px; line-height:1.5; }
+  .etx-svg { width:100%; height:auto; display:block; background:var(--pt-bg-strip,#0A0E15); border:0.5px solid var(--pt-border,#2a3340); border-radius:6px; }
+  .etx-gaplbl { fill:var(--pt-status-warn,#F59E0B); font:700 11px ui-monospace,monospace; }
+  .etx-annlbl { fill:var(--pt-text-primary,#F2F5F9); font:600 10px ui-monospace,monospace; }
+  .etx-axis { fill:var(--pt-text-muted,#97A0B0); font:10px ui-monospace,monospace; }
+  .etx-legend { display:flex; align-items:center; gap:14px; padding:8px 2px 2px; font:11px ui-monospace,monospace; color:var(--pt-text-secondary,#C4CCD8); }
+  .etx-legend i { display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .etx-gapnote { color:var(--pt-status-warn,#F59E0B); }
+  .etx-summary { padding:8px 2px 0; font:11px ui-monospace,monospace; color:var(--pt-text-muted,#97A0B0); }
   .lg-pp-chartwrap { padding: 6px 12px 10px; }
   .lg-pp-spark { width: 100%; height: 90px; display: block; }
   .lg-pp-ref { stroke: rgba(123,176,245,0.35); stroke-width: 0.6; stroke-dasharray: 4 3; }
@@ -323,25 +358,48 @@ async function runPropagation(canvas, q, demo) {
     series[42].v = 7.7;
     const stats = { count: 60, min: 0.21, max: 7.7, mean: 0.74, median: 0.62, p95: 1.3, over1: 4, over2: 1, over5: 1 };
     const slow = [{ ts: now - 800000, delay: 7.7, cdf1: 0.62, cdf3: 0.9, cdf5: 0.98 }];
-    out.innerHTML = renderPropagation({ series, slow, stats });
+    out.innerHTML = renderPropWindowBar() + renderPropagation({ series, slow, stats });
+    wirePropWindowBar(canvas, q, demo);
     setStatus('#lg-status', 'Propagation history - demonstration data');
     return;
   }
 
   try {
-    const data = await getPropagationHistory(0);
+    const win = PROP_WINDOWS.find((w) => w.id === _propWindow) || PROP_WINDOWS[2];
+    const sinceTs = win.ms == null ? 0 : Math.floor((Date.now() - win.ms) / 1000);
+    const data = await getPropagationHistory(sinceTs);
     if (!data.series || !data.series.length) {
-      out.innerHTML = '<pre class="lg-empty">No propagation data captured yet. This builds up as blocks arrive while the app is connected - check back after the node has seen a few blocks.</pre>';
-      setStatus('#lg-status', 'Propagation history - no data yet');
+      out.innerHTML = renderPropWindowBar() +
+        `<pre class="lg-empty">No propagation data in the last ${win.label === 'All' ? 'history' : win.label}. ` +
+        `Data builds up as blocks arrive while the app is connected - try a wider window or check back later.</pre>`;
+      wirePropWindowBar(canvas, q, demo);
+      setStatus('#lg-status', `Propagation history - no data in ${win.label}`);
       return;
     }
     _lastOutput = data.series.map((x) => `${new Date(x.t * 1000).toISOString()}\t${x.v}`).join('\n');
-    out.innerHTML = renderPropagation(data);
-    setStatus('#lg-status', `Propagation history - ${data.series.length} blocks recorded`);
+    out.innerHTML = renderPropWindowBar() + renderPropagation(data);
+    wirePropWindowBar(canvas, q, demo);
+    setStatus('#lg-status', `Propagation history (${win.label}) - ${data.series.length} blocks`);
   } catch (e) {
     out.innerHTML = `<pre class="lg-err">Could not load propagation history: ${escHtml(e.message || String(e))}</pre>`;
     setStatus('#lg-status', 'Propagation history - failed');
   }
+}
+
+// The window selector bar (1h / 6h / 24h / 7d / All)
+function renderPropWindowBar() {
+  const btns = PROP_WINDOWS.map((w) =>
+    `<button class="lg-pw-btn${w.id === _propWindow ? ' on' : ''}" data-pw="${w.id}">${w.label}</button>`
+  ).join('');
+  return `<div class="lg-pw-bar"><span class="lg-pw-lbl">Window</span>${btns}</div>`;
+}
+function wirePropWindowBar(canvas, q, demo) {
+  canvas.querySelectorAll('.lg-pw-btn[data-pw]').forEach((b) => {
+    b.addEventListener('click', () => {
+      _propWindow = b.getAttribute('data-pw');
+      runPropagation(canvas, q, demo);   // re-run with the new window
+    });
+  });
 }
 
 function fmtDelay(v) {
@@ -560,6 +618,7 @@ async function runQuery(canvas, q, demo) {
   setStatus('#lg-status', `Running: ${q.label}…`);
 
   if (q.kind === 'blocklog') { return runBlocklog(canvas, q, demo); }
+  if (q.kind === 'epochtx') { return runEpochTransition(canvas, q, demo); }
   if (q.kind === 'propagation') { return runPropagation(canvas, q, demo); }
 
   out.innerHTML = '<pre class="lg-empty">Querying the journal…</pre>';
@@ -636,4 +695,150 @@ function demoSample(id) {
   if (!lines) return '(demonstration data)';
   if (lines.length === 0) return '';
   return lines.join('\n');
+}
+
+
+// ---- Epoch / hard-fork transition view ------------------------------------
+// Renders the propagation series around a boundary the way the fork chart does:
+// stems per block coloured by delay, PRODUCTION GAPS shaded and labelled, and
+// the boundary marked. A "gap" is a jump between consecutive real blocks far
+// larger than the normal ~20s spacing (each series point is one real block now
+// that capture dedups on block number).
+const ETX_NORMAL_GAP_S = 20;          // nominal slot/block spacing
+const ETX_GAP_FACTOR   = 6;           // >6x nominal (~2 min) counts as a gap
+const ETX_SLOW_S       = 2;           // amber threshold
+const ETX_VSLOW_S      = 5;           // red threshold
+
+async function runEpochTransition(canvas, q, demo) {
+  const out = canvas.querySelector('#lg-output');
+  setStatus('#lg-status', 'Epoch transition - loading');
+  try {
+    // Reuse the same windowed history the propagation view uses.
+    const win = PROP_WINDOWS.find((w) => w.id === _propWindow) || PROP_WINDOWS[3];
+    const sinceTs = win.ms == null ? 0 : Math.floor((Date.now() - win.ms) / 1000);
+    const data = await getPropagationHistory(sinceTs);
+    const series = (data && data.series) || [];
+    if (series.length < 2) {
+      out.innerHTML = renderPropWindowBar() +
+        '<pre class="lg-empty">Not enough block history in this window to show a transition. Widen the window or check back after more blocks.</pre>';
+      wireEtxWindowBar(canvas, q, demo);
+      setStatus('#lg-status', 'Epoch transition - no data');
+      return;
+    }
+    const gaps = detectGaps(series);
+    out.innerHTML = renderPropWindowBar() + renderEpochTransition(series, gaps);
+    wireEtxWindowBar(canvas, q, demo);
+    const gtxt = gaps.length ? `${gaps.length} gap${gaps.length>1?'s':''} detected` : 'no gaps';
+    setStatus('#lg-status', `Epoch transition (${win.label}) - ${series.length} blocks, ${gtxt}`);
+  } catch (e) {
+    out.innerHTML = `<pre class="lg-err">Could not load epoch transition: ${escHtml(e.message || String(e))}</pre>`;
+    setStatus('#lg-status', 'Epoch transition - failed');
+  }
+}
+
+function wireEtxWindowBar(canvas, q, demo) {
+  canvas.querySelectorAll('.lg-pw-btn[data-pw]').forEach((b) => {
+    b.addEventListener('click', () => {
+      _propWindow = b.getAttribute('data-pw');
+      runEpochTransition(canvas, q, demo);
+    });
+  });
+}
+
+// Find stretches where consecutive blocks are spaced far wider than normal.
+function detectGaps(series) {
+  const out = [];
+  const thresh = ETX_NORMAL_GAP_S * ETX_GAP_FACTOR;
+  for (let i = 1; i < series.length; i++) {
+    const dt = series[i].t - series[i - 1].t;   // seconds
+    if (dt >= thresh) {
+      out.push({ from: series[i - 1].t, to: series[i].t, secs: dt, afterIdx: i });
+    }
+  }
+  return out;
+}
+
+function fmtClock(ts) {
+  const d = new Date(ts * 1000);
+  return d.toISOString().slice(11, 19) + 'Z';
+}
+function fmtDur(secs) {
+  if (secs >= 60) return `${(secs / 60).toFixed(1)} min`;
+  return `${Math.round(secs)}s`;
+}
+
+function renderEpochTransition(series, gaps) {
+  const W = 1100, H = 300, padL = 44, padR = 16, padT = 18, padB = 34;
+  const t0 = series[0].t, t1 = series[series.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  const maxV = Math.max(ETX_VSLOW_S + 1, ...series.map((s) => s.v));
+  const x = (t) => padL + ((t - t0) / span) * (W - padL - padR);
+  const y = (v) => (H - padB) - (v / maxV) * (H - padT - padB);
+
+  const col = (v) => v >= ETX_VSLOW_S ? 'var(--pt-status-bad,#EF4444)'
+                    : v >= ETX_SLOW_S ? 'var(--pt-status-warn,#F59E0B)'
+                    : 'var(--pt-status-good,#10B981)';
+
+  // gap shading + labels
+  let gapSvg = '';
+  for (const g of gaps) {
+    const gx0 = x(g.from), gx1 = x(g.to);
+    gapSvg += `<rect x="${gx0.toFixed(1)}" y="${padT}" width="${(gx1-gx0).toFixed(1)}" height="${H-padT-padB}" fill="var(--pt-status-warn,#F59E0B)" opacity="0.10"/>`;
+    gapSvg += `<line x1="${gx0.toFixed(1)}" y1="${padT}" x2="${gx0.toFixed(1)}" y2="${H-padB}" stroke="var(--pt-status-warn,#F59E0B)" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>`;
+    gapSvg += `<line x1="${gx1.toFixed(1)}" y1="${padT}" x2="${gx1.toFixed(1)}" y2="${H-padB}" stroke="var(--pt-status-warn,#F59E0B)" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>`;
+    const mid = (gx0 + gx1) / 2;
+    gapSvg += `<text x="${mid.toFixed(1)}" y="${padT+16}" text-anchor="middle" class="etx-gaplbl">${fmtDur(g.secs)} — no blocks</text>`;
+  }
+
+  // stems
+  let stems = '';
+  for (const s of series) {
+    const sx = x(s.t), sy = y(s.v), by = y(0);
+    stems += `<line x1="${sx.toFixed(1)}" y1="${by.toFixed(1)}" x2="${sx.toFixed(1)}" y2="${sy.toFixed(1)}" stroke="${col(s.v)}" stroke-width="1.5" opacity="0.85"/>`;
+    stems += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="2.6" fill="${col(s.v)}"/>`;
+  }
+
+  // annotate the worst block after the largest gap (the "late transition block")
+  let ann = '';
+  if (gaps.length) {
+    const biggest = gaps.slice().sort((a,b)=>b.secs-a.secs)[0];
+    // find worst-delay block within ~90s after the gap ends
+    const after = series.filter((s) => s.t >= biggest.to && s.t <= biggest.to + 90);
+    if (after.length) {
+      const worst = after.slice().sort((a,b)=>b.v-a.v)[0];
+      const ax = x(worst.t), ay = y(worst.v);
+      ann += `<circle cx="${ax.toFixed(1)}" cy="${ay.toFixed(1)}" r="5" fill="none" stroke="var(--pt-status-bad,#EF4444)" stroke-width="1.6"/>`;
+      const lx = Math.min(ax + 8, W - 210);
+      ann += `<text x="${lx.toFixed(1)}" y="${(ay-8).toFixed(1)}" class="etx-annlbl">first block after gap: ${worst.v.toFixed(1)}s late</text>`;
+    }
+  }
+
+  // y gridlines at 0/slow/vslow
+  const grid = [0, ETX_SLOW_S, ETX_VSLOW_S].map((v) =>
+    `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W-padR}" y2="${y(v).toFixed(1)}" stroke="var(--pt-border,#2a3340)" stroke-width="0.5" opacity="0.5"/>`
+    + `<text x="${padL-6}" y="${(y(v)+3).toFixed(1)}" text-anchor="end" class="etx-axis">${v}s</text>`
+  ).join('');
+
+  // x end labels
+  const xlabels = `<text x="${padL}" y="${H-10}" class="etx-axis">${fmtClock(t0)}</text>`
+                + `<text x="${W-padR}" y="${H-10}" text-anchor="end" class="etx-axis">${fmtClock(t1)}</text>`;
+
+  const gapSummary = gaps.length
+    ? gaps.map((g) => `${fmtClock(g.from)} \u2192 ${fmtClock(g.to)} (${fmtDur(g.secs)})`).join(' \u00b7 ')
+    : 'No production gaps in this window \u2014 steady block flow.';
+
+  return `
+    <div class="etx-wrap">
+      <div class="etx-head">Epoch / transition view \u2014 block production and propagation. Gaps (no blocks) are shaded; stems are per-block delay.</div>
+      <svg viewBox="0 0 ${W} ${H}" class="etx-svg" preserveAspectRatio="xMidYMid meet">
+        ${grid}${gapSvg}${stems}${ann}${xlabels}
+      </svg>
+      <div class="etx-legend">
+        <span><i style="background:var(--pt-status-good,#10B981)"></i>&lt;2s</span>
+        <span><i style="background:var(--pt-status-warn,#F59E0B)"></i>2\u20135s</span>
+        <span><i style="background:var(--pt-status-bad,#EF4444)"></i>&gt;5s</span>
+        <span class="etx-gapnote">Shaded = production gap</span>
+      </div>
+      <div class="etx-summary">${gapSummary}</div>
+    </div>`;
 }

@@ -1256,8 +1256,9 @@ export async function sampleHealth(host, metrics) {
     await put('peers_warm',    metrics.peersWarm);
     await put('peers_cold',    metrics.peersCold);
     await put('density',       metrics.density);
-    // Propagation history: record each block's delay once. blockDelayLast holds
-    // steady between blocks, so we only sample when it changes -> one row/block.
+    // Propagation history: record each block's delay once, deduped on block
+    // number so a held/stale metric during a production gap can't log phantom
+    // blocks (see capturePropagation).
     await capturePropagation(metrics);
   }
 }
@@ -1268,6 +1269,7 @@ export async function sampleHealth(host, metrics) {
 // meta store so the operator can review problem blocks long after they scroll
 // off the live strip. All via the existing cache — no schema/Rust changes.
 let _lastPropDelay = null;
+let _lastPropBlockNum = null;
 const PROP_SLOW_THRESHOLD_S = 2.0;
 const PROP_META_KEY = 'prop_slow_blocks';   // JSON array of slow-block records
 const PROP_SLOW_MAX = 500;                   // cap the slow-block log
@@ -1275,8 +1277,21 @@ const PROP_SLOW_MAX = 500;                   // cap the slow-block log
 async function capturePropagation(metrics) {
   const d = metrics.blockDelayLast;
   if (d == null || !Number.isFinite(d) || d <= 0) return;
-  // dedupe: same delay value = same block, skip. (Float compare with epsilon.)
-  if (_lastPropDelay != null && Math.abs(d - _lastPropDelay) < 1e-6) return;
+
+  // Dedup on BLOCK NUMBER, not delay value. The blockdelay_real metric holds
+  // its last value between blocks, so sampling it on a timer would otherwise
+  // record the same held delay as a "new" slow block over and over whenever no
+  // new block is arriving (e.g. the ~10-min production gap at a hard fork
+  // boundary). Only a change in blockNum means a genuinely new block was seen.
+  const bn = metrics.blockNum;
+  if (bn != null && Number.isFinite(bn)) {
+    if (_lastPropBlockNum != null && bn === _lastPropBlockNum) return; // no new block -> stale metric, skip
+    _lastPropBlockNum = bn;
+  } else {
+    // blockNum unavailable: fall back to the old delay-change guard so we at
+    // least don't record identical consecutive readings.
+    if (_lastPropDelay != null && Math.abs(d - _lastPropDelay) < 1e-6) return;
+  }
   _lastPropDelay = d;
   // time-series sample (every distinct block)
   await cachePutSample('prop_delay', d);

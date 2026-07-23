@@ -64,7 +64,7 @@ const N2_HTML = `
     .n2-hero-health .d { font-size:11px; color:var(--pt-text-muted,#6f7d99); margin-top:4px; }
 
     /* instrument deck */
-    .n2-deck { display:grid; grid-template-columns:0.8fr 1fr 1.5fr 1fr 0.8fr; gap:12px; }
+    .n2-deck { display:grid; grid-template-columns:0.75fr 0.9fr 2.2fr 0.85fr 0.75fr; gap:12px; }
     .n2-cell { padding:10px 10px 8px; display:flex; flex-direction:column; align-items:center; }
     .n2-cell .n2-lbl { margin-bottom:8px; }
     .n2-val { font-family:ui-monospace,monospace; font-weight:700; font-size:17px; margin-top:6px; }
@@ -109,7 +109,7 @@ const N2_HTML = `
     .pt-tank.active { border-color:rgba(54,224,212,.45); }
     .pt-tank.spill { border-color:rgba(255,90,60,.5); }
     .pt-tank-mf { position:absolute; inset:0; background:rgba(93,255,155,.20); opacity:0; border-radius:7px; pointer-events:none; }
-    .n2-mpbars { display:flex; flex-direction:column; gap:14px; padding:8px 10px 2px; }   /*mp-bars-v48*/
+    .n2-mpbars { display:flex; flex-direction:column; gap:14px; padding:8px 10px 12px; }   /*mp-bars-v54*/
     .n2-mpbar-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px; font:700 10px ui-monospace,monospace; letter-spacing:1.2px; color:#7f8fa8; }
     .n2-mpbar-val { font-size:12px; font-weight:700; color:#9fb0d0; letter-spacing:0; }
     .n2-mpbar-track { position:relative; height:14px; background:#0a0e15; border:1px solid #3d4d6a; border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 3px rgba(0,0,0,.55); }   /*mp-bars-v49*/
@@ -120,7 +120,27 @@ const N2_HTML = `
     .n2-mpbar-mark { position:absolute; top:0; height:100%; width:2px; background:#ffcf5a; box-shadow:0 0 5px rgba(255,207,90,.9); z-index:3; }
     .n2-mpbar-ticks { display:flex; justify-content:space-between; margin-top:4px; font:9px ui-monospace,monospace; color:#6f7d99; }
     .n2-mpbar-mid { color:#97a0b0; }
-    .n2-mp-host { width:100%; }
+    #mp-cell { align-items:stretch; }
+    .n2-mp-host { width:100%; flex:1 1 auto; display:flex; flex-direction:column; }
+    .n2-mp-split { display:flex; gap:12px; align-items:stretch; flex:1 1 auto; min-height:0; }
+    .n2-mp-left { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+    .n2-mp-left #mp-body { flex:1 1 auto; min-height:120px; display:flex; flex-direction:column; }
+    .n2-mp-left #mp-body .pt-mp-spark { flex:1 1 auto; min-height:120px; height:auto; }
+    .n2-mp-right { flex:0 0 120px; display:flex; flex-direction:column; gap:0; padding-left:14px; border-left:1px solid rgba(135,165,215,.14); }
+    .n2-mpsc { display:flex; justify-content:space-between; align-items:baseline; padding:4px 0; gap:8px; }
+    .n2-mpsc-l { font:600 9px ui-monospace,monospace; letter-spacing:.6px; text-transform:uppercase; color:#7f8fa8; white-space:nowrap; }
+    .n2-mpsc-v { font:700 12px ui-monospace,monospace; color:#cfe0ff; white-space:nowrap; text-align:right; }
+    .n2-mpsc-div { height:1px; background:rgba(135,165,215,.18); margin:8px 0; }
+    .n2-mpsc-max { font:700 9px ui-monospace,monospace; letter-spacing:1px; color:#6f7d99; margin-bottom:3px; }
+    /* headline 4-stat row (txs · size · blocks · %full) */
+    .pt-mp-stats { display:flex; justify-content:space-around; align-items:stretch; gap:4px; }
+    .pt-mp-stat { display:flex; flex-direction:column; align-items:center; flex:1; padding:3px 2px; }
+    .pt-mp-stat b { font:800 15px ui-monospace,monospace; color:#e8eefc; line-height:1.1; }
+    .pt-mp-stat i { font:600 8px ui-monospace,monospace; letter-spacing:1px; text-transform:uppercase; color:#7f8fa8; font-style:normal; margin-top:2px; }
+    .pt-mp-stat.pt-mp-good b { color:#5dff9b; }
+    .pt-mp-stat.pt-mp-warn b { color:#ffc24a; }
+    .pt-mp-stat.pt-mp-bad  b { color:#ff5a3c; }
+    .pt-mp-overflow { display:block; text-align:center; margin-top:3px; font:700 9px ui-monospace,monospace; color:#fca5a5; letter-spacing:.5px; }
 
     /* bottom panels */
     .n2-bottom { display:grid; grid-template-columns:1.3fr 0.85fr 0.85fr 1.2fr; gap:12px; align-items:stretch; flex:1 1 auto; min-height:0; }  /*mf-layout-v66*//*mf-viewport-v66c*/
@@ -307,24 +327,41 @@ const N2_HTML = `
         </div>
       </div>
 
-      <div class="n2-panel n2-cell">
+      <div class="n2-panel n2-cell" id="mp-cell">
         <div class="n2-lbl" style="align-self:flex-start">Mempool</div>
         <div class="n2-mp-host pt-grid-mempool" id="n2-mp-host">
-          <div class="pt-panel-meta" style="text-align:center;margin-bottom:6px;font-size:12px;"><span id="mp-count">—</span></div>
-          <div class="n2-mpbars">
-            <div class="n2-mpbar">
-              <div class="n2-mpbar-head"><span>MEMPOOL</span><span id="mp-bar-val" class="n2-mpbar-val">— / 176 KB</span></div>
-              <div class="n2-mpbar-alert" id="mp-bar-alert">MAX BLOCK SIZE REACHED</div>
-              <div class="n2-mpbar-track"><div class="n2-mpbar-fill" id="mp-bar-fill"></div><div class="n2-mpbar-mark" style="left:50%"></div></div>
-              <div class="n2-mpbar-ticks"><span>0</span><span class="n2-mpbar-mid">88 KB · max block</span><span>FULL</span></div>
+          <div class="n2-mp-split">
+            <div class="n2-mp-left">
+              <span id="mp-count" style="display:none"></span>
+              <div class="n2-mpbars">
+                <div class="n2-mpbar">
+                  <div class="n2-mpbar-head"><span>MEMPOOL</span><span id="mp-bar-val" class="n2-mpbar-val">— KB</span></div>
+                  <div class="n2-mpbar-alert" id="mp-bar-alert">MAX BLOCK SIZE REACHED</div>
+                  <div class="n2-mpbar-track"><div class="n2-mpbar-fill" id="mp-bar-fill"></div><div class="n2-mpbar-mark" style="left:50%"></div></div>
+                  <div class="n2-mpbar-ticks"><span>0</span><span class="n2-mpbar-mid">1 block</span><span>2 blocks</span></div>
+                </div>
+                <div class="n2-mpbar">
+                  <div class="n2-mpbar-head"><span>DATA FLOW</span><span id="mp-flow-val" class="n2-mpbar-val">— KB/min</span></div>
+                  <div class="n2-mpbar-track"><div class="n2-mpbar-fill n2-mpbar-fill-flow" id="mp-flow-fill"></div></div>
+                  <div class="n2-mpbar-ticks"><span>0</span><span>150</span><span>300 KB/min</span></div>
+                </div>
+              </div>
+              <div id="mp-body"></div>
             </div>
-            <div class="n2-mpbar">
-              <div class="n2-mpbar-head"><span>DATA FLOW</span><span id="mp-flow-val" class="n2-mpbar-val">— KB/min</span></div>
-              <div class="n2-mpbar-track"><div class="n2-mpbar-fill n2-mpbar-fill-flow" id="mp-flow-fill"></div></div>
-              <div class="n2-mpbar-ticks"><span>0</span><span>150</span><span>300 KB/min</span></div>
+            <div class="n2-mp-right" id="mp-statcol">
+              <div class="n2-mpsc"><span class="n2-mpsc-l">Net 1m</span><span class="n2-mpsc-v" id="mp-stat-net">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">Tx rate 1m</span><span class="n2-mpsc-v" id="mp-stat-throughput1m">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">Tx rate 5m</span><span class="n2-mpsc-v" id="mp-stat-throughput">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">Avg tx 5m</span><span class="n2-mpsc-v" id="mp-stat-avg">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">Peak 5m</span><span class="n2-mpsc-v" id="mp-stat-peak">—</span></div>
+              <div class="n2-mpsc-div"></div>
+              <div class="n2-mpsc-max">MAX %</div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">5m</span><span class="n2-mpsc-v" id="mp-peak-5m" style="color:#36e0d4">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">1h</span><span class="n2-mpsc-v" id="mp-peak-1h" style="color:#5dff9b">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">24h</span><span class="n2-mpsc-v" id="mp-peak-24h" style="color:#ffc24a">—</span></div>
+              <div class="n2-mpsc"><span class="n2-mpsc-l">all</span><span class="n2-mpsc-v" id="mp-peak-all" style="color:#ff7a4c">—</span></div>
             </div>
           </div>
-          <div id="mp-body"></div>
         </div>
       </div>
 
@@ -604,11 +641,22 @@ function paintGauges() {
   // matching the periods reading (32/62). Colours are day-based: green >21 days
   // (~2 weeks warning), amber 7-21, red <7 (rotate now).
   const KES_TOTAL_DAYS = 93;
-  const kes = numFrom('hero-kes-val');   // days remaining
-  if (kes != null) {
-    const kesCol = kes > 21 ? '#5dff9b' : (kes >= 7 ? '#ffc24a' : '#ff5a5a');
-    setHourglass(root, 'n2-kes', kes / KES_TOTAL_DAYS, kesCol);
-    const kv = root.querySelector('#hero-kes-val'); if (kv) kv.style.color = kesCol;
+  // Prefer the stable expiry timestamp (set by now-hero) so the glass drains
+  // continuously and monotonically; fall back to the integer days text if it's
+  // absent (e.g. cli gave no expiry). daysLeft is fractional in the first case.
+  const kv = root.querySelector('#hero-kes-val');
+  const expiryUnix = kv ? parseFloat(kv.dataset.kesExpiry || '') : NaN;
+  let daysLeft = null;
+  if (Number.isFinite(expiryUnix)) {
+    daysLeft = Math.max(0, (expiryUnix - Date.now() / 1000) / 86400);
+  } else {
+    const kes = numFrom('hero-kes-val');
+    if (kes != null) daysLeft = kes;
+  }
+  if (daysLeft != null) {
+    const kesCol = daysLeft > 21 ? '#5dff9b' : (daysLeft >= 7 ? '#ffc24a' : '#ff5a5a');
+    setHourglass(root, 'n2-kes', daysLeft / KES_TOTAL_DAYS, kesCol);
+    if (kv) kv.style.color = kesCol;
   }
   // Op cert counters (disk/chain) - gLiveView health rule: green when disk == chain
   // or disk == chain+1 (rotated, not yet minted with); red otherwise.
@@ -675,23 +723,46 @@ function paintGauges() {
   const setBar = (id, v) => { const e = document.getElementById(id); if (e && v != null) e.style.width = Math.min(100, (v / gmax) * 100).toFixed(1) + '%'; };
   setBar('cp-bar-avg', ga); setBar('cp-bar-max', gm); setBar('cp-bar-min', gi);
   // Mempool tanks: drive from the gauge percent (100% = one block tank)
-  const pctEl = root.querySelector('#mp-count .pt-mp-gauge-pct');
-  if (pctEl) {
-    const mpct = parseFloat((pctEl.textContent || '').replace('%', '')) || 0;
-    const fill = document.getElementById('mp-bar-fill');   /*mp-bars-v48*/
+  // Mempool bar: shows CONGESTION (backlog vs a 2-block busy reference), read
+  // from the gauge the mempool panel renders. 1 block = 50%, 2 blocks = 100%.
+  // The bar value line shows real bytes and blocks queued; capacity fill is
+  // carried on the gauge as a data attribute. /*mp-bars-v52*/
+  const statsEl = root.querySelector('#mp-count .pt-mp-stats');
+  if (statsEl) {
+    const txs = parseInt(statsEl.getAttribute('data-txs')) || 0;
+    const bytes = parseFloat(statsEl.getAttribute('data-bytes')) || 0;
+    const blocks = parseFloat(statsEl.getAttribute('data-blocks')) || 0;
+    const congestion = parseFloat(statsEl.getAttribute('data-congestion')) || 0;
+    const fill = document.getElementById('mp-bar-fill');   /*mp-bars-v54*/
     if (fill) {
-      fill.style.width = Math.min(100, Math.max(0, mpct)).toFixed(1) + '%';
-      fill.style.background = mpct >= 85 ? '#ff5a3c' : mpct >= 50 ? '#ffc24a' : '#5dff9b';
+      fill.style.width = Math.min(100, Math.max(0, congestion)).toFixed(1) + '%';
+      fill.style.background = congestion >= 100 ? '#ff5a3c' : congestion >= 75 ? '#f87171' : congestion >= 50 ? '#ffc24a' : '#5dff9b';
     }
+    // Full inline stat line on the MEMPOOL bar header (replaces the old top row).
     const val = document.getElementById('mp-bar-val');
     if (val) {
-      const _mm = getLastMetrics();
-      const mb = (_mm && _mm.mempoolBytes != null) ? _mm.mempoolBytes : (mpct / 100) * MP_FULL * 2;
-      if (mpct >= 100) { val.textContent = 'MEMPOOL FULL'; val.style.color = '#ff5a3c'; }
-      else { val.textContent = (mb / 1024).toFixed(1) + ' / 176 KB'; val.style.color = '#9fb0d0'; }
+      const kb = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : Math.round(bytes) + ' B';
+      const blkTxt = blocks < 0.1 ? '<0.1' : blocks.toFixed(1);
+      val.innerHTML = `${txs} tx · ${kb} · ${blkTxt} blocks · <b style="color:${congestion >= 90 ? '#ff5a3c' : congestion >= 50 ? '#ffc24a' : '#5dff9b'}">${Math.round(congestion)}%</b>`;
+      val.style.color = '#9fb0d0';
     }
-    const mpAlert = document.getElementById('mp-bar-alert');   /*mp-bars-v50*/
-    if (mpAlert) mpAlert.classList.toggle('on', mpct >= 50);
+    // Alert line: at/over 100% the network mempool is full and default nodes
+    // reject new txs; otherwise flag when a full block's worth is queued.
+    const mpAlert = document.getElementById('mp-bar-alert');   /*mp-bars-v54*/
+    if (mpAlert) {
+      if (congestion > 100) {
+        mpAlert.textContent = `OVERFLOW ${Math.round(congestion)}% · holding more than the network accepts`;
+        mpAlert.classList.add('on');
+      } else if (congestion >= 100) {
+        mpAlert.textContent = 'MEMPOOL FULL · network rejecting new txs';
+        mpAlert.classList.add('on');
+      } else if (blocks >= 1) {
+        mpAlert.textContent = 'MAX BLOCK SIZE REACHED';
+        mpAlert.classList.add('on');
+      } else {
+        mpAlert.classList.remove('on');
+      }
+    }
   }
   renderMempoolFlow(root);
   // Mint flash: tip block advanced -> mempool drained

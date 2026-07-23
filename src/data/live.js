@@ -90,7 +90,7 @@ function emptyChainPulse(tipBlock = 0) {
 }
 
 function emptyMempool() {
-  return { txCount: 0, totalBytes: 0, recent: [] };
+  return { txCount: 0, totalBytes: 0, capacityBytes: null, recent: [] };
 }
 
 function computePulse(snap) {
@@ -255,25 +255,37 @@ export class LiveDataSource {
       const info = JSON.parse(out.slice(jsonStart));
       const cur  = info.qKesCurrentKesPeriod;
       const end  = info.qKesEndKesInterval;
+      const slotsPerKes = info.qKesSlotsPerKesPeriod || 129600;
       this._kesPeriods = Math.max(0, end - cur);
 
-      this._kesExpiryMs = null;
+      // Establish ONE stable expiry instant, then derive days from it — so the
+      // countdown only ever decreases. Preference:
+      //   1. the cli's exact key-expiry timestamp (a fixed wall-clock instant);
+      //   2. else anchor to the chain: expiry_slot = end * slotsPerKes, and
+      //      expiry = now + (expiry_slot - tip_slot) seconds. As the tip advances
+      //      ~1 slot/s in lockstep with the wall clock, this evaluates to the
+      //      SAME instant on every refresh (unlike the old "now + periods*slots",
+      //      which drifted forward each time and, mixed with the periods*1.5 day
+      //      estimate, made the value jitter up and down).
+      // HARDFORK: assumes 1 slot ≈ 1 second (true from Shelley on).
+      let expiryMs = null;
       if (info.qKesKesKeyExpiry) {
-        const expiryMs = Date.parse(info.qKesKesKeyExpiry);
-        if (expiryMs > 0) {
-          this._kesExpiryMs = expiryMs;
-          this._kesDays = Math.max(0, Math.floor((expiryMs - Date.now()) / 86400000));
+        const p = Date.parse(info.qKesKesKeyExpiry);
+        if (p > 0) expiryMs = p;
+      }
+      if (expiryMs == null) {
+        const tipSlot = (this._lastTip && Number.isFinite(this._lastTip.slot)) ? this._lastTip.slot : null;
+        if (tipSlot != null && Number.isFinite(end)) {
+          expiryMs = Date.now() + Math.max(0, end * slotsPerKes - tipSlot) * 1000;
+        } else if (this._kesPeriods > 0) {
+          expiryMs = Date.now() + this._kesPeriods * slotsPerKes * 1000;   // last-resort estimate
         }
       }
-      if (this._kesDays == null) {
-        const slotsPerKes = info.qKesSlotsPerKesPeriod || 129600;
-        this._kesDays = Math.floor((this._kesPeriods * slotsPerKes) / 86400);
-        // Approximate expiry from periods if cli didn't give us a timestamp
-        if (this._kesPeriods > 0) {
-          this._kesExpiryMs = Date.now() + this._kesPeriods * slotsPerKes * 1000;
-        }
-      }
-      console.log(`[live.kes] periods=${this._kesPeriods} days=${this._kesDays}`);
+      this._kesExpiryMs = expiryMs;
+      this._kesDays = (expiryMs != null)
+        ? Math.max(0, Math.floor((expiryMs - Date.now()) / 86400000))
+        : null;
+      console.log(`[live.kes] periods=${this._kesPeriods} days=${this._kesDays} expiry=${expiryMs ? new Date(expiryMs).toISOString() : 'n/a'}`);
     } catch (err) {
       console.warn('[live.kes] query failed:', err.message);
       this._kesDays     = null;
@@ -311,6 +323,11 @@ export class LiveDataSource {
     // (~5s; rate deltas computed there), then persist host + node metrics to the
     // samples table (sampler self-throttles to ~30s). Fire-and-forget.
     this._maybeSampleHealth();
+
+    // Block propagation history. Runs every tick against the metrics the ~5s
+    // Prometheus scrape already fetched, so it adds no node traffic; it dedups
+    // on block number and writes at most one local cache row per block.
+    readModel.capturePropagation(getLastMetrics(), tip.epoch);
 
     // Build snap with KES + everything else needed for Pulse
     const snap = {
@@ -421,14 +438,20 @@ export class LiveDataSource {
       const out = await runCmd(cliCmd('query tx-mempool info'));
       const info = JSON.parse(out);
       const totalBytes = info.sizeInBytes ?? info.bytes ?? 0;
+      // The node reports its real mempool capacity here. It depends on this
+      // node's mempoolCapacityOverride (default ~2x max block body, but many
+      // operators raise it), so we must read it live rather than assume a
+      // fixed 2-block cap - otherwise fill % can exceed 100%. /*mp-realcap*/
+      const capacityBytes = info.capacityInBytes ?? null;
       console.log(
         `[live.getMempool] ${Math.round(performance.now() - t0)}ms · ` +
-        `${info.numberOfTxs ?? 0} tx · ${totalBytes} bytes`
+        `${info.numberOfTxs ?? 0} tx · ${totalBytes} / ${capacityBytes ?? '?'} bytes`
       );
       return {
-        txCount:    info.numberOfTxs ?? 0,
+        txCount:     info.numberOfTxs ?? 0,
         totalBytes,
-        recent:     [],
+        capacityBytes,
+        recent:      [],
       };
     } catch (err) {
       console.warn(`[live.getMempool] FAIL in ${Math.round(performance.now() - t0)}ms:`, err.message);

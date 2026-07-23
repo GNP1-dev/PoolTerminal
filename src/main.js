@@ -29,11 +29,15 @@ import {
   isRelayConfirmed,
 } from './views/now.js';
 import { mountNow2, unmountNow2 } from './views/now2.js';
+import { getMempoolState } from './ui/mempool.js';
 import { mountRelay1, unmountRelay1, mountRelay2, unmountRelay2 } from './views/relay.js';
 import { clearLastMetrics } from './data/metrics-query.js';
 import { mountHistory } from './views/history.js';
 import { mountNodeHealth, unmountNodeHealth } from './views/node-health.js';
 import { mountLogs, unmountLogs } from './views/logs.js';
+import { mountAlerts, unmountAlerts } from './views/alerts.js';
+import { loadAlertConfig } from './data/alerts-config.js';
+import { startAlertsEngine, runAlertChecks } from './data/alerts-engine.js';
 import { mountDataSources, unmountDataSources } from './views/data-sources.js';
 import { mountAbout, unmountAbout, APP_VERSION } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
@@ -41,7 +45,7 @@ import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal, resumeLive } from './views/connect.js';
 import { showSettingsModal } from './views/settings.js';
 import { showSetupWizard } from './views/wizard.js';
-import { resetReadModel } from './data/read-model.js';   /*change-node-reset-v80*/
+import { resetReadModel, getLatestSlowBlock } from './data/read-model.js';   /*change-node-reset-v80*/
 import { resetNowLoading } from './views/now.js';
 import { nodeExec, invoke } from './data/tauri.js';
 import { getSession, setNodeProbe, getNodeProbe, loadConfig, markDisconnected } from './data/session.js';
@@ -68,6 +72,7 @@ let lastPeersRefreshTime = 0;
 let _lastPeers = null;   // last peers poll result, for instant repaint on NOW re-entry
 let lastUpcomingRefreshTime = 0;
 let bootstrapStarted = false;
+let lastAlertedSlowTs = null;   // ts of the slow block already handed to the alerts engine
 
 let activeView = 'now2';
 
@@ -116,6 +121,7 @@ function mountView(view) {
   if (activeView === 'notifications' && view !== 'notifications') unmountNotifications();
   if (activeView === 'data' && view !== 'data') unmountDataSources();
   if (activeView === 'logs' && view !== 'logs') unmountLogs();
+  if (activeView === 'alerts' && view !== 'alerts') unmountAlerts();
   if (activeView === 'about' && view !== 'about') unmountAbout();
   if (activeView === 'relay1' && view !== 'relay1') unmountRelay1();
   if (activeView === 'relay2' && view !== 'relay2') unmountRelay2();
@@ -149,6 +155,8 @@ function mountView(view) {
     mountDataSources(canvasEl);
   } else if (view === 'logs') {
     mountLogs(canvasEl);
+  } else if (view === 'alerts') {
+    mountAlerts(canvasEl);
   } else if (view === 'about') {
     mountAbout(canvasEl);
   } else if (view === 'relay1') {
@@ -217,6 +225,28 @@ async function fastPollTick() {
       lastSeenBlock = snap.tipBlock;
     }
     lastPollTime = nowSec;
+
+    // Alerts engine: evaluate enabled alerts against this cycle's data and fire
+    // Telegram messages. Defensive - reads what's available, skips the rest.
+    try {
+      let peerCount = null;
+      if (_lastPeers && Array.isArray(_lastPeers.peers)) peerCount = _lastPeers.peers.length;
+      // Hand the engine a slow block ONCE. Its slow_block check has no
+      // edge-guard, so passing a persistent value would re-fire the alert every
+      // cooldown window for as long as the app stays open. Consumed on sight,
+      // whether or not it actually fired: a slow block is a point-in-time event,
+      // so replaying it after quiet hours end would be misleading.
+      const sb = getLatestSlowBlock();
+      const freshSlow = (sb && sb.ts !== lastAlertedSlowTs) ? sb : null;
+      if (freshSlow) lastAlertedSlowTs = sb.ts;
+      runAlertChecks({
+        snap,
+        kesDays: (snap.kesDaysRemaining != null) ? snap.kesDaysRemaining : (snap.kesDays ?? null),
+        mempool: getMempoolState(),
+        peers: peerCount,
+        slowBlock: freshSlow,
+      });
+    } catch (e) { /* alerts must never break the poll cycle */ }
 
     // Mempool refresh every Nth second (background, doesn't gate this tick).
     if ((activeView === 'now' || activeView === 'now2') && nowSec - lastMempoolRefreshTime >= MEMPOOL_REFRESH_EVERY_S) {
@@ -357,6 +387,8 @@ window.addEventListener('DOMContentLoaded', () => {
   // Cross-tab notification toasts (listens for pt:notif-events from read-model).
   initToasts();
   initNotifications();   // unread badge + live feed refresh
+  loadAlertConfig();     // Telegram alert config (persisted in cache meta)
+  startAlertsEngine();   // arm the alerts engine (fires while app is open)
   import('./ui/toast.js').then((m) => { window.__ptToastTest = m._toastTest; }).catch(() => {});
   import('./data/dbsync-query.js').then((m) => {
     window.__ptDelegEvents = (o) => m.getDelegationEvents(o).then((r) => { console.table(r.events || r); return r; });

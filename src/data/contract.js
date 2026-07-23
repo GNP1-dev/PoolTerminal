@@ -79,6 +79,7 @@
  * @typedef {Object} Mempool
  * @property {number} txCount
  * @property {number} totalBytes
+ * @property {number|null} [capacityBytes]  node's real mempool capacity (capacityInBytes)
  * @property {MempoolTx[]} recent
  *
  * The DataSource interface (both backends provide all of these):

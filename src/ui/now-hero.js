@@ -114,12 +114,16 @@ export function renderHero(snap) {
   const kesBar = byId('hero-kes-bar');
   const kesSub = byId('hero-kes-sub');
   if (snap.kesDaysRemaining == null) {
-    if (kesVal) { kesVal.innerHTML = '—'; kesVal.style.color = 'var(--pt-text-muted)'; }
+    if (kesVal) { kesVal.innerHTML = '—'; kesVal.style.color = 'var(--pt-text-muted)'; delete kesVal.dataset.kesExpiry; }
     if (kesBar) { kesBar.style.width = '0%'; }
     if (kesSub) { const _r = (getNodeProbe() || {}).role; kesSub.textContent = (_r && _r !== 'BP') ? 'n/a on relay' : 'querying…'; }
   } else {
     setHTML('hero-kes-val', `${snap.kesDaysRemaining}<span class="pt-hero-unit"> days</span>`);
     kesVal.style.color = kesColor(snap.kesDaysRemaining);
+    // Stash the stable expiry so the Dashboard hourglass can drain CONTINUOUSLY
+    // (fractional days) instead of stepping once a day — kept monotonic upstream.
+    if (snap.kesKeyExpiryUnix != null) kesVal.dataset.kesExpiry = String(snap.kesKeyExpiryUnix);
+    else delete kesVal.dataset.kesExpiry;
     const KES_MAX_PERIODS = 62;
     const kesPct = Math.max(
       0,

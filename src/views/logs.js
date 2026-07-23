@@ -15,7 +15,7 @@
 import { invoke } from '../data/tauri.js';
 import { getMode } from '../data/index.js';
 import { getBlockHistory } from '../data/dbsync-query.js';
-import { getPropagationHistory } from '../data/read-model.js';
+import { getPropagationHistory, enrichSlowBlockPools } from '../data/read-model.js';
 
 // Propagation history time-window (ms). null = all time. Default 24h so the
 // sparkline stays granular instead of squashing months of blocks into one strip.
@@ -259,20 +259,35 @@ const CSS = `
   .etx-wrap { padding:6px 12px 12px; }
   .etx-head { font:12px ui-monospace,monospace; color:var(--pt-text-muted,#97A0B0); padding:4px 0 8px; line-height:1.5; }
   .etx-svg { width:100%; height:auto; display:block; background:var(--pt-bg-strip,#0A0E15); border:0.5px solid var(--pt-border,#2a3340); border-radius:6px; }
-  .etx-gaplbl { fill:var(--pt-status-warn,#F59E0B); font:700 11px ui-monospace,monospace; }
+  .etx-gaplbl { fill:var(--pt-status-warn,#F59E0B); font:700 10px ui-monospace,monospace; }
+  .etx-offlbl { fill:var(--pt-text-muted,#97A0B0); font:700 10px ui-monospace,monospace; }
   .etx-annlbl { fill:var(--pt-text-primary,#F2F5F9); font:600 10px ui-monospace,monospace; }
   .etx-axis { fill:var(--pt-text-muted,#97A0B0); font:10px ui-monospace,monospace; }
-  .etx-legend { display:flex; align-items:center; gap:14px; padding:8px 2px 2px; font:11px ui-monospace,monospace; color:var(--pt-text-secondary,#C4CCD8); }
+  .etx-epochlbl { fill:var(--pt-accent-blue-bright,#7BB0F5); font:700 11px ui-monospace,monospace; letter-spacing:0.6px; }
+  .etx-legend { display:flex; align-items:center; gap:14px; padding:8px 2px 2px; font:11px ui-monospace,monospace; color:var(--pt-text-secondary,#C4CCD8); flex-wrap:wrap; }
   .etx-legend i { display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
   .etx-gapnote { color:var(--pt-status-warn,#F59E0B); }
+  .etx-offnote { color:var(--pt-text-muted,#97A0B0); }
+  .etx-epochnote { color:var(--pt-accent-blue-bright,#7BB0F5); }
   .etx-summary { padding:8px 2px 0; font:11px ui-monospace,monospace; color:var(--pt-text-muted,#97A0B0); }
   .lg-pp-chartwrap { padding: 6px 12px 10px; }
   .lg-pp-spark { width: 100%; height: 90px; display: block; }
   .lg-pp-ref { stroke: rgba(123,176,245,0.35); stroke-width: 0.6; stroke-dasharray: 4 3; }
   .lg-pp-ref5 { stroke: rgba(255,107,107,0.4); stroke-width: 0.6; stroke-dasharray: 4 3; }
   .lg-pp-axis { display: flex; justify-content: space-between; font: 400 9.5px ui-monospace, monospace; color: var(--pt-text-muted); margin-top: 2px; }
-  .lg-pp-subhead { font: 600 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.5px; color: var(--pt-accent-blue-bright, #7BB0F5); padding: 8px 12px 4px; }
+  .lg-pp-subhead { font: 600 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.5px; color: var(--pt-accent-blue-bright, #7BB0F5); padding: 8px 12px 4px; display: flex; align-items: baseline; gap: 8px; }
+  .lg-pp-subnote { font: 400 9.5px ui-monospace, monospace; text-transform: none; letter-spacing: 0; color: var(--pt-text-muted); }
   .lg-pp-table { }
+  .lg-pp-tkr { color: var(--pt-text-primary, #F2F5F9); font-weight: 700; }
+  .lg-pp-pid { color: var(--pt-text-muted); }
+  .lg-pp-pending { color: var(--pt-text-muted); opacity: 0.6; }
+  /* Propagation view fills #lg-out so ONLY the slow-block table scrolls; the
+     chart and stats stay pinned instead of the whole panel running off-screen. */
+  .lg-out.lg-pp-mode { display: flex; flex-direction: column; }
+  .lg-out.lg-pp-mode .lg-pw-bar { flex: 0 0 auto; }
+  .lg-pp-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .lg-pp-fixed { flex: 0 0 auto; }
+  .lg-pp-tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
 `;
 
 let _lastOutput = '';
@@ -357,7 +372,13 @@ async function runPropagation(canvas, q, demo) {
     const series = Array.from({ length: 60 }, (_, i) => ({ t: Math.floor((now - (60 - i) * 20000) / 1000), v: 0.2 + Math.random() * 0.9 }));
     series[42].v = 7.7;
     const stats = { count: 60, min: 0.21, max: 7.7, mean: 0.74, median: 0.62, p95: 1.3, over1: 4, over2: 1, over5: 1 };
-    const slow = [{ ts: now - 800000, delay: 7.7, cdf1: 0.62, cdf3: 0.9, cdf5: 0.98 }];
+    const slow = [
+      { ts: now - 800000, delay: 7.7, cdf1: 0.62, cdf3: 0.9, cdf5: 0.98, blockNo: 11234567,
+        poolId: 'pool1demoexamplexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', ticker: 'DEMO', poolResolved: true },
+      { ts: now - 3600000, delay: 3.1, cdf1: 0.4, cdf3: 0.72, cdf5: 0.95, blockNo: 11233900,
+        poolId: null, ticker: null, poolResolved: true },
+    ];
+    out.classList.add('lg-pp-mode');
     out.innerHTML = renderPropWindowBar() + renderPropagation({ series, slow, stats });
     wirePropWindowBar(canvas, q, demo);
     setStatus('#lg-status', 'Propagation history - demonstration data');
@@ -380,6 +401,23 @@ async function runPropagation(canvas, q, demo) {
     out.innerHTML = renderPropWindowBar() + renderPropagation(data);
     wirePropWindowBar(canvas, q, demo);
     setStatus('#lg-status', `Propagation history (${win.label}) - ${data.series.length} blocks`);
+    // Resolve slow-block producers (db-sync, best-effort) after the first paint,
+    // then repaint the table in place so pool/ticker fill in without blocking.
+    enrichSlowBlockPools().then(async (changed) => {
+      if (!changed || _propWindow !== win.id) return;
+      const stillOut = canvas.querySelector('#lg-out');
+      if (!stillOut || !stillOut.classList.contains('lg-pp-mode')) return;
+      try {
+        const d2 = await getPropagationHistory(sinceTs);
+        if (!d2 || !d2.series || !d2.series.length) return;
+        const scroller = stillOut.querySelector('.lg-pp-tablewrap');
+        const st = scroller ? scroller.scrollTop : 0;
+        stillOut.innerHTML = renderPropWindowBar() + renderPropagation(d2);
+        wirePropWindowBar(canvas, q, demo);
+        const sc2 = stillOut.querySelector('.lg-pp-tablewrap');
+        if (sc2) sc2.scrollTop = st;
+      } catch { /* leave the un-enriched table in place */ }
+    }).catch(() => {});
   } catch (e) {
     out.innerHTML = `<pre class="lg-err">Could not load propagation history: ${escHtml(e.message || String(e))}</pre>`;
     setStatus('#lg-status', 'Propagation history - failed');
@@ -415,6 +453,9 @@ function delayColor(v) {
 
 function renderPropagation(data) {
   const { series, slow, stats } = data;
+  // Whether db-sync can resolve producers — decides if an unresolved row reads
+  // "resolving…" (db-sync on, block not yet looked up) or "—" (no source for it).
+  const dbsyncOn = (data.dbsyncOn != null) ? data.dbsyncOn : (dbsyncMachine() != null);
   // sparkline (SVG) of the series, capped height, slow points marked
   const W = 640, H = 90, pad = 4;
   const vals = series.map((x) => x.v);
@@ -453,29 +494,64 @@ function renderPropagation(data) {
   const slowRows = (slow && slow.length)
     ? slow.map((r) => {
         const when = new Date(r.ts).toISOString().replace('T', ' ').replace(/\..*/, ' UTC');
+        const height = (r.blockNo != null) ? String(r.blockNo) : '-';
+        const heightTitle = r.hash ? ` title="${escAttr(r.hash)}"` : '';
         return `<tr>
           <td>${escHtml(when)}</td>
           <td style="color:${delayColor(r.delay)};font-weight:600">${fmtDelay(r.delay)}</td>
+          <td class="lg-num"${heightTitle}>${escHtml(height)}</td>
+          <td>${producerCell(r, dbsyncOn)}</td>
           <td class="lg-num">${r.cdf1 != null ? (r.cdf1 * 100).toFixed(1) + '%' : '-'}</td>
           <td class="lg-num">${r.cdf3 != null ? (r.cdf3 * 100).toFixed(1) + '%' : '-'}</td>
           <td class="lg-num">${r.cdf5 != null ? (r.cdf5 * 100).toFixed(1) + '%' : '-'}</td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="5" class="lg-empty" style="padding:10px">No slow blocks (over 2s) recorded - propagation has been healthy.</td></tr>';
+    : '<tr><td colspan="7" class="lg-empty" style="padding:10px">No slow blocks (over 2s) recorded - propagation has been healthy.</td></tr>';
 
   return `
-    <div class="lg-bl-head">
-      <div class="lg-chips">${chips}</div>
-      <div class="lg-bl-note">Per-block propagation delay captured live and kept in the local cache. Delay is how long after a block's slot your node saw it - lower is better. Slow blocks (over 2s) are logged below for review. Data persists across restarts and builds up over time.</div>
-    </div>
-    <div class="lg-pp-chartwrap">${chart}
-      <div class="lg-pp-axis"><span>oldest</span><span class="lg-pp-ref-lbl">— 1s &nbsp; ⋯ 5s</span><span>newest</span></div>
-    </div>
-    <div class="lg-pp-subhead">Slowest blocks (worst first)</div>
-    <table class="lg-bl-table lg-pp-table">
-      <thead><tr><th>time</th><th>delay</th><th class="lg-num">&lt;1s</th><th class="lg-num">&lt;3s</th><th class="lg-num">&lt;5s</th></tr></thead>
-      <tbody>${slowRows}</tbody>
-    </table>`;
+    <div class="lg-pp-view">
+      <div class="lg-pp-fixed">
+        <div class="lg-bl-head">
+          <div class="lg-chips">${chips}</div>
+          <div class="lg-bl-note">Per-block propagation delay captured live and kept in the local cache. Delay is how long after a block's slot your node saw it - lower is better. Slow blocks (over 2s) are logged below for review, with the producing pool resolved from db-sync where available. Data persists across restarts and builds up over time.</div>
+        </div>
+        <div class="lg-pp-chartwrap">${chart}
+          <div class="lg-pp-axis"><span>oldest</span><span class="lg-pp-ref-lbl">— 1s &nbsp; ⋯ 5s</span><span>newest</span></div>
+        </div>
+        <div class="lg-pp-subhead">Slowest blocks (worst first)${(slow && slow.length > 8) ? `<span class="lg-pp-subnote">${slow.length} logged · scroll for more</span>` : ''}</div>
+      </div>
+      <div class="lg-pp-tablewrap">
+        <table class="lg-bl-table lg-pp-table">
+          <thead><tr><th>time</th><th>delay</th><th class="lg-num">height</th><th>producer</th><th class="lg-num">&lt;1s</th><th class="lg-num">&lt;3s</th><th class="lg-num">&lt;5s</th></tr></thead>
+          <tbody>${slowRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// Producer cell for a slow-block row. Ticker (bold) when db-sync has off-chain
+// metadata, else the bech32 pool id truncated; a non-pool slot leader (genesis /
+// OBFT) resolves to "—"; a block not yet resolved shows a muted placeholder.
+function producerCell(r, dbsyncOn) {
+  if (r.ticker) {
+    const pid = r.poolId ? ` <span class="lg-pp-pid" title="${escAttr(r.poolId)}">${escHtml(shortPool(r.poolId))}</span>` : '';
+    return `<span class="lg-pp-tkr">${escHtml(r.ticker)}</span>${pid}`;
+  }
+  if (r.poolId) return `<span class="lg-pp-pid" title="${escAttr(r.poolId)}">${escHtml(shortPool(r.poolId))}</span>`;
+  if (r.poolResolved) return '<span class="lg-pp-pid" title="minted by a non-pool slot leader (genesis / OBFT), or producer unknown">—</span>';
+  // No captured height: logged before height capture. Resolves only if db-sync
+  // has a single unambiguous block at this time; otherwise stays unknown rather
+  // than guess (a cluster of nearby blocks can't be told apart safely).
+  if (r.blockNo == null) return '<span class="lg-pp-pid" title="logged before height capture and no unique db-sync block matched this time — producer can\'t be confirmed">—</span>';
+  // Height present but not yet looked up: pending db-sync, or no source for it.
+  return dbsyncOn ? '<span class="lg-pp-pending">resolving…</span>'
+                  : '<span class="lg-pp-pid" title="enable db-sync to resolve the producing pool">—</span>';
+}
+
+// pool1abcd…wxyz — keep both ends so it stays recognisable.
+function shortPool(p) {
+  const s = String(p || '');
+  return s.length > 18 ? `${s.slice(0, 10)}…${s.slice(-4)}` : s;
 }
 
 // --- Blocks minted (CNCLI blocklog DB) --------------------------------------
@@ -616,6 +692,9 @@ function renderBlocklog(summary, rows, isDbsync) {
 async function runQuery(canvas, q, demo) {
   const out = canvas.querySelector('#lg-out');
   setStatus('#lg-status', `Running: ${q.label}…`);
+  // Only the propagation view turns #lg-out into a flex column (bounded table
+  // scroll); clear it for every other query so their plain output flows normally.
+  out.classList.toggle('lg-pp-mode', q.kind === 'propagation');
 
   if (q.kind === 'blocklog') { return runBlocklog(canvas, q, demo); }
   if (q.kind === 'epochtx') { return runEpochTransition(canvas, q, demo); }
@@ -700,18 +779,58 @@ function demoSample(id) {
 
 // ---- Epoch / hard-fork transition view ------------------------------------
 // Renders the propagation series around a boundary the way the fork chart does:
-// stems per block coloured by delay, PRODUCTION GAPS shaded and labelled, and
-// the boundary marked. A "gap" is a jump between consecutive real blocks far
-// larger than the normal ~20s spacing (each series point is one real block now
-// that capture dedups on block number).
+// stems per block coloured by delay, GAPS shaded and labelled, and the boundary
+// marked. A "gap" is a jump between consecutive captured blocks far larger than
+// the normal ~20s spacing (each series point is one real block now that capture
+// dedups on block number).
+//
+// Two kinds of gap, told apart by the liveness heartbeat that read-model writes
+// every ~30s:
+//   - PRODUCTION GAP (amber): beats run through the gap, so PoolTerminal was
+//     watching and the chain itself produced nothing — the fork-boundary case.
+//   - POOLTERMINAL OFFLINE (grey): no beats inside the gap, so the app was down;
+//     the chain kept producing, we simply weren't capturing. Not a chain event.
 const ETX_NORMAL_GAP_S = 20;          // nominal slot/block spacing
 const ETX_GAP_FACTOR   = 6;           // >6x nominal (~2 min) counts as a gap
+const ETX_GAP_THRESH_S = ETX_NORMAL_GAP_S * ETX_GAP_FACTOR;   // 120s — the gap threshold
 const ETX_SLOW_S       = 2;           // amber threshold
 const ETX_VSLOW_S      = 5;           // red threshold
 
 async function runEpochTransition(canvas, q, demo) {
-  const out = canvas.querySelector('#lg-output');
+  const out = canvas.querySelector('#lg-out');
   setStatus('#lg-status', 'Epoch transition - loading');
+  if (!out) { setStatus('#lg-status', 'Epoch transition - output panel missing'); return; }
+
+  if (demo) {
+    // Synthetic hour showing both gap kinds: a real PRODUCTION GAP at a fork
+    // boundary (block 40, ~9 min — liveness beats run through it) and, later, a
+    // stretch when PoolTerminal was OFFLINE (block 75, ~12 min — no beats, the
+    // chain kept producing while the app was down). An epoch line sits in the
+    // fork gap, and the first block after it arrives slow.
+    const nowS = Math.floor(Date.now() / 1000);
+    const series = [];
+    let t = nowS - 3600;
+    for (let i = 0; i < 100; i++) {
+      t += (i === 40) ? 540 : (i === 75) ? 720 : 18 + Math.round(Math.random() * 8);
+      series.push({ t, v: (i === 40 || i === 75) ? 4.2 : 0.2 + Math.random() * 0.8 });
+    }
+    // Beats every 30s across the whole hour EXCEPT the app-offline window before
+    // block 75 — that missing coverage is what makes detectGaps classify it as
+    // offline rather than a production gap.
+    const t0 = series[0].t, t1 = series[series.length - 1].t;
+    const offFrom = series[74].t, offTo = series[75].t;
+    const heartbeats = [];
+    for (let bt = t0; bt <= t1; bt += 30) {
+      if (bt > offFrom + 45 && bt < offTo - 45) continue;   // app down: no beats
+      heartbeats.push(bt);
+    }
+    const boundaries = [{ epoch: 618, ts: series[39].t + 120 }];
+    out.innerHTML = renderPropWindowBar() + renderEpochTransition(series, detectGaps(series, heartbeats), boundaries);
+    wireEtxWindowBar(canvas, q, demo);
+    setStatus('#lg-status', 'Epoch transition - demonstration data');
+    return;
+  }
+
   try {
     // Reuse the same windowed history the propagation view uses.
     const win = PROP_WINDOWS.find((w) => w.id === _propWindow) || PROP_WINDOWS[3];
@@ -725,11 +844,19 @@ async function runEpochTransition(canvas, q, demo) {
       setStatus('#lg-status', 'Epoch transition - no data');
       return;
     }
-    const gaps = detectGaps(series);
-    out.innerHTML = renderPropWindowBar() + renderEpochTransition(series, gaps);
+    const heartbeats = (data && data.heartbeats) || [];
+    const gaps = detectGaps(series, heartbeats);
+    const boundaries = (data && data.boundaries) || [];
+    out.innerHTML = renderPropWindowBar() + renderEpochTransition(series, gaps, boundaries);
     wireEtxWindowBar(canvas, q, demo);
-    const gtxt = gaps.length ? `${gaps.length} gap${gaps.length>1?'s':''} detected` : 'no gaps';
-    setStatus('#lg-status', `Epoch transition (${win.label}) - ${series.length} blocks, ${gtxt}`);
+    const prodGaps = gaps.filter((g) => g.kind !== 'offline').length;
+    const offGaps = gaps.length - prodGaps;
+    const parts = [];
+    if (prodGaps) parts.push(`${prodGaps} production gap${prodGaps > 1 ? 's' : ''}`);
+    if (offGaps) parts.push(`${offGaps} offline`);
+    const gtxt = parts.length ? parts.join(', ') : 'no gaps';
+    const btxt = boundaries.length ? `, ${boundaries.length} epoch boundary` : '';
+    setStatus('#lg-status', `Epoch transition (${win.label}) - ${series.length} blocks, ${gtxt}${btxt}`);
   } catch (e) {
     out.innerHTML = `<pre class="lg-err">Could not load epoch transition: ${escHtml(e.message || String(e))}</pre>`;
     setStatus('#lg-status', 'Epoch transition - failed');
@@ -745,15 +872,27 @@ function wireEtxWindowBar(canvas, q, demo) {
   });
 }
 
-// Find stretches where consecutive blocks are spaced far wider than normal.
-function detectGaps(series) {
+// Find stretches where consecutive captured blocks are spaced far wider than
+// normal, and classify each: a gap with liveness beats running through it is a
+// genuine on-chain production gap; a gap with no interior beats is app downtime
+// (PoolTerminal was offline while the chain kept producing).
+function detectGaps(series, heartbeats) {
   const out = [];
-  const thresh = ETX_NORMAL_GAP_S * ETX_GAP_FACTOR;
+  const beats = Array.isArray(heartbeats) ? heartbeats : [];
+  // A beat lands every ~30s; clear each edge by a beat interval so the last
+  // pre-shutdown / first post-restart beat is not read as covering the gap. The
+  // interior of a threshold-width (120s) gap is then ~40s wide — comfortably more
+  // than one beat interval, so a genuine production gap always shows a beat.
+  const MARGIN_S = 40;
   for (let i = 1; i < series.length; i++) {
-    const dt = series[i].t - series[i - 1].t;   // seconds
-    if (dt >= thresh) {
-      out.push({ from: series[i - 1].t, to: series[i].t, secs: dt, afterIdx: i });
-    }
+    const from = series[i - 1].t, to = series[i].t;
+    const dt = to - from;   // seconds
+    if (dt < ETX_GAP_THRESH_S) continue;
+    const interiorBeat = beats.some((b) => b > from + MARGIN_S && b < to - MARGIN_S);
+    // With no heartbeat data at all (older caches), fall back to treating gaps
+    // as production gaps rather than silently blaming the app.
+    const offline = beats.length > 0 && !interiorBeat;
+    out.push({ from, to, secs: dt, afterIdx: i, kind: offline ? 'offline' : 'production' });
   }
   return out;
 }
@@ -767,7 +906,7 @@ function fmtDur(secs) {
   return `${Math.round(secs)}s`;
 }
 
-function renderEpochTransition(series, gaps) {
+function renderEpochTransition(series, gaps, boundaries) {
   const W = 1100, H = 300, padL = 44, padR = 16, padT = 18, padB = 34;
   const t0 = series[0].t, t1 = series[series.length - 1].t;
   const span = Math.max(1, t1 - t0);
@@ -779,15 +918,30 @@ function renderEpochTransition(series, gaps) {
                     : v >= ETX_SLOW_S ? 'var(--pt-status-warn,#F59E0B)'
                     : 'var(--pt-status-good,#10B981)';
 
-  // gap shading + labels
+  // Gap shading + labels. Production gaps are amber, PoolTerminal-offline gaps
+  // grey. Labels are packed into horizontal lanes so they never overprint even
+  // when many gaps compress together at wide time windows (12h / 1d / 7d) — a
+  // label that would collide with one already placed drops to the next lane, and
+  // once the lanes fill the band still shades but its detail lives in the summary.
+  const laneEnds = [];            // rightmost occupied x per lane
+  const ETX_MAXLANES = 4;
   let gapSvg = '';
-  for (const g of gaps) {
+  for (const g of gaps.slice().sort((a, b) => a.from - b.from)) {
     const gx0 = x(g.from), gx1 = x(g.to);
-    gapSvg += `<rect x="${gx0.toFixed(1)}" y="${padT}" width="${(gx1-gx0).toFixed(1)}" height="${H-padT-padB}" fill="var(--pt-status-warn,#F59E0B)" opacity="0.10"/>`;
-    gapSvg += `<line x1="${gx0.toFixed(1)}" y1="${padT}" x2="${gx0.toFixed(1)}" y2="${H-padB}" stroke="var(--pt-status-warn,#F59E0B)" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>`;
-    gapSvg += `<line x1="${gx1.toFixed(1)}" y1="${padT}" x2="${gx1.toFixed(1)}" y2="${H-padB}" stroke="var(--pt-status-warn,#F59E0B)" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>`;
-    const mid = (gx0 + gx1) / 2;
-    gapSvg += `<text x="${mid.toFixed(1)}" y="${padT+16}" text-anchor="middle" class="etx-gaplbl">${fmtDur(g.secs)} — no blocks</text>`;
+    const off = g.kind === 'offline';
+    const fill = off ? 'var(--pt-text-muted,#97A0B0)' : 'var(--pt-status-warn,#F59E0B)';
+    gapSvg += `<rect x="${gx0.toFixed(1)}" y="${padT}" width="${Math.max(0.6, gx1-gx0).toFixed(1)}" height="${H-padT-padB}" fill="${fill}" opacity="${off?0.07:0.10}"/>`;
+    gapSvg += `<line x1="${gx0.toFixed(1)}" y1="${padT}" x2="${gx0.toFixed(1)}" y2="${H-padB}" stroke="${fill}" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>`;
+    gapSvg += `<line x1="${gx1.toFixed(1)}" y1="${padT}" x2="${gx1.toFixed(1)}" y2="${H-padB}" stroke="${fill}" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>`;
+    const label = off ? `${fmtDur(g.secs)} offline` : `${fmtDur(g.secs)} no blocks`;
+    const halfW = (label.length * 6) / 2 + 6;   // ~6px/char at 10px monospace + pad
+    let cx = Math.max(padL + halfW, Math.min(W - padR - halfW, (gx0 + gx1) / 2));
+    let lane = 0;
+    while (lane < ETX_MAXLANES && laneEnds[lane] != null && laneEnds[lane] > cx - halfW) lane++;
+    if (lane >= ETX_MAXLANES) continue;   // too crowded: shaded band only, detail in summary
+    laneEnds[lane] = cx + halfW;
+    const ly = padT + 11 + lane * 13;
+    gapSvg += `<text x="${cx.toFixed(1)}" y="${ly}" text-anchor="middle" class="${off?'etx-offlbl':'etx-gaplbl'}">${label}</text>`;
   }
 
   // stems
@@ -798,18 +952,32 @@ function renderEpochTransition(series, gaps) {
     stems += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="2.6" fill="${col(s.v)}"/>`;
   }
 
-  // annotate the worst block after the largest gap (the "late transition block")
+  // epoch boundaries observed while the app was running. Label sits at the BASE
+  // of the boundary line, clear of the gap-label lanes clustered at the top.
+  let bounds = '';
+  for (const b of (boundaries || [])) {
+    if (!b || !Number.isFinite(b.ts) || b.ts < t0 || b.ts > t1) continue;
+    const bx = x(b.ts);
+    const nearEnd = bx > W - 110;
+    bounds += `<line x1="${bx.toFixed(1)}" y1="${padT}" x2="${bx.toFixed(1)}" y2="${H-padB}" stroke="var(--pt-accent-blue-bright,#7BB0F5)" stroke-width="1.5" opacity="0.9"/>`;
+    bounds += `<text x="${(nearEnd ? bx - 5 : bx + 5).toFixed(1)}" y="${(H-padB-6).toFixed(1)}" text-anchor="${nearEnd ? 'end' : 'start'}" class="etx-epochlbl">EPOCH ${escHtml(b.epoch)}</text>`;
+  }
+
+  // Annotate the FIRST block after the largest PRODUCTION gap — the slow
+  // post-fork block is the interesting one. Offline gaps are skipped: their
+  // "first block" is just whatever arrived after the app restarted, not a chain
+  // event worth flagging. detectGaps records the block index, so this is the
+  // actual first arrival, not the worst nearby one.
   let ann = '';
-  if (gaps.length) {
-    const biggest = gaps.slice().sort((a,b)=>b.secs-a.secs)[0];
-    // find worst-delay block within ~90s after the gap ends
-    const after = series.filter((s) => s.t >= biggest.to && s.t <= biggest.to + 90);
-    if (after.length) {
-      const worst = after.slice().sort((a,b)=>b.v-a.v)[0];
-      const ax = x(worst.t), ay = y(worst.v);
+  const prodGaps = gaps.filter((g) => g.kind !== 'offline');
+  if (prodGaps.length) {
+    const biggest = prodGaps.slice().sort((a,b)=>b.secs-a.secs)[0];
+    const first = series[biggest.afterIdx];
+    if (first) {
+      const ax = x(first.t), ay = y(first.v);
       ann += `<circle cx="${ax.toFixed(1)}" cy="${ay.toFixed(1)}" r="5" fill="none" stroke="var(--pt-status-bad,#EF4444)" stroke-width="1.6"/>`;
-      const lx = Math.min(ax + 8, W - 210);
-      ann += `<text x="${lx.toFixed(1)}" y="${(ay-8).toFixed(1)}" class="etx-annlbl">first block after gap: ${worst.v.toFixed(1)}s late</text>`;
+      const lx = Math.min(ax + 8, W - 230);
+      ann += `<text x="${lx.toFixed(1)}" y="${(ay-8).toFixed(1)}" class="etx-annlbl">first block after gap: ${first.v.toFixed(1)}s propagation</text>`;
     }
   }
 
@@ -823,22 +991,36 @@ function renderEpochTransition(series, gaps) {
   const xlabels = `<text x="${padL}" y="${H-10}" class="etx-axis">${fmtClock(t0)}</text>`
                 + `<text x="${W-padR}" y="${H-10}" text-anchor="end" class="etx-axis">${fmtClock(t1)}</text>`;
 
-  const gapSummary = gaps.length
-    ? gaps.map((g) => `${fmtClock(g.from)} \u2192 ${fmtClock(g.to)} (${fmtDur(g.secs)})`).join(' \u00b7 ')
+  const inView = (boundaries || []).filter((b) => b && b.ts >= t0 && b.ts <= t1);
+  const boundSummary = inView.length
+    ? 'Epoch boundary: ' + inView.map((b) => `${escHtml(b.epoch)} at ${fmtClock(b.ts)}`).join(' · ')
+    : 'No epoch boundary in this window. Boundaries are recorded as they happen, so only those observed while PoolTerminal was running appear here.';
+
+  const fmtGap = (g) => `${fmtClock(g.from)} \u2192 ${fmtClock(g.to)} (${fmtDur(g.secs)})`;
+  const offGaps = gaps.filter((g) => g.kind === 'offline');
+  const gapSummary = prodGaps.length
+    ? 'Production gaps (chain produced no blocks): ' + prodGaps.map(fmtGap).join(' \u00b7 ')
     : 'No production gaps in this window \u2014 steady block flow.';
+  const offSummary = offGaps.length
+    ? 'PoolTerminal offline (not a chain gap \u2014 app was down while the chain kept producing): ' + offGaps.map(fmtGap).join(' \u00b7 ')
+    : '';
 
   return `
     <div class="etx-wrap">
-      <div class="etx-head">Epoch / transition view \u2014 block production and propagation. Gaps (no blocks) are shaded; stems are per-block delay.</div>
+      <div class="etx-head">Epoch / transition view - block production and propagation. Blue lines mark epoch boundaries; stems are per-block delay. A gap is \u2265${fmtDur(ETX_GAP_THRESH_S)} between captured blocks: amber = the chain produced nothing (production gap), grey = PoolTerminal was offline while the chain kept producing.</div>
       <svg viewBox="0 0 ${W} ${H}" class="etx-svg" preserveAspectRatio="xMidYMid meet">
-        ${grid}${gapSvg}${stems}${ann}${xlabels}
+        ${grid}${gapSvg}${bounds}${stems}${ann}${xlabels}
       </svg>
       <div class="etx-legend">
         <span><i style="background:var(--pt-status-good,#10B981)"></i>&lt;2s</span>
         <span><i style="background:var(--pt-status-warn,#F59E0B)"></i>2\u20135s</span>
         <span><i style="background:var(--pt-status-bad,#EF4444)"></i>&gt;5s</span>
-        <span class="etx-gapnote">Shaded = production gap</span>
+        <span class="etx-gapnote">Amber band = production gap</span>
+        <span class="etx-offnote">Grey band = PoolTerminal offline</span>
+        <span class="etx-epochnote">Blue line = epoch boundary</span>
       </div>
       <div class="etx-summary">${gapSummary}</div>
+      ${offSummary ? `<div class="etx-summary">${offSummary}</div>` : ''}
+      <div class="etx-summary">${boundSummary}</div>
     </div>`;
 }

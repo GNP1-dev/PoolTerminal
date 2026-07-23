@@ -147,6 +147,102 @@ export async function getBlockHistory(limit) {
   }));
 }
 
+/**
+ * Resolve a set of block HEIGHTS to their producer — bech32 pool id, ticker (from
+ * db-sync's local off_chain_pool_data) and full hash. Used to enrich the slow-block
+ * propagation log so an operator can see WHICH pool forged a block that reached
+ * their node late. Blocks minted by a non-pool slot leader (OBFT / genesis) have a
+ * null pool_hash_id and come back with pool_id null, which the caller shows as "—".
+ * Not pool-scoped: any block on the chain, not just this pool's. One indexed IN().
+ */
+export async function getBlockProducers(heights) {
+  if (!_cfg || !Array.isArray(heights) || !heights.length) return [];
+  const list = [...new Set(heights.map((h) => Number(h))
+    .filter((h) => Number.isInteger(h) && h >= 0 && h < 1_000_000_000))].slice(0, 500);
+  if (!list.length) return [];
+  const rows = await pgQuery(_cfg, `
+    SELECT b.block_no::text            AS block,
+           encode(b.hash,'hex')        AS hash,
+           ph.view                     AS pool_id,
+           ocpd.ticker_name            AS ticker
+    FROM block b
+    LEFT JOIN slot_leader sl ON sl.id = b.slot_leader_id
+    LEFT JOIN pool_hash ph   ON ph.id = sl.pool_hash_id
+    LEFT JOIN LATERAL (
+      SELECT ticker_name FROM off_chain_pool_data
+      WHERE pool_id = ph.id ORDER BY id DESC LIMIT 1
+    ) ocpd ON true
+    WHERE b.block_no IN (${list.join(',')})`);
+  return rows.map((r) => ({
+    block: Number(r.block),
+    hash: r.hash || null,
+    poolId: r.pool_id || null,
+    ticker: r.ticker || null,
+  }));
+}
+
+/**
+ * CONFIDENT-ONLY producer resolution for slow-block records that predate height
+ * capture. `targets` is [{ idx, t }] where t is the block's estimated slot time
+ * (UTC epoch seconds = capture time − propagation delay). For each target it
+ * looks in a tight ±~10-slot window and returns a match ONLY when that window
+ * holds EXACTLY ONE block — so an isolated slow block resolves correctly, while a
+ * cluster of blocks close in time (where a nearest-match would mis-attribute, as
+ * it once did with NORTH→WAV1) returns nothing and the caller leaves it blank.
+ *
+ * Matching runs on block.slot_no (a core db-sync index). Wall-clock seconds map
+ * to a slot number off a live anchor block read from db-sync itself — no genesis
+ * constants, any network.
+ *
+ * HARDFORK: assumes 1 slot = 1 second (true from Shelley on; these records are
+ * always recent, so the linear map holds).
+ */
+export async function getBlockProducersByTimeConfident(targets) {
+  if (!_cfg || !Array.isArray(targets) || !targets.length) return [];
+  const rows0 = targets
+    .map((x) => ({ idx: Number(x.idx), t: Math.floor(Number(x.t)) }))
+    .filter((x) => Number.isInteger(x.idx) && Number.isFinite(x.t) && x.t > 1_500_000_000 && x.t < 5_000_000_000)
+    .slice(0, 200);
+  if (!rows0.length) return [];
+  const values = rows0.map((x) => `(${x.idx}, ${x.t}::bigint)`).join(',');
+  // Window is asymmetric: our estimate can only be LATER than the true slot (it
+  // ignores the metric-scrape lag), so look further back than forward.
+  const rows = await pgQuery(_cfg, `
+    WITH anchor AS (
+      SELECT bl.slot_no AS s, extract(epoch FROM (bl.time AT TIME ZONE 'UTC'))::bigint AS e
+      FROM block bl WHERE bl.slot_no IS NOT NULL ORDER BY bl.id DESC LIMIT 1
+    ),
+    targets(idx, tsec) AS (VALUES ${values}),
+    cand AS (
+      SELECT tg.idx AS idx, b.block_no AS block_no, b.hash AS hash, b.slot_leader_id AS slid
+      FROM targets tg
+      CROSS JOIN anchor a
+      JOIN block b
+        ON b.slot_no BETWEEN (a.s + (tg.tsec - a.e) - 8) AND (a.s + (tg.tsec - a.e) + 1)
+    ),
+    uniq AS (SELECT idx FROM cand GROUP BY idx HAVING count(*) = 1)
+    SELECT c.idx::text            AS idx,
+           c.block_no::text       AS block,
+           encode(c.hash,'hex')   AS hash,
+           ph.view                AS pool_id,
+           ocpd.ticker_name       AS ticker
+    FROM cand c
+    JOIN uniq u ON u.idx = c.idx
+    LEFT JOIN slot_leader sl ON sl.id = c.slid
+    LEFT JOIN pool_hash ph   ON ph.id = sl.pool_hash_id
+    LEFT JOIN LATERAL (
+      SELECT ticker_name FROM off_chain_pool_data
+      WHERE pool_id = ph.id ORDER BY id DESC LIMIT 1
+    ) ocpd ON true`);
+  return rows.map((r) => ({
+    idx: Number(r.idx),
+    block: r.block != null ? Number(r.block) : null,
+    hash: r.hash || null,
+    poolId: r.pool_id || null,
+    ticker: r.ticker || null,
+  }));
+}
+
 /** The pool's first epoch with active stake — bounds backfill to its lifetime. */
 export async function getPoolFirstEpoch() {
   const rows = await pgQuery(_cfg,

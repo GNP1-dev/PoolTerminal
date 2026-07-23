@@ -1256,10 +1256,9 @@ export async function sampleHealth(host, metrics) {
     await put('peers_warm',    metrics.peersWarm);
     await put('peers_cold',    metrics.peersCold);
     await put('density',       metrics.density);
-    // Propagation history: record each block's delay once, deduped on block
-    // number so a held/stale metric during a production gap can't log phantom
-    // blocks (see capturePropagation).
-    await capturePropagation(metrics);
+    // Propagation capture used to live here, but this sampler self-throttles to
+    // 30s and that dropped about half of all blocks. It now runs on its own
+    // tick from the live loop (see capturePropagation).
   }
 }
 
@@ -1270,11 +1269,77 @@ export async function sampleHealth(host, metrics) {
 // off the live strip. All via the existing cache — no schema/Rust changes.
 let _lastPropDelay = null;
 let _lastPropBlockNum = null;
+let _lastSlowBlock = null;   // most recent slow block this session (read by the alerts engine)
+let _lastPropEpoch = null;   // last epoch seen by the capture tick (boundary detection)
 const PROP_SLOW_THRESHOLD_S = 2.0;
 const PROP_META_KEY = 'prop_slow_blocks';   // JSON array of slow-block records
 const PROP_SLOW_MAX = 500;                   // cap the slow-block log
+const PROP_EPOCH_META_KEY = 'prop_epoch_boundaries';  // JSON array of { epoch, ts }
+const PROP_EPOCH_MAX = 200;                  // cap the boundary log (one per ~5 days)
+// Liveness beat. Persisted on a slow cadence, independent of whether a new block
+// arrived, so the transition view can tell an on-chain PRODUCTION GAP (beats
+// continue through it — the app was watching, the chain stalled) apart from a
+// stretch when PoolTerminal itself was OFFLINE (no beats — the chain kept
+// producing, we just weren't capturing). Without this, a restart after downtime
+// looks identical to a fork-boundary production gap.
+const PROP_HEARTBEAT_METRIC = 'capture_alive';
+const PROP_HEARTBEAT_EVERY_MS = 30000;       // beat cadence (< half the 120s gap threshold)
+let _lastHeartbeatTs = 0;
 
-async function capturePropagation(metrics) {
+/**
+ * Propagation capture tick. Called from the live loop at 1 Hz with whatever the
+ * last Prometheus scrape produced. That scrape already refreshes every ~5s as
+ * part of queryPeers, so this costs NO extra node traffic: it only records data
+ * the app has already fetched. The block-number dedup below means at most one
+ * cache row per block.
+ *
+ * This used to run inside sampleHealth(), behind its 30s write throttle, which
+ * silently dropped about half of all blocks (30s windows against ~20s mean
+ * block spacing). Driving it from the metrics cadence instead captures roughly
+ * nine in ten.
+ */
+export async function capturePropagation(metrics, epoch) {
+  if (!metrics) return;
+  try {
+    await noteEpochBoundary(epoch);
+    await captureHeartbeat();
+    await captureBlockDelay(metrics);
+  } catch (e) {
+    console.warn('[read-model] propagation capture:', e.message ?? e);
+  }
+}
+
+// Record that PoolTerminal was alive and capturing at this instant. Throttled to
+// PROP_HEARTBEAT_EVERY_MS so it costs one tiny cache row every ~30s. The gap in
+// this series across an app restart is what lets the transition view label
+// downtime as "PoolTerminal offline" instead of a block-production gap.
+async function captureHeartbeat() {
+  const now = Date.now();
+  if (now - _lastHeartbeatTs < PROP_HEARTBEAT_EVERY_MS) return;
+  _lastHeartbeatTs = now;
+  await cachePutSample(PROP_HEARTBEAT_METRIC, 1);
+}
+
+// Record an epoch change the moment it is observed, independently of whether a
+// new block arrived on this tick, so a boundary is never missed during a quiet
+// spell. One entry per transition, so the log covers years.
+async function noteEpochBoundary(epoch) {
+  if (epoch == null || !Number.isFinite(epoch)) return;
+  if (_lastPropEpoch === null) { _lastPropEpoch = epoch; return; }   // first tick: nothing to compare
+  if (epoch === _lastPropEpoch) return;
+  const prev = _lastPropEpoch;
+  _lastPropEpoch = epoch;
+  if (epoch < prev) return;   // rollback, or a reconnect to a different node/network
+  let arr = [];
+  try { const raw = await cacheMetaGet(PROP_EPOCH_META_KEY); if (raw) arr = JSON.parse(raw); } catch { arr = []; }
+  if (!Array.isArray(arr)) arr = [];
+  if (arr.some((b) => b && b.epoch === epoch)) return;   // already recorded
+  arr.push({ epoch, ts: Math.floor(Date.now() / 1000) });
+  if (arr.length > PROP_EPOCH_MAX) arr = arr.slice(arr.length - PROP_EPOCH_MAX);
+  await cacheMetaSet(PROP_EPOCH_META_KEY, JSON.stringify(arr));
+}
+
+async function captureBlockDelay(metrics) {
   const d = metrics.blockDelayLast;
   if (d == null || !Number.isFinite(d) || d <= 0) return;
 
@@ -1297,10 +1362,18 @@ async function capturePropagation(metrics) {
   await cachePutSample('prop_delay', d);
   // rich record for slow blocks
   if (d >= PROP_SLOW_THRESHOLD_S) {
+    _lastSlowBlock = {
+      delay: d,
+      blockNo: (bn != null && Number.isFinite(bn)) ? bn : null,
+      ts: Date.now(),
+    };
     try {
+      const hasHeight = (bn != null && Number.isFinite(bn));
       const rec = {
         ts: Date.now(),
         delay: d,
+        blockNo: hasHeight ? bn : null,   // block height, for exact producer lookup
+        htLive: hasHeight,                // height came straight from the node metric — authoritative
         cdf1: metrics.blockDelayCdfOne ?? null,
         cdf3: metrics.blockDelayCdfThree ?? null,
         cdf5: metrics.blockDelayCdfFive ?? null,
@@ -1314,8 +1387,18 @@ async function capturePropagation(metrics) {
   }
 }
 
+/**
+ * The most recently captured slow block (propagation delay at or over
+ * PROP_SLOW_THRESHOLD_S) as { delay, blockNo, ts }, or null if none has been
+ * captured this session. In-memory only: the persisted slow-block log in the
+ * meta store is unchanged. blockNo is null when the node did not report a
+ * block number for the sample.
+ */
+export function getLatestSlowBlock() { return _lastSlowBlock; }
+
 // Retrieval for the propagation history view.
 export async function getPropagationHistory(sinceTs) {
+  await purgeMistimedSlowEnrichment();   // one-time: drop wrongly time-matched producers
   const raw = await cacheGetSamplesRaw('prop_delay', sinceTs || 0);
   const series = (raw || []).map((r) => ({ t: r.captured_at, v: r.value }))
                             .filter((x) => x.v != null)
@@ -1323,6 +1406,22 @@ export async function getPropagationHistory(sinceTs) {
   let slow = [];
   try { const j = await cacheMetaGet(PROP_META_KEY); if (j) slow = JSON.parse(j); } catch { slow = []; }
   slow = (slow || []).slice().sort((a, b) => b.ts - a.ts);   // newest slow block first
+  // Observed epoch boundaries (seconds, same clock as series.t), oldest first.
+  let boundaries = [];
+  try { const j = await cacheMetaGet(PROP_EPOCH_META_KEY); if (j) boundaries = JSON.parse(j); } catch { boundaries = []; }
+  boundaries = (Array.isArray(boundaries) ? boundaries : [])
+    .filter((b) => b && Number.isFinite(b.ts) && b.ts >= (sinceTs || 0))
+    .sort((a, b) => a.ts - b.ts);
+  // Liveness beats (seconds, same clock as series.t), oldest first. A gap in the
+  // prop series with beats running through it is a real production gap; a gap
+  // with no interior beats is app downtime.
+  let heartbeats = [];
+  try {
+    const hb = await cacheGetSamplesRaw(PROP_HEARTBEAT_METRIC, sinceTs || 0);
+    heartbeats = (hb || []).map((r) => r.captured_at)
+                           .filter((t) => Number.isFinite(t))
+                           .sort((a, b) => a - b);
+  } catch { heartbeats = []; }
   // summary stats over the returned window
   let stats = null;
   if (series.length) {
@@ -1341,7 +1440,123 @@ export async function getPropagationHistory(sinceTs) {
       over5: vals.filter((v) => v >= 5).length,
     };
   }
-  return { series, slow, stats };
+  return { series, slow, stats, boundaries, heartbeats };
+}
+
+// Heights db-sync had no row for this session (block not yet indexed): retry next
+// session rather than persist a null and never look again. In-memory only.
+const _slowPoolAttempted = new Set();
+
+function applySlowHit(r, hit, timeMatched) {
+  r.poolId = hit.poolId || null;
+  r.ticker = hit.ticker || null;
+  r.hash = hit.hash || r.hash || null;
+  if (hit.block != null) r.blockNo = hit.block;   // backfills height on a confident time match
+  if (timeMatched) r.htTime = true;               // producer came from a confident time match, not a live height
+  r.poolResolved = true;                          // persisted: never re-query this block
+}
+
+/**
+ * Best-effort enrichment of the persisted slow-block log with each block's
+ * producer (bech32 pool id + ticker) and full hash via db-sync. Two paths, both
+ * authoritative — neither ever guesses:
+ *   - records captured with a live block HEIGHT resolve by exact block_no;
+ *   - legacy records (no captured height) resolve by TIME, but ONLY when db-sync
+ *     shows exactly one block in a tight window around the record's time. A
+ *     cluster of nearby blocks (the case that once mis-attributed NORTH→WAV1)
+ *     yields no unique match and the record stays blank.
+ *
+ * Honours the operator's source choice: a no-op on Koios-only setups. Runs lazily
+ * from the Propagation view AFTER the first paint, so it never gates the table; a
+ * record is looked up at most once per session. Returns true if anything changed.
+ */
+export async function enrichSlowBlockPools() {
+  let arr = [];
+  try { const j = await cacheMetaGet(PROP_META_KEY); if (j) arr = JSON.parse(j); } catch { arr = []; }
+  if (!Array.isArray(arr) || !arr.length) return false;
+
+  const attemptKey = (r) => (r.blockNo != null) ? `h${r.blockNo}` : `t${Math.round(r.ts)}`;
+  const pending = [];
+  for (let i = 0; i < arr.length; i++) {
+    const r = arr[i];
+    if (!r || r.poolResolved) continue;
+    if (_slowPoolAttempted.has(attemptKey(r))) continue;
+    pending.push(i);
+  }
+  if (!pending.length) return false;
+  if (!(await ensureDbsync())) return false;   // db-sync only — respect Koios-only setups
+
+  let changed = false;
+  let byHeightN = 0, byTimeN = 0;
+
+  // 1) Records with a live-captured height → exact lookup by block_no.
+  const byHeightIdx = pending.filter((i) => arr[i].blockNo != null);
+  if (byHeightIdx.length) {
+    const heights = [...new Set(byHeightIdx.map((i) => arr[i].blockNo))];
+    let rows = [];
+    try { rows = await dbsync.getBlockProducers(heights); }
+    catch (e) { console.warn('[read-model] slow-block enrich (height):', e.message ?? e); }
+    const byH = new Map(rows.map((r) => [r.block, r]));
+    for (const i of byHeightIdx) {
+      const hit = byH.get(arr[i].blockNo);
+      if (hit) { applySlowHit(arr[i], hit, false); changed = true; byHeightN++; }
+      else _slowPoolAttempted.add(`h${arr[i].blockNo}`);   // not indexed yet; retry next session
+    }
+  }
+
+  // 2) Legacy records (no height) → CONFIDENT time match only (unique block in window).
+  const byTimeIdx = pending.filter((i) => arr[i].blockNo == null && Number.isFinite(arr[i].ts)).slice(0, 200);
+  if (byTimeIdx.length) {
+    const targets = byTimeIdx.map((i) => ({
+      idx: i,
+      t: Math.floor(arr[i].ts / 1000 - (Number(arr[i].delay) || 0)),
+    }));
+    let rows = [];
+    try { rows = await dbsync.getBlockProducersByTimeConfident(targets); }
+    catch (e) { console.warn('[read-model] slow-block enrich (time):', e.message ?? e); }
+    const byIdx = new Map(rows.map((r) => [r.idx, r]));
+    for (const i of byTimeIdx) {
+      const hit = byIdx.get(i);
+      if (hit && hit.block != null) { applySlowHit(arr[i], hit, true); changed = true; byTimeN++; }
+      else _slowPoolAttempted.add(`t${Math.round(arr[i].ts)}`);   // ambiguous/no match — stay blank
+    }
+  }
+
+  if (changed) {
+    const resolved = arr.filter((r) => r && r.poolResolved).length;
+    console.log(`[read-model] slow-block enrich: ${resolved}/${arr.length} resolved (exact height: ${byHeightN}, confident time: ${byTimeN})`);
+    try { await cacheMetaSet(PROP_META_KEY, JSON.stringify(arr)); }
+    catch (e) { console.warn('[read-model] slow-block enrich persist:', e.message ?? e); }
+  }
+  return changed;
+}
+
+// One-time cleanup of the mis-attributed producers written by the removed
+// time-matching back-fill. Strips producer/height enrichment from every record
+// NOT captured with a node-authoritative height (htLive), so a wrongly-guessed
+// pool reverts to "unknown" instead of lying. Height-captured records keep
+// their exact block_no and re-resolve correctly. Guarded to run once.
+async function purgeMistimedSlowEnrichment() {
+  try {
+    if ((await cacheMetaGet('prop_slow_purged_v2')) === '1') return;
+    let arr = [];
+    try { const j = await cacheMetaGet(PROP_META_KEY); if (j) arr = JSON.parse(j); } catch { arr = []; }
+    if (Array.isArray(arr) && arr.length) {
+      let touched = 0;
+      for (const r of arr) {
+        if (!r || r.htLive) continue;   // trustworthy live-captured height: leave intact
+        if (r.poolResolved || r.poolId != null || r.ticker != null || r.blockNo != null || r.hash != null) {
+          delete r.blockNo; delete r.poolId; delete r.ticker; delete r.hash; delete r.poolResolved;
+          touched++;
+        }
+      }
+      if (touched) {
+        console.log(`[read-model] purged mis-timed producer data from ${touched} slow-block record(s)`);
+        await cacheMetaSet(PROP_META_KEY, JSON.stringify(arr));
+      }
+    }
+    await cacheMetaSet('prop_slow_purged_v2', '1');
+  } catch (e) { console.warn('[read-model] slow-block purge:', e.message ?? e); }
 }
 
 // ============================================================
@@ -1713,7 +1928,7 @@ export function resetReadModel() {
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;
   _bpProducedAt = 0; _bpProduced = 0; _bpInfoWritten = false;
   _ubCurEpoch = null; _ubCurSlots = null; _ubCurCheckedAt = 0; _ubCurFirstTryAt = 0; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
-  _healthAt = 0;
+  _healthAt = 0; _lastSlowBlock = null; _lastPropEpoch = null;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
   _koiosInitInFlight = false; _koiosProbeAt = 0; _koiosUnreachable = false;

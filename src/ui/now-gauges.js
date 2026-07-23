@@ -217,13 +217,19 @@ export function setHourglass(root, id, frac, color) {
   }
 
   // --- Drips: land on top of the (volume-correct) bottom mound while draining.
+  // setHourglass is called every tick, so only rewrite the animation's values
+  // when the landing point actually moved — re-setting the attribute each tick
+  // would restart the SMIL drip and make it stutter.
   if (stream) {
     const draining = (f > 0.001 && f < 0.999);
     stream.style.display = draining ? '' : 'none';
     const land = Math.max(64, botSurf - 5).toFixed(1);
-    stream.querySelectorAll('animate[attributeName="y"]').forEach((a) => {
-      a.setAttribute('values', `58;${land}`);
-    });
+    if (stream.dataset.land !== land) {
+      stream.dataset.land = land;
+      stream.querySelectorAll('animate[attributeName="y"]').forEach((a) => {
+        a.setAttribute('values', `58;${land}`);
+      });
+    }
   }
 
   if (color) {

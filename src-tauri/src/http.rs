@@ -47,3 +47,42 @@ pub async fn koios_http(
     }
     resp.text().await.map_err(|e| e.to_string())
 }
+
+// Telegram Bot API calls for the Alerts feature. The bot token travels as a
+// real HTTPS request from the host (never on a command line, never in the
+// rendered DOM). Unlike koios_http, this returns the body on ANY status so the
+// caller can show Telegram's own error text (e.g. "chat not found",
+// "Unauthorized") in the setup wizard. (telegram-alerts-v75)
+
+/// Call a Telegram Bot API method. `method` is e.g. "sendMessage" or
+/// "getUpdates"; `token` is the bot token; `body` is a JSON string (or None for
+/// GET-style calls like getUpdates). Returns the raw JSON response body
+/// regardless of HTTP status, so the frontend can parse ok/description itself.
+#[tauri::command]
+pub async fn telegram_send(
+    token: String,
+    method: String,
+    body: Option<String>,
+) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("No bot token provided".into());
+    }
+    let url = format!("https://api.telegram.org/bot{token}/{method}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let req = match &body {
+        Some(b) => client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(b.clone()),
+        None => client.get(&url),
+    };
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    // Return the body on any status - Telegram puts {ok:false, description:...}
+    // in the body for errors, which the wizard shows to the user.
+    resp.text().await.map_err(|e| e.to_string())
+}

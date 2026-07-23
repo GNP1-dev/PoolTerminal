@@ -49,6 +49,7 @@ pub fn run() {
             ssh::ssh_is_connected,
             ssh::ssh_forget_host,
             http::koios_http,
+            http::telegram_send,
             ssh::relay_ssh_connect,
             ssh::relay_ssh_run,
             ssh::relay_ssh_disconnect,

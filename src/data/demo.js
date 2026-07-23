@@ -217,6 +217,7 @@ export class DemoDataSource {
 
     const totalBytes = this._mempool.txs.reduce((s, t) => s + t.bytes, 0);
     const recent = this._mempool.txs.slice(-20).reverse();
-    return { txCount: this._mempool.txs.length, totalBytes, recent };
+    // Demo capacity = default 2-block cap (~176 KB), matching a stock node.
+    return { txCount: this._mempool.txs.length, totalBytes, capacityBytes: 180224, recent };
   }
 }

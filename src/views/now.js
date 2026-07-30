@@ -22,6 +22,7 @@ import { renderRelayMap, initRelayMap } from '../ui/relay-map.js';
 import { renderPeersPanel, resetPeersPanel } from '../ui/peers-panel.js';
 import { getNodeProbe } from '../data/session.js';
 import * as readModel from '../data/read-model.js';
+import { getMode } from '../data/index.js';   /*demo-hero-v82*/
 
 const NOW_HTML = `
   <style>
@@ -444,6 +445,18 @@ function fadeOutLoading() {
 // Koios), no extra API call. Updates the hero card when ready.
 export async function refreshLifetimeBlocks() {
   try {
+    // DEMO has no read-model behind it, so both the pool_info path and the
+    // cached-epoch fallback come up empty and the cell sat on its "—" placeholder
+    // for ever. Demo mode is the shop window — a permanently blank hero stat reads
+    // as broken, not as "no data". Synthetic, consistent with the demo pool.
+    // /*demo-hero-v82*/
+    if (getMode() === 'demo') {
+      const el = document.getElementById('hero-blocks-val');
+      const sub = document.getElementById('hero-blocks-sub');
+      if (el) el.textContent = (3_124).toLocaleString();
+      if (sub) sub.textContent = '211 epochs';
+      return;
+    }
     // Authoritative lifetime total from Koios pool_info.block_count (the exact
     // field gLiveView displays) - it counts the current and just-ended epochs,
     // which pool_history excludes. Summing cached epoch rows undercounts those.

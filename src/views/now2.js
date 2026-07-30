@@ -663,7 +663,12 @@ function paintGauges() {
   const oc = root.querySelector('#hero-kes-opcert');
   if (oc) {
     const pr = getNodeProbe() || {};
-    const d = pr.opCertDisk, c = pr.opCertChain;
+    // In DEMO there is no node to probe, so the counters never arrive and the cell
+    // read "querying node…" indefinitely — the one visibly stuck element on an
+    // otherwise live-looking dashboard. Show a healthy synthetic pair instead.
+    // /*demo-hero-v82*/
+    const demo = getMode() === 'demo';
+    const d = demo ? 26 : pr.opCertDisk, c = demo ? 26 : pr.opCertChain;
     const ocv = oc.querySelector('#hero-kes-opcert-val') || oc;
     if (Number.isFinite(d) && Number.isFinite(c)) {
       const ok = (d === c) || (d === c + 1);

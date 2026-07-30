@@ -24,7 +24,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ![PoolTerminal dashboard](docs/screenshot.png)
 
-_The DASHBOARD view: chain pulse, KES, mempool flow, block propagation, upcoming leader slots and a live chain metadata feed. (Node address and peer IPs redacted.)_
+_The DASHBOARD view: chain pulse, the KES hourglass, op-cert counter, mempool flow, block propagation, upcoming leader slots and a live chain metadata feed. Captured in **Demo mode**, so every figure here is synthetic - you can see this exact screen yourself without connecting to a node._
 
 ## What it is
 

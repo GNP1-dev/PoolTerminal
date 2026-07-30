@@ -102,6 +102,7 @@ Relays have their own dedicated **Relay 1 / Relay 2** tabs (see Features) - purp
 - (Optional) `cncli` on the node - some features unlock with cncli data
 - (Optional) **db-sync** for the loyalty leaderboard and gap-free instant history
 - (Optional) a **Blockfrost** project key as an alternative delegator-data source
+- (Optional) a **Telegram bot** (created by you, in two minutes) if you want push alerts - nothing is installed on your block producer for this
 
 ## Platform support
 

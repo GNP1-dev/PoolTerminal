@@ -1,0 +1,35 @@
+name: Feature idea / design feedback
+description: Something you want to see, or something that reads badly.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PoolTerminal is built by one SPO, so other operators will want things I
+        haven't thought of. Design feedback ("this screen confused me") is just as
+        welcome as feature requests.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      validations:
+        required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What would it let you do?
+      description: >
+        The operational problem behind it. Knowing why usually changes what the
+        right answer looks like.
+    validations:
+      required: false
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you handle this today?
+      description: Another tool, a script, a manual check, or not at all.
+    validations:
+      required: false

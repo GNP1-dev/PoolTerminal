@@ -12,7 +12,12 @@
  * condition-checking + firing lives in alerts-engine.js.
  *
  * Telegram calls go through the Rust `telegram_send` command so the bot token
- * travels as a real HTTPS header, never in the rendered DOM or a command line.
+ * travels as a real HTTPS header — never on a command line on the node, and
+ * never in a process list. It IS rendered into the setup field (masked, with an
+ * explicit show/hide) and IS persisted unencrypted via cache_meta_set, because
+ * alerts have to survive a restart; the field carries a note saying so. Its
+ * blast radius is the bot itself — it cannot reach the node, keys or funds.
+ * See SECURITY.md, "What is stored on disk". tg-disclose-v81
  */
 
 import { invoke } from '../data/tauri.js';
@@ -100,6 +105,7 @@ function renderShell(cfg) {
                     <input type="password" class="al-input" id="al-token" placeholder="Bot token" value="${escapeAttr(cfg.telegram?.token || '')}" autocomplete="off" spellcheck="false">
                     <button class="al-btn al-btn-eye" id="al-token-eye" title="Show/hide">show</button>
                   </div>
+                  <div class="al-step-note" title="The token is saved unencrypted in PoolTerminal's local database so alerts keep working after a restart. It controls only the bot you just created - it cannot reach your node, your keys or your funds.">Stored unencrypted on this machine so alerts survive a restart. It controls only this bot &mdash; never your node or keys.</div>
                 </div>
               </div>
               <div class="al-step" data-step="2">
@@ -383,6 +389,9 @@ function styleBlock() {
   .al-step-title { font:700 13.5px ui-sans-serif; color:#dbe6fb; margin-bottom:5px; }
   .al-step-text { font-size:12px; color:#9db0cc; line-height:1.5; margin-bottom:8px; }
   .al-step-text code { background:#0a1018; padding:2px 7px; border-radius:5px; color:#6fb2ff; font-family:ui-monospace,monospace; font-size:11.5px; border:1px solid #24304a; }
+  /* Honest, low-key disclosure at the point the token is entered. Muted so it
+     informs without alarming — the blast radius really is just the bot. tg-disclose-v81 */
+  .al-step-note { font-size:10.5px; color:#7d8ca6; line-height:1.45; margin-top:6px; cursor:help; }
   .al-copy { cursor:pointer; }
   .al-copy:hover { color:#8fd0ff; border-color:#3a5a80; }
 

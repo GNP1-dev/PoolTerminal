@@ -1,0 +1,93 @@
+name: Bug report
+description: Something broke, showed a wrong number, or wouldn't load.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing PoolTerminal. Rough reports are genuinely fine — I would
+        rather hear about it than not. Fill in what you can and skip the rest.
+
+        **Never paste** SSH passwords, key passphrases, API keys, or your Telegram
+        bot token. If a log line contains one, redact it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+      placeholder: The Delegators tab showed 0 delegators, but my pool has 47.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: What were you doing?
+      description: The steps that led to it, if you can retrace them.
+      placeholder: |
+        1. Connected over SSH to my BP
+        2. Opened the Delegators tab
+        3. Waited ~30s
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: PoolTerminal version
+      description: Shown at the bottom of Settings → About.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - AppImage
+        - .deb
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: How does it reach your node?
+      options:
+        - SSH to a remote node
+        - Running directly on the node (local)
+        - Demo mode (no node)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: sources
+    attributes:
+      label: Which data sources are configured?
+      options:
+        - label: Koios (free tier)
+        - label: Koios (API key)
+        - label: db-sync
+        - label: Blockfrost
+
+  - type: input
+    id: distro
+    attributes:
+      label: Desktop OS / distro
+      placeholder: "Ubuntu 24.04"
+    validations:
+      required: false
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Any error text?
+      description: >
+        Anything red in the UI, plus the developer console if you can reach it
+        (right-click → Inspect → Console). Redact hostnames, IPs and keys.
+      render: text
+    validations:
+      required: false

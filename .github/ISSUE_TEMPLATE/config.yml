@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/GNP1-dev/PoolTerminal/blob/main/SECURITY.md
+    about: Please read the security policy first — it covers scope and what to include.
+  - name: Setup help
+    url: https://github.com/GNP1-dev/PoolTerminal/blob/main/README.md#connecting
+    about: Connecting to your node, db-sync, Koios or Blockfrost is documented in the README.

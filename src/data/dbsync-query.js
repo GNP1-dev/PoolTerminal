@@ -272,11 +272,17 @@ export async function getDelegatorList() {
 
   const rows = await pgQuery(_cfg, `
     WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake_progress WHERE completed)   /* newest COMPLETE snapshot, not the future one db-sync pre-fills /*dbsync-epoch-complete-v58*/ */
-    SELECT sa.view AS stake, es.amount::text AS lovelace
+    SELECT sa.view AS stake, es.amount::text AS lovelace, es.epoch_no::text AS epoch
     FROM epoch_stake es
     JOIN stake_address sa ON sa.id = es.addr_id
     WHERE es.epoch_no = (SELECT e FROM cur) AND es.pool_id = ${_poolId}
     ORDER BY es.amount DESC`);
+  // NOTE the basis: this is ACTIVE STAKE at the newest complete epoch snapshot,
+  // not live stake. Koios/Blockfrost serve this same kind from live figures, so
+  // the rows carry `stakeBasis` and the table labels the column accordingly —
+  // otherwise a db-sync install reads a little under an explorer and looks wrong.
+  // Live stake per account needs a UTxO anti-join (~50ms each, ~6s pool-wide), so
+  // it stays on-demand in the per-delegator modal. /*acct-live-v79*/
   return (rows || []).map((r) => {
     const lov = Number(r.lovelace);
     return {
@@ -284,6 +290,8 @@ export async function getDelegatorList() {
       liveStake: lov / 1_000_000,
       liveStakeLovelace: lov,
       isOwner: owners.has(r.stake),
+      stakeBasis: 'snapshot',
+      basisEpoch: numOrNull(r.epoch),
     };
   });
 }
@@ -581,6 +589,46 @@ export async function getMaxDelegationId() {
   return (rows.length && rows[0].m != null) ? Number(rows[0].m) : 0;
 }
 
+/**
+ * Reward lovelace credited to each CURRENT delegator at the boundary into
+ * `epoch` — i.e. rows that become spendable in that epoch, from both `reward`
+ * and `reward_rest`.
+ *
+ * This is the expected size of every delegator's live-stake jump at the roll.
+ * The notifications poller subtracts it so the boundary shift stays quiet
+ * WITHOUT having to blind itself for 20 minutes — which is what used to swallow
+ * an operator's fee-return payout when it landed inside that window.
+ * notif-reward-net-v80
+ *
+ * One query per epoch (~0.5s here, cached by the caller). Returns
+ * Map(stakeAddr -> lovelace); empty map if db-sync hasn't computed the epoch's
+ * rewards yet, which the caller treats as "not ready" rather than "no rewards".
+ */
+export async function getEpochRewardCredits(epoch) {
+  const ep = safeEpoch(epoch);
+  const out = new Map();
+  if (!_ready || !_poolId) return out;
+  const sql = (withRest) => `
+    WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake_progress WHERE completed),
+    d AS (SELECT addr_id FROM epoch_stake WHERE epoch_no = (SELECT e FROM cur) AND pool_id = ${_poolId})
+    SELECT sa.view AS stake, SUM(x.amount)::text AS amount FROM (
+      SELECT r.addr_id, r.amount FROM reward r JOIN d ON d.addr_id = r.addr_id WHERE r.spendable_epoch = ${ep}
+      ${withRest ? `UNION ALL
+      SELECT rr.addr_id, rr.amount FROM reward_rest rr JOIN d ON d.addr_id = rr.addr_id WHERE rr.spendable_epoch = ${ep}` : ''}
+    ) x JOIN stake_address sa ON sa.id = x.addr_id
+    GROUP BY sa.view`;
+  let rows = null;
+  for (const withRest of [true, false]) {          // reward_rest is schema 13.2+
+    try { rows = await pgQuery(_cfg, sql(withRest)); break; }
+    catch (e) { console.warn('[dbsync] epoch reward credits failed:', e.message ?? e); }
+  }
+  for (const r of (rows || [])) {
+    const v = Number(r.amount);
+    if (r.stake && Number.isFinite(v) && v > 0) out.set(r.stake, v);
+  }
+  return out;
+}
+
 // --- On-chain message feed (CIP-20 tx metadata, label 674) ------------------
 // Watermarked by tx_metadata.id so each message surfaces exactly once. Returns
 // the raw text (msg array joined by newlines / string as-is); the DEX-bot
@@ -641,11 +689,79 @@ async function getOurBech32() {
 }
 
 /**
+ * Live account state for one stake credential — the figures an explorer shows
+ * on the account page, which the epoch_stake snapshot alone cannot give:
+ *
+ *   utxo             spendable lovelace in UTxOs controlled by this credential
+ *   rewardsAvailable un-withdrawn reward-account balance (spendable rewards only)
+ *   totalBalance     utxo + rewardsAvailable  (= Koios total_balance; excludes
+ *                    the 2 ₳ key deposit, which the ledger holds separately)
+ *
+ * Three correctness points, all verified against Koios account_info:
+ *  1. Rewards live in TWO tables since db-sync 13.2 — `reward` (member/leader)
+ *     and `reward_rest` (treasury / reserves / proposal refunds). Summing only
+ *     `reward` while `withdrawal` covers BOTH makes rewards−withdrawals go
+ *     negative for any account that ever got a treasury or reserves payout.
+ *  2. A reward row is only withdrawable from `spendable_epoch`, so the balance
+ *     must filter on it — otherwise it overstates for ~2 epochs after payout.
+ *  3. The UTxO set is the tx_out anti-join against tx_in. `consumed_by_tx_id`
+ *     is also tested so the same SQL is right whether or not db-sync runs with
+ *     consumed-tx-out / pruning enabled.
+ * acct-live-v79
+ */
+async function getAccountNow(esc) {
+  const utxoSql = `
+    (SELECT COALESCE(SUM(txo.value),0) FROM tx_out txo
+       LEFT JOIN tx_in ti ON ti.tx_out_id = txo.tx_id AND ti.tx_out_index = txo.index
+      WHERE txo.stake_address_id = (SELECT id FROM a)
+        AND txo.consumed_by_tx_id IS NULL AND ti.tx_in_id IS NULL)::text AS utxo`;
+  const base = `
+    (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a))::text AS rewards,
+    (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a)
+       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rewards_spendable,
+    (SELECT COALESCE(SUM(amount),0) FROM withdrawal WHERE addr_id = (SELECT id FROM a))::text AS withdrawals,
+    (SELECT MIN(epoch_no) FROM epoch_stake WHERE addr_id = (SELECT id FROM a))::text AS since`;
+  const rest = `
+    (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a))::text AS rest,
+    (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a)
+       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rest_spendable`;
+
+  // reward_rest / consumed_by_tx_id are schema-version dependent — degrade to the
+  // narrower query rather than losing the whole account panel on older db-sync.
+  let row = null;
+  for (const sel of [`${utxoSql},${base},${rest}`, `${base},${rest}`, base]) {
+    try {
+      const r = await pgQuery(_cfg, `WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}') SELECT ${sel}`);
+      if (r.length) { row = r[0]; break; }
+    } catch (e) { console.warn('[dbsync] account-now degraded:', e.message ?? e); }
+  }
+  if (!row) return null;
+
+  const n = (v) => (v == null ? 0 : Number(v));
+  const rewardsEarned = n(row.rewards) + n(row.rest);
+  const spendable = n(row.rewards_spendable) + n(row.rest_spendable);
+  const withdrawn = n(row.withdrawals);
+  const utxo = row.utxo != null ? n(row.utxo) : null;
+  const available = Math.max(0, spendable - withdrawn);
+  return {
+    utxo: lovelaceToAda(utxo),
+    rewardsAvailable: lovelaceToAda(available),
+    totalBalance: utxo == null ? null : lovelaceToAda(utxo + available),
+    rewardsEarned: lovelaceToAda(rewardsEarned),
+    withdrawn: lovelaceToAda(withdrawn),
+    pendingRewards: lovelaceToAda(rewardsEarned - spendable),   // earned, not yet spendable
+    sinceEpoch: numOrNull(row.since),
+    asOf: 'live',
+  };
+}
+
+/**
  * DELEGATOR_DETAIL - one-delegator deep-dive, same shape as the Blockfrost
  * provider so the modal is source-agnostic. db-sync is local/instant, so this
  * queries live each open (no API budget to protect). `balance` here is the
  * delegator's active stake at the latest epoch snapshot (db-sync's authoritative
- * figure); rewards/withdrawals are exact from the reward/withdrawal tables.
+ * figure); the live account figures (UTxO + undrawn rewards) come from
+ * getAccountNow and are what an explorer's account page shows.
  */
 async function getDelegatorDetail(stake, _currentEpoch) {
   if (!_ready || !stake) return null;
@@ -665,17 +781,8 @@ async function getDelegatorDetail(stake, _currentEpoch) {
     WHERE sa.view = '${esc}'
     ORDER BY es.epoch_no ASC`);
 
-  // Account totals: rewards earned, withdrawals, first active epoch.
-  let rewards = null, withdrawals = null, sinceEpoch = null;
-  try {
-    const a = await pgQuery(_cfg, `
-      WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}')
-      SELECT
-        (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a))::text AS rewards,
-        (SELECT COALESCE(SUM(amount),0) FROM withdrawal WHERE addr_id = (SELECT id FROM a))::text AS withdrawals,
-        (SELECT MIN(epoch_no) FROM epoch_stake WHERE addr_id = (SELECT id FROM a))::text AS since`);
-    if (a.length) { rewards = a[0].rewards; withdrawals = a[0].withdrawals; sinceEpoch = numOrNull(a[0].since); }
-  } catch (e) { console.warn('[dbsync] detail account query failed:', e.message ?? e); }
+  // Live account state: UTxO, undrawn rewards, lifetime rewards/withdrawals.
+  const acct = await getAccountNow(esc);
 
   // DRep vote delegation (Conway) - defensive: table may be absent on older schema.
   let drepId = null;
@@ -713,16 +820,16 @@ async function getDelegatorDetail(stake, _currentEpoch) {
   if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
   const lastRow = hist.length ? hist[hist.length - 1] : null;
-  const rewardsSum = lovelaceToAda(rewards);
-  const withdrawalsSum = lovelaceToAda(withdrawals);
 
   return {
     stake,
     balance: lastRow ? lovelaceToAda(lastRow.amount) : null,   // active stake @ latest snapshot
-    rewardsSum,
-    withdrawalsSum,
-    withdrawable: (rewardsSum != null && withdrawalsSum != null) ? (rewardsSum - withdrawalsSum) : null,
-    sinceEpoch,
+    snapshotEpoch: lastRow ? Number(lastRow.epoch) : null,
+    rewardsSum: acct ? acct.rewardsEarned : null,
+    withdrawalsSum: acct ? acct.withdrawn : null,
+    withdrawable: acct ? acct.rewardsAvailable : null,
+    account: acct,                                             // live: utxo + undrawn rewards
+    sinceEpoch: acct ? acct.sinceEpoch : null,
     drepId,
     currentPool: lastRow ? lastRow.pool : null,
     cameFrom,
@@ -759,14 +866,21 @@ async function getDelegatorStakeHistory(stake) {
     prev = bal;
   }
 
-  // Intra-epoch events: rewards (in), withdrawals (out), (de)registration.
-  // Exact from dedicated tables — no UTxO reconstruction.
+  // Intra-epoch events: rewards (in), withdrawals (out).
+  // Exact from dedicated tables — no UTxO reconstruction. `reward_rest` carries
+  // treasury / reserves / proposal-refund payouts, which are real credits to the
+  // reward account and were previously missing from this list entirely.
+  // /*acct-live-v79*/
   const events = [];
-  try {
-    const rw = await pgQuery(_cfg, `
+  const restSql = `
+      UNION ALL
+      SELECT rr.type::text AS kind, rr.earned_epoch::text AS epoch, rr.amount::text AS amount, NULL AS txhash
+      FROM reward_rest rr WHERE rr.addr_id = (SELECT id FROM a)`;
+  const evSql = (withRest) => `
       WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}')
+      SELECT * FROM (
       SELECT 'reward' AS kind, r.earned_epoch::text AS epoch, r.amount::text AS amount, NULL AS txhash
-      FROM reward r WHERE r.addr_id = (SELECT id FROM a)
+      FROM reward r WHERE r.addr_id = (SELECT id FROM a)${withRest ? restSql : ''}
       UNION ALL
       SELECT 'withdrawal' AS kind, e.no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
       FROM withdrawal w
@@ -774,19 +888,34 @@ async function getDelegatorStakeHistory(stake) {
       JOIN block b ON b.id = tx.block_id
       JOIN epoch e ON e.no = b.epoch_no
       WHERE w.addr_id = (SELECT id FROM a)
-      ORDER BY epoch ASC`);
-    for (const r of rw) {
-      const amt = lovelaceToAda(r.amount);
-      events.push({
-        epoch: numOrNull(r.epoch),
-        kind: r.kind,
-        amount: r.kind === 'withdrawal' ? (amt == null ? null : -amt) : amt,
-        txHash: r.txhash || null,
-      });
-    }
-  } catch (e) { console.warn('[dbsync] stake-history events failed:', e.message ?? e); }
+      ) ev ORDER BY epoch::bigint ASC`;
+  let rw = null;
+  for (const withRest of [true, false]) {           // reward_rest is schema 13.2+
+    try { rw = await pgQuery(_cfg, evSql(withRest)); break; }
+    catch (e) { console.warn('[dbsync] stake-history events failed:', e.message ?? e); }
+  }
+  for (const r of (rw || [])) {
+    const amt = lovelaceToAda(r.amount);
+    events.push({
+      epoch: numOrNull(r.epoch),
+      kind: r.kind,
+      amount: r.kind === 'withdrawal' ? (amt == null ? null : -amt) : amt,
+      txHash: r.txhash || null,
+    });
+  }
 
-  return { stake, source: 'dbsync', granularity: 'epoch+intra', epochs, events };
+  const account = await getAccountNow(esc);
+  const latest = epochs.length ? epochs[epochs.length - 1] : null;
+  return {
+    stake,
+    source: 'dbsync',
+    granularity: 'epoch+intra',
+    epochs,
+    events,
+    account,                                        // live UTxO + undrawn rewards
+    snapshotEpoch: latest ? latest.epoch : null,
+    snapshotStake: latest ? latest.runningBalance : null,
+  };
 }
 
 export const dbsyncSource = {

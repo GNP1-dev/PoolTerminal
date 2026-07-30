@@ -190,6 +190,29 @@ async function getDelegatorStakeHistory(stake, currentEpoch) {
   return merged;
 }
 
+/**
+ * Live account state from a Blockfrost /accounts row, in the shared shape the
+ * db-sync and Koios providers also emit. Blockfrost's `controlled_amount`
+ * already includes the undrawn reward balance, so UTxO is the difference.
+ * rewards_sum covers pool rewards; reserves_sum/treasury_sum are the MIR-style
+ * credits db-sync keeps in reward_rest. acct-live-v79
+ */
+function accountFromBf(acct) {
+  if (!acct) return null;
+  const n = (v) => (v == null ? 0 : Number(v));
+  const controlled = n(acct.controlled_amount);
+  const available = n(acct.withdrawable_amount);
+  return {
+    utxo: lovelaceToAda(controlled - available),
+    rewardsAvailable: lovelaceToAda(available),
+    totalBalance: lovelaceToAda(controlled),
+    rewardsEarned: lovelaceToAda(n(acct.rewards_sum) + n(acct.reserves_sum) + n(acct.treasury_sum)),
+    withdrawn: lovelaceToAda(n(acct.withdrawals_sum)),
+    pendingRewards: null,
+    asOf: 'live',
+  };
+}
+
 async function getDelegatorDetail(stake, currentEpoch) {
   if (!stake) return null;
   const acct = await bfGet(`/accounts/${stake}`, null);
@@ -230,12 +253,17 @@ async function getDelegatorDetail(stake, currentEpoch) {
   const firstUsIdx = runs.findIndex((r) => r.poolId === _poolBech32);
   if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
+  const lastHist = hist.length ? hist[hist.length - 1] : null;
   return {
     stake,
-    balance: acct ? lovelaceToAda(acct.controlled_amount) : null,
+    // Active stake at the latest snapshot (same basis as db-sync/Koios);
+    // `account` below carries the live figures. /*acct-live-v79*/
+    balance: lastHist ? lovelaceToAda(lastHist.amount) : null,
+    snapshotEpoch: lastHist ? lastHist.epoch : null,
     rewardsSum: acct ? lovelaceToAda(acct.rewards_sum) : null,
     withdrawalsSum: acct ? lovelaceToAda(acct.withdrawals_sum) : null,
     withdrawable: acct ? lovelaceToAda(acct.withdrawable_amount) : null,
+    account: accountFromBf(acct),
     sinceEpoch: acct && acct.active_epoch != null ? Number(acct.active_epoch) : null,
     drepId: acct ? acct.drep_id : null,
     currentPool: acct ? acct.pool_id : null,
@@ -656,10 +684,15 @@ async function getDelegatorListLive() {
 }
 
 /** DELEGATOR_STAKE_HISTORY - per-epoch active-stake series, reshaped from the
- *  internal cache-aware fetch. Epoch-grained (no intra-epoch events). */
+ *  internal cache-aware fetch, plus the live account state (UTxO + undrawn
+ *  rewards) so the modal reconciles against an explorer. Epoch-grained (no
+ *  intra-epoch events). acct-live-v79 */
 async function getStakeHistoryDetail(stake, currentEpoch) {
   if (!stake) return null;
-  const hist = await getDelegatorStakeHistory(stake, currentEpoch);   // [{epoch, poolId, amount}]
+  const [hist, acct] = await Promise.all([
+    getDelegatorStakeHistory(stake, currentEpoch),                    // [{epoch, poolId, amount}]
+    bfGet(`/accounts/${stake}`, null),
+  ]);
   const rows = Array.isArray(hist) ? hist.slice().sort((a, b) => a.epoch - b.epoch) : [];
   const epochs = [];
   let prev = null;
@@ -669,7 +702,17 @@ async function getStakeHistoryDetail(stake, currentEpoch) {
     epochs.push({ epoch: r.epoch, stake: bal, delta, runningBalance: bal });
     prev = bal;
   }
-  return { stake, source: 'blockfrost', granularity: 'epoch', epochs, events: [] };
+  const latest = epochs.length ? epochs[epochs.length - 1] : null;
+  return {
+    stake,
+    source: 'blockfrost',
+    granularity: 'epoch',
+    epochs,
+    events: [],
+    account: accountFromBf(acct),
+    snapshotEpoch: latest ? latest.epoch : null,
+    snapshotStake: latest ? latest.runningBalance : null,
+  };
 }
 
 export const blockfrostSource = {

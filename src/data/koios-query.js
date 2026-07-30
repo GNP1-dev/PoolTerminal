@@ -628,6 +628,28 @@ let _liveBech32 = null;
 let _liveReady = false;
 
 /**
+ * Live account state from a Koios account_info row, in the shared shape the
+ * db-sync and Blockfrost providers also emit:
+ *   utxo + rewardsAvailable = totalBalance (Koios excludes the 2 ₳ key deposit).
+ * Koios `rewards` already covers member/leader AND treasury/reserves payouts.
+ * acct-live-v79
+ */
+function accountFromInfo(info) {
+  if (!info) return null;
+  const toAda = (v) => (v == null ? null : Number(v) / 1e6);
+  return {
+    utxo: toAda(info.utxo),
+    rewardsAvailable: toAda(info.rewards_available),
+    totalBalance: toAda(info.total_balance),
+    rewardsEarned: toAda(info.rewards),
+    withdrawn: toAda(info.withdrawals),
+    pendingRewards: null,          // Koios folds pending into `rewards`
+    deposit: toAda(info.deposit),
+    asOf: 'live',
+  };
+}
+
+/**
  * DELEGATOR_DETAIL - one-delegator deep-dive from Koios (account_info +
  * account_history), same shape as the db-sync/Blockfrost providers so the modal
  * is source-agnostic. ~2 calls, on demand.
@@ -670,12 +692,18 @@ export async function getDelegatorDetail(stake, _currentEpoch) {
   const firstUsIdx = runs.findIndex((r) => r.poolId === _liveBech32);
   if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
+  const lastHist = hist.length ? hist[hist.length - 1] : null;
   return {
     stake,
-    balance: info ? toAda(info.total_balance) : null,
+    // Active stake at the latest snapshot — the same basis as the db-sync and
+    // Blockfrost providers. account.totalBalance below is the LIVE figure
+    // (UTxO + undrawn rewards) an explorer shows. /*acct-live-v79*/
+    balance: lastHist && lastHist.active_stake != null ? toAda(lastHist.active_stake) : null,
+    snapshotEpoch: lastHist ? lastHist.epoch_no : null,
     rewardsSum: info ? toAda(info.rewards) : null,
     withdrawalsSum: info ? toAda(info.withdrawals) : null,
     withdrawable: info ? toAda(info.rewards_available) : null,
+    account: accountFromInfo(info),
     sinceEpoch: hist.length ? hist[0].epoch_no : (info && info.active_epoch_no != null ? Number(info.active_epoch_no) : null),
     drepId: info ? (info.delegated_drep || null) : null,
     currentPool: info ? (info.delegated_pool || null) : null,
@@ -686,7 +714,10 @@ export async function getDelegatorDetail(stake, _currentEpoch) {
 
 /**
  * DELEGATOR_STAKE_HISTORY - per-epoch active-stake series from Koios
- * account_history (epoch-grained; no intra-epoch events). One POST.
+ * account_history, plus the LIVE account state from account_info (UTxO +
+ * undrawn rewards) so the modal can reconcile the snapshot series against what
+ * an explorer shows right now. Epoch-grained; no intra-epoch events. Two POSTs,
+ * on demand. acct-live-v79
  */
 export async function getDelegatorStakeHistory(stake) {
   if (!stake) return null;
@@ -700,6 +731,14 @@ export async function getDelegatorStakeHistory(stake) {
   } catch (e) { console.warn('[koios] stake-history account_history failed:', e.message); }
   hist.sort((a, b) => (a.epoch_no || 0) - (b.epoch_no || 0));   // oldest first
 
+  let info = null;
+  try {
+    const r = await runCmd(`curl -sf --max-time ${ACCOUNT_INFO_MAX_TIME} -X POST '${KOIOS_BASE}/account_info' ` +
+      `-H 'content-type: application/json' -d '${shellEscape(body)}'`);
+    const arr = parseJson(r, []);
+    if (Array.isArray(arr) && arr.length) info = arr[0];
+  } catch (e) { console.warn('[koios] stake-history account_info failed:', e.message); }
+
   const epochs = [];
   let prev = null;
   for (const h of hist) {
@@ -708,7 +747,17 @@ export async function getDelegatorStakeHistory(stake) {
     epochs.push({ epoch: h.epoch_no, stake: bal, delta, runningBalance: bal });
     prev = bal;
   }
-  return { stake, source: 'koios', granularity: 'epoch', epochs, events: [] };
+  const latest = epochs.length ? epochs[epochs.length - 1] : null;
+  return {
+    stake,
+    source: 'koios',
+    granularity: 'epoch',
+    epochs,
+    events: [],
+    account: accountFromInfo(info),
+    snapshotEpoch: latest ? latest.epoch : null,
+    snapshotStake: latest ? latest.runningBalance : null,
+  };
 }
 
 export const koiosLiveDelegatorsSource = {

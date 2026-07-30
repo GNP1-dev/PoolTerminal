@@ -127,6 +127,20 @@ const DELEGATORS_HTML = `
     .sh-dn { color: #e8615d; }
     .sh-d0 { color: var(--pt-text-muted, #97A0B0); }
     .sh-tx { color: var(--pt-accent-blue, #4a9eff); cursor: help; }
+    /* Live account panel — reconciles the epoch snapshots against what an
+       explorer shows right now (UTxO + undrawn rewards). acct-live-v79 */
+    .sh-acct { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 10px; }
+    @media (max-width: 720px) { .sh-acct { grid-template-columns: repeat(2, 1fr); } }
+    .sh-acell { background: var(--pt-bg-strip); border: 0.5px solid var(--pt-border); border-radius: 7px; padding: 8px 10px; }
+    .sh-acell.tot { border-color: rgba(123,176,245,0.55); }
+    .sh-acell .l { font: 500 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.5px; color: var(--pt-text-muted); }
+    .sh-acell .v { font: 600 15px ui-monospace, monospace; color: var(--pt-text-primary); margin-top: 3px; }
+    .sh-acell.tot .v { color: var(--pt-accent-blue-bright, #7BB0F5); }
+    .sh-acell.rew .v { color: var(--pt-accent-gold, #d6b246); }
+    .sh-acell .v .u { font-size: 10px; color: var(--pt-text-muted); margin-left: 2px; }
+    .sh-recon { font: 400 11px ui-monospace, monospace; line-height: 1.5; color: var(--pt-text-secondary, #C4CCD8);
+      background: var(--pt-bg-strip); border: 0.5px solid var(--pt-border); border-radius: 6px; padding: 9px 11px; margin-bottom: 12px; }
+    .sh-recon b { color: var(--pt-text-primary); font-weight: 700; }
     .dd-modal { background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border, #2b3440); border-radius: 10px;
       width: min(880px, 94vw); max-height: 88vh; overflow: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.6); }
     .dd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
@@ -249,6 +263,8 @@ const DELEGATORS_HTML = `
     .du-pen { font: 600 10px ui-monospace, monospace; text-align: right; white-space: nowrap; }
     .du-pen .ok { color: #4ea36a; } .du-pen .bad { color: #ff8a8a; } .du-pen .warn { color: #e0b860; } .du-pen .dim { color: var(--pt-text-muted); }
     .du-stake { font: 700 11px ui-monospace, monospace; color: var(--pt-text-primary); text-align: right; }
+    .du-basis { display: block; font: 400 8px ui-monospace, monospace; color: var(--pt-text-muted, #97A0B0);
+      letter-spacing: 0.3px; text-transform: none; cursor: help; }   /*acct-live-v79*/
     .du-pct { font: 500 10px ui-monospace, monospace; color: var(--pt-accent-blue); text-align: right; }
     .du-pagebar { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 10px; }
     .du-pagebtn { background: var(--pt-bg-strip); color: var(--pt-accent-blue); border: 0.5px solid var(--pt-border);
@@ -467,6 +483,48 @@ function _shDelta(n) {
   return '<span class="sh-d0">0</span>';
 }
 
+/* Live account panel for the stake-history modal.
+ *
+ * The per-epoch series is ACTIVE STAKE — a ledger snapshot taken at an epoch
+ * boundary. An explorer's account page shows the LIVE balance: spendable UTxO
+ * plus the un-withdrawn reward account. Those two differ by whatever moved
+ * since the snapshot, which is why the tool used to read a little under
+ * Cardanoscan. Show both, with the arithmetic spelled out, so the numbers can
+ * be reconciled instead of second-guessed. acct-live-v79
+ */
+function _shAccountHtml(data) {
+  const a = data && data.account;
+  if (!a) return '';
+  const cell = (cls, label, val, tip) =>
+    `<div class="sh-acell ${cls}" title="${esc(tip)}"><div class="l">${label}</div>` +
+    `<div class="v">${_shAda(val)}<span class="u">₳</span></div></div>`;
+
+  const cells = [
+    cell('tot', 'Total balance', a.totalBalance,
+      'Live controlled balance = spendable UTxO + undrawn rewards. This is the figure an explorer (Cardanoscan, cexplorer) shows for the account. Excludes the 2 ₳ stake-key deposit.'),
+    cell('', 'UTxO', a.utxo, 'Spendable lovelace sitting in UTxOs controlled by this stake credential, right now.'),
+    cell('rew', 'Undrawn rewards', a.rewardsAvailable,
+      'Rewards earned and not yet withdrawn. They sit in the reward account, are withdrawable at any time, and re-stake automatically each epoch.'),
+    cell('', 'Rewards earned', a.rewardsEarned,
+      'Lifetime rewards credited to this account across all pools — pool rewards plus any treasury / reserves payouts.'),
+    cell('', 'Withdrawn', a.withdrawn, 'Lifetime total moved out of the reward account into spendable balance.'),
+  ].join('');
+
+  // Reconciliation: snapshot vs live, with the gap named rather than hidden.
+  let recon = '';
+  const snap = data.snapshotStake;
+  const ep = data.snapshotEpoch;
+  if (snap != null && a.totalBalance != null) {
+    const gap = a.totalBalance - snap;
+    const gapTxt = `${gap >= 0 ? '+' : '−'}${_shAda(Math.abs(gap))} ₳`;
+    recon = `<div class="sh-recon">Active stake at epoch <b>${ep}</b> was <b>${_shAda(snap)} ₳</b>; the live balance is
+      <b>${_shAda(a.totalBalance)} ₳</b> (<b>${gapTxt}</b>). The snapshot is frozen at the epoch boundary, so rewards paid
+      and coins moved since then only appear in the live figure — and land in active stake about two epochs later.
+      ${a.pendingRewards ? `Of the rewards earned, <b>${_shAda(a.pendingRewards)} ₳</b> is not yet withdrawable (spendable two epochs after it was earned).` : ''}</div>`;
+  }
+  return `<div class="sh-acct">${cells}</div>${recon}`;
+}
+
 async function openStakeHistory(stake) {
   shShell(stake);
   let data = null;
@@ -506,6 +564,9 @@ async function openStakeHistory(stake) {
     const evRows = evs.map((v) => {
       const label = v.kind === 'reward' ? 'reward in'
         : v.kind === 'withdrawal' ? 'withdrawal out'
+        : v.kind === 'treasury' ? 'treasury payout in'
+        : v.kind === 'reserves' ? 'reserves payout in'
+        : v.kind === 'proposal_refund' ? 'proposal refund in'
         : v.kind;
       const amt = v.amount == null ? '\u2014'
         : (v.amount > 0 ? `<span class="sh-up">+${_shAda(v.amount)}</span>`
@@ -533,6 +594,7 @@ async function openStakeHistory(stake) {
 
   body.innerHTML = `
     <div class="sh-src">Source: <strong>${src}</strong> \u00b7 ${grain}${note}</div>
+    ${_shAccountHtml(data)}
     <div class="sh-tabs">
       <button class="sh-tab sh-tab-on" type="button" data-shtab="stake">Active stake</button>
       ${moveTabBtn}
@@ -669,8 +731,10 @@ async function openDeepDive(stake) {
 
   body.innerHTML = `
     <div class="dd-stats">
-      <div class="dd-stat" title="Total delegated stake at the latest epoch snapshot. Includes un-withdrawn rewards, which stake automatically each epoch. This is a per-epoch snapshot, not a live figure."><div class="l">Active stake<span class="l-sub">(incl. undrawn rewards)</span></div><div class="v">${fmt(detail.balance)}<span class="u">\u20b3</span></div></div>
-      <div class="dd-stat" title="Lifetime total rewards ever earned by this stake account, across all pools."><div class="l">Rewards earned</div><div class="v">${fmt(detail.rewardsSum)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Total delegated stake at the epoch snapshot${detail.snapshotEpoch != null ? ` (epoch ${detail.snapshotEpoch})` : ''}. Includes un-withdrawn rewards as at that boundary, which stake automatically each epoch. Frozen at the boundary \u2014 see Live balance for the current figure."><div class="l">Active stake<span class="l-sub">${detail.snapshotEpoch != null ? `(snapshot, ep ${detail.snapshotEpoch})` : '(epoch snapshot)'}</span></div><div class="v">${fmt(detail.balance)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Live controlled balance right now: spendable UTxO plus the undrawn reward account. This is what an explorer shows for the account (the 2 \u20b3 key deposit is excluded)."><div class="l">Live balance<span class="l-sub">(UTxO + undrawn)</span></div><div class="v">${fmt(detail.account ? detail.account.totalBalance : null)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Rewards earned and not yet withdrawn. They sit in the reward account and re-stake automatically each epoch."><div class="l">Undrawn rewards</div><div class="v">${fmt(detail.withdrawable)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="Lifetime total rewards ever credited to this stake account across all pools \u2014 pool rewards plus any treasury / reserves payouts."><div class="l">Rewards earned</div><div class="v">${fmt(detail.rewardsSum)}<span class="u">\u20b3</span></div></div>
       <div class="dd-stat" title="Lifetime total withdrawn from the reward account to spendable balance."><div class="l">Withdrawn</div><div class="v">${fmt(detail.withdrawalsSum)}<span class="u">\u20b3</span></div></div>
       <div class="dd-stat" title="The first epoch this account appears with active stake anywhere on-chain - not necessarily when they joined your pool."><div class="l">First staked</div><div class="v">${detail.sinceEpoch ?? '\u2014'}</div></div>
       ${drepBox}
@@ -811,7 +875,7 @@ function unifiedRowHtml(r, idx, totalStakeLov, ownerSet) {
     <span class="du-num" title="${tipTen}">${hasLoy ? tenureLabel(r.tenure) : '\u2014'}</span>
     <span class="du-num dim" title="${tipStk}">${hasLoy ? stakeWeightPct + '%' : '\u2014'}</span>
     <span class="du-pen">${penCell}</span>
-    <span class="du-stake" title="Current live stake">${fmtStakeShort(r.liveStake)} \u20b3</span>
+    <span class="du-stake" title="${r.stakeBasis === 'snapshot' ? `Active stake at the epoch ${r.basisEpoch ?? '?'} snapshot. Open Stake history for the live balance (UTxO + undrawn rewards).` : 'Current live stake (UTxO + undrawn rewards)'}">${fmtStakeShort(r.liveStake)} \u20b3</span>
     <span class="du-pct">${pct.toFixed(2)}%</span>
     <span class="du-actions"><button class="du-actbtn du-deleg" type="button" data-stake="${r.stake}" title="Delegation history (pool movements)">Deleg</button><button class="du-actbtn du-stakehist" type="button" data-stake="${r.stake}" title="Stake history (per-epoch balance)">Stake</button></span>
   </div>`;
@@ -845,6 +909,15 @@ function renderUnified() {
   const who = registry.describe(DataKind.DELEGATOR_LIST);
   setText('d-meta', `${view.length} shown${hidden ? ` \u00b7 ${hidden} dust hidden` : ''} \u00b7 sorted by ${_duSort} \u00b7 source: ${who?.name ?? '\u2014'}`);
 
+  // The stake column's BASIS differs by source: db-sync serves active stake at
+  // the newest epoch snapshot, Koios/Blockfrost serve live stake. Label what it
+  // actually is \u2014 an unqualified "live stake" that lags an explorer reads as a
+  // bug. Per-account live figures are in the Stake modal. /*acct-live-v79*/
+  const snapRow = _duRows.find((r) => r.stakeBasis === 'snapshot');
+  const stakeCol = snapRow
+    ? `active stake<span class="du-basis" title="Active stake at the epoch ${snapRow.basisEpoch ?? '?'} snapshot \u2014 frozen at the epoch boundary, so it reads slightly under an explorer's live balance. Open a delegator's Stake history for the live UTxO + undrawn rewards.">ep ${snapRow.basisEpoch ?? '?'}</span>`
+    : 'live stake';
+
   const head = `<div class="du-row head">
     <span class="du-rank">#</span><span>Stake address</span>
     <span>Loyalty&nbsp;&nbsp;<span style="color:#4a9eff">tenure</span> + <span style="color:#d6b246">stake</span></span>
@@ -852,7 +925,7 @@ function renderUnified() {
     <span class="du-num">tenure</span>
     <span class="du-num">wt</span>
     <span class="du-pen">penalties</span>
-    <span class="du-stake">live stake</span>
+    <span class="du-stake">${stakeCol}</span>
     <span class="du-pct">% pool</span>
     <span class="du-actions">history</span>
   </div>`;

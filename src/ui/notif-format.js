@@ -61,7 +61,7 @@ export function formatNotifEvent(ev, ownTicker) {
 
     case 'stake_up':
       return { icon: '🔼', title: 'Stake added', tone: 'pos',
-               line: `${who} · +${fmtAda(Math.abs(d.delta))} → ${amt} · ${own}` };
+               line: `${who} · +${fmtAda(Math.abs(d.delta))}${d.rewardNetted ? ' (excl. epoch reward)' : ''} → ${amt} · ${own}` };
 
     case 'stake_down':
       return { icon: '🔽', title: 'Stake reduced', tone: 'neg',

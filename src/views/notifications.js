@@ -131,7 +131,9 @@ function flowHtml(ev) {
     case 'stake_up':
     case 'stake_down': {
       const after = Number(d.amount || 0);
-      const before = after - Number(d.delta || 0);
+      // `delta` is net of any epoch-boundary reward credit, so the true prior
+      // balance has to add that back. /*notif-reward-net-v80*/
+      const before = after - Number(d.delta || 0) - Number(d.rewardNetted || 0);
       return `<span class="nf-bal">${esc(fmtAda(before))}</span>${conn}` +
              `<span class="nf-bal nf-bal-after">${esc(fmtAda(after))}</span>`;
     }
@@ -154,7 +156,7 @@ function amountHtml(ev) {
              `<div class="nf-amt-sub">returning</div>`;
     case 'stake_up':
       return `<div class="nf-amt-main">+${esc(fmtAda(Math.abs(d.delta)))}</div>` +
-             `<div class="nf-amt-sub">now ${esc(fmtAda(d.amount))}</div>`;
+             `<div class="nf-amt-sub"${d.rewardNetted ? ` title="Epoch reward of ${esc(fmtAda(d.rewardNetted))} credited at the boundary has been netted out \u2014 this is the movement on top of it."` : ''}>now ${esc(fmtAda(d.amount))}${d.rewardNetted ? ' \u00b7 excl. reward' : ''}</div>`;
     case 'stake_down':
       return `<div class="nf-amt-main">\u2212${esc(fmtAda(Math.abs(d.delta)))}</div>` +
              `<div class="nf-amt-sub">now ${esc(fmtAda(d.amount))}</div>`;

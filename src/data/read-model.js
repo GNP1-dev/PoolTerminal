@@ -1583,7 +1583,47 @@ let _notifInFlight = false;
 let _notifArmed = false;
 const NOTIF_STAKE_SETTLE_MS = 20 * 60 * 1000;   // pause stake-change events for 20 min into a new epoch /*notif-epoch-guard-v57*/
 let _notifStakeSettleUntil = 0;
+// Epoch-boundary reward netting. The blanket 20-minute pause above was blind:
+// anything that moved inside the window was suppressed AND re-baselined, so a
+// real payment landing just after the roll (an operator paying fees back, say)
+// was lost for good rather than delayed. When db-sync can tell us what each
+// delegator was credited at the boundary, we subtract that instead of going
+// blind — the reward bump nets to ~0 and anything on top still fires.
+// /*notif-reward-net-v80*/
+let _notifCreditEpoch = null;    // epoch _notifCredits belongs to
+let _notifCredits = null;        // Map(stake -> lovelace credited at that boundary)
+let _notifCreditsReady = false;  // map successfully built for _notifCreditEpoch
+let _notifHeld = new Set();      // stakes whose baseline is deliberately NOT advanced yet
 const _tickerCache = new Map();   // poolBech32 -> ticker|null, session-lived (tickers rarely change)
+
+/**
+ * Decide what one delegator's balance move means across an epoch roll. Pure —
+ * all the boundary reasoning lives here so it can be read (and reasoned about)
+ * in one place. notif-reward-net-v80
+ *
+ *   'skip'   suppress, advance the baseline  (legacy pause: no reward data)
+ *   'hold'   suppress, DON'T advance the baseline — re-decide next poll
+ *   'absorb' no event, advance the baseline  (move too small, or purely reward)
+ *   'emit'   fire stake_up/stake_down for `net`
+ *
+ * `credit` is what this account was credited at the boundary; a live-stake jump
+ * of exactly that size is the reward landing, not a movement worth reporting.
+ * A jump SMALLER than the credit means the reward is still landing in the live
+ * figure, so we hold rather than report a phantom part-move.
+ */
+function classifyStakeMove({ delta, credit, haveCredits, pending, settling, threshold }) {
+  if (pending && !haveCredits) return { action: 'skip', net: 0, credit: 0 };
+  const c = credit || 0;
+  // INSIDE the window we can afford to wait: a rise smaller than the credit is a
+  // reward still landing, and a fall can't be a credit at all.
+  if (settling && delta > 0 && c > 0 && delta < c) return { action: 'hold', net: 0, credit: c };
+  if (settling && delta < 0) return { action: 'hold', net: 0, credit: c };
+  // PAST the window every hold must resolve, or an account whose live stake never
+  // rises by the full credit (they spent as the reward landed) would be held for
+  // ever. Clamp at zero so a part-landed reward can't read as a stake decrease.
+  const net = (c > 0 && delta > 0) ? Math.max(0, delta - c) : delta;
+  return { action: Math.abs(net) >= threshold ? 'emit' : 'absorb', net, credit: c };
+}
 
 /** Resolve pool ids to tickers, fetching only the ones we haven't seen this
  *  session. Returns Map(id -> ticker|null). Failures leave the id unresolved
@@ -1712,9 +1752,35 @@ export async function refreshNotifications(currentEpoch) {
     if (currentEpoch && currentEpoch !== _lastEp) {
       await cacheMetaSet(_epKey, String(currentEpoch));
       _notifStakeSettleUntil = now + NOTIF_STAKE_SETTLE_MS;
-      console.log(`[notif] epoch ${currentEpoch}: pausing stake-change detection to absorb the boundary shift`);
+      _notifHeld = new Set();
+      _notifCreditsReady = false;
+      console.log(`[notif] epoch ${currentEpoch}: absorbing the boundary shift`);
     }
     const stakeSettling = now < _notifStakeSettleUntil;
+
+    // Boundary reward credits — what each delegator's live stake is EXPECTED to
+    // jump by at this roll. Fetched once per epoch (retried while db-sync is
+    // still calculating rewards) and used to net the shift out instead of
+    // suppressing everything blind. /*notif-reward-net-v80*/
+    const boundaryActive = stakeSettling || _notifHeld.size > 0;
+    if (boundaryActive && currentEpoch && dbsync.dbsyncSource.reachable()
+        && (_notifCreditEpoch !== currentEpoch || !_notifCreditsReady)) {
+      try {
+        const m = await dbsync.getEpochRewardCredits(currentEpoch);
+        if (m && m.size) {
+          _notifCredits = m; _notifCreditEpoch = currentEpoch; _notifCreditsReady = true;
+          console.log(`[notif] epoch ${currentEpoch}: netting boundary rewards for ${m.size} delegators`);
+        }
+      } catch (e) { console.warn('[notif] reward-credit fetch failed:', e.message ?? e); }
+    }
+    // Only trust the map for the epoch it was built for. Entries are CONSUMED as
+    // each account's baseline absorbs its credit, so the map empties as the roll
+    // settles — `_notifCreditsReady`, not map size, is what says "we have reward
+    // data for this epoch". An empty-but-ready map means every credit has landed
+    // and detection is fully live again. null = no data → legacy blanket pause
+    // (Koios-only installs, or db-sync hasn't calculated rewards yet).
+    const credits = (_notifCreditEpoch === currentEpoch && _notifCreditsReady) ? _notifCredits : null;
+    const heldNow = new Set();
 
     // --- Instant joins from db-sync (when available) -------------------------
     // db-sync records each delegation cert the moment it lands in a block, so
@@ -1771,11 +1837,28 @@ export async function refreshNotifications(currentEpoch) {
         // New in the Koios set. If db-sync is catching joins, this is just the
         // boundary catch-up of a join already emitted — absorb silently.
         if (!dbsyncJoinsActive) joins.push({ stake: d.stake, amount: lov });
-      } else if (!stakeSettling) {
+      } else {
         const delta = lov - Number(before.lovelace || 0);
-        if (Math.abs(delta) >= getNotifThresholdLovelace()) {
-          stakeEvents.push({ type: delta > 0 ? 'stake_up' : 'stake_down', stake: d.stake,
-                        detail: { amount: lov, delta, epoch: currentEpoch ?? null } });
+        // "Pending" = this account's baseline predates the epoch roll, either
+        // because we're inside the settling window or because we held it.
+        const pending = stakeSettling || _notifHeld.has(d.stake);
+        const m = classifyStakeMove({
+          delta,
+          credit: (credits && pending) ? (credits.get(d.stake) || 0) : 0,
+          haveCredits: !!credits,
+          pending,
+          settling: stakeSettling,
+          threshold: getNotifThresholdLovelace(),
+        });
+        if (m.action === 'hold') { heldNow.add(d.stake); continue; }
+        if (m.action === 'skip') continue;
+        // Baseline is about to absorb the credit, so spend it — netting the same
+        // credit again on a later poll would hide the next real movement.
+        if (m.credit > 0 && credits) credits.delete(d.stake);
+        if (m.action === 'emit') {
+          const detail = { amount: lov, delta: m.net, epoch: currentEpoch ?? null };
+          if (m.credit > 0) detail.rewardNetted = m.credit;   // shown as "excl. epoch reward"
+          stakeEvents.push({ type: m.net > 0 ? 'stake_up' : 'stake_down', stake: d.stake, detail });
         }
       }
     }
@@ -1887,7 +1970,19 @@ export async function refreshNotifications(currentEpoch) {
         }
       } catch (e) { /* non-fatal: feed is still persisted */ }
     }
-    await cachePutNotifSnapshot(curRows);   // advance the baseline
+    // Advance the baseline — EXCEPT for held accounts, which keep their
+    // pre-boundary value so a change we deliberately didn't emit yet is still
+    // measurable next poll. Advancing them was the bug: the 20-minute pause
+    // suppressed the event and re-baselined in the same breath, so a payment
+    // landing inside the window could never be reported. /*notif-reward-net-v80*/
+    _notifHeld = heldNow;
+    const rowsToWrite = heldNow.size
+      ? curRows.map((r) => (heldNow.has(r.stake) && prev.has(r.stake)
+          ? { ...r, lovelace: Number(prev.get(r.stake).lovelace || 0) }
+          : r))
+      : curRows;
+    if (heldNow.size) console.log(`[notif] holding ${heldNow.size} baselines across the boundary`);
+    await cachePutNotifSnapshot(rowsToWrite);
   } catch (e) {
     console.warn('[notif] refresh failed:', e.message ?? e);
   } finally {
@@ -1937,6 +2032,8 @@ export function resetReadModel() {
   _dbsyncIdealDone = false; _dbsyncIdealInFlight = false;
   dbsync.resetDbsync();
   _notifAt = 0; _notifInFlight = false; _notifArmed = false;
+  _notifStakeSettleUntil = 0; _notifHeld = new Set();
+  _notifCreditEpoch = null; _notifCredits = null; _notifCreditsReady = false;   /*notif-reward-net-v80*/
   _tickerCache.clear();
   koios.resetKoiosLiveDelegators();
 }

@@ -84,6 +84,13 @@ export class DemoDataSource {
       blockProduction: {
         leader, ideal: Math.round(ideal * 10) / 10, luckPercent,
         adopted, confirmed: adopted, lost: 0,
+        // The block-box spinner lifts on leaderKnown, which the LIVE path sets
+        // once the leadership schedule has actually been read from the node.
+        // Demo has a real (synthetic) schedule behind these figures, but omitted
+        // the flag - so the panel sat on "Waiting for block data" until the 100s
+        // safety timeout, then revealed values it had held all along. Same class
+        // as the BLOCKS/OPCERT cells. /*demo-hero-v82*/
+        leaderKnown: true,
       },
       poolPulse: {
         score: pulseScore, delta: 2,

@@ -40,7 +40,14 @@ export const DataKind = Object.freeze({
   DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators: [{ stake, liveStake, stakeBasis:'snapshot'|undefined, basisEpoch }] — db-sync serves the epoch_stake snapshot, Koios/Blockfrost serve live stake, so rows declare their basis
   DELEGATOR_LIST_LIVE: 'DELEGATOR_LIST_LIVE', // live delegators, intra-epoch: [{ stake, liveStake, liveStakeLovelace, latestDelegTx, activeEpochNo }]
   DELEGATOR_DETAIL: 'DELEGATOR_DETAIL', // one delegator: snapshot balance + live `account` (utxo, rewardsAvailable, totalBalance), rewards, tenure, drep, pool trail
-  DELEGATOR_STAKE_HISTORY: 'DELEGATOR_STAKE_HISTORY', // one delegator: per-epoch active-stake series + live `account` block (+ intra-epoch reward/withdrawal detail on db-sync)
+  // NOTE on epoch labelling for both kinds above and below: every source labels
+  // a stake snapshot with the epoch it becomes ACTIVE in, and a snapshot is
+  // fixed a whole epoch before it takes effect — so mid-epoch-N the newest row a
+  // source can serve is N+1. Providers therefore split the series at the tip:
+  // snapshotEpoch/snapshotStake = in force now, nextEpoch/nextStake = taken but
+  // not yet started. Callers must never render "newest row" as "now".
+  // /*next-epoch-snap-v80*/
+  DELEGATOR_STAKE_HISTORY: 'DELEGATOR_STAKE_HISTORY', // one delegator: per-epoch active-stake series + live `account` block + snapshotEpoch/nextEpoch split (+ on db-sync: `events` rewards/withdrawals and `transfers`, the per-tx ADA in/out that explains a balance change — see utxo-moves-v81)
   DELEGATOR_LOYALTY: 'DELEGATOR_LOYALTY', // tenure leaderboard: [{ stake, tenure, sinceEpoch }]
   POOL_LIFECYCLE: 'POOL_LIFECYCLE',     // registration / metadata / retirement history
 });

@@ -123,6 +123,18 @@ const DELEGATORS_HTML = `
     .sh-table .sh-ep { color: var(--pt-text-secondary, #C4CCD8); }
     .sh-table .sh-bal { text-align: right; }
     .sh-table .sh-delta { text-align: right; }
+    /* A snapshot for an epoch that has not started yet — real, already fixed on
+       chain, but not in force. Never render it as if it were today. next-epoch-snap-v80 */
+    .sh-table tr.sh-future td { color: var(--pt-text-muted, #97A0B0); background: rgba(123,176,245,0.06); }
+    .sh-next { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 3px; cursor: help;
+      font: 600 9px ui-monospace, monospace; letter-spacing: 0.4px; text-transform: uppercase;
+      color: var(--pt-accent-blue-bright, #7BB0F5); border: 0.5px solid rgba(123,176,245,0.45); }
+    /* Net moved this epoch + which snapshot it lands in — the line that ties a
+       balance-change notification to the Active stake table. utxo-moves-v81 */
+    .sh-net { font: 400 11px ui-monospace, monospace; line-height: 1.5; color: var(--pt-text-secondary, #C4CCD8);
+      background: var(--pt-bg-strip); border: 0.5px solid rgba(123,176,245,0.45); border-radius: 6px;
+      padding: 8px 11px; margin-bottom: 10px; }
+    .sh-net b { color: var(--pt-text-primary); font-weight: 700; }
     .sh-up { color: #46c46a; }
     .sh-dn { color: #e8615d; }
     .sh-d0 { color: var(--pt-text-muted, #97A0B0); }
@@ -511,16 +523,30 @@ function _shAccountHtml(data) {
   ].join('');
 
   // Reconciliation: snapshot vs live, with the gap named rather than hidden.
+  // `snapshotEpoch` is the newest snapshot AT OR BELOW the tip — the one that is
+  // actually in force. Sources also serve the next epoch's snapshot (already
+  // taken at the previous boundary), which is reported separately so a
+  // not-yet-started epoch is never described in the past tense. next-epoch-snap-v80
   let recon = '';
   const snap = data.snapshotStake;
   const ep = data.snapshotEpoch;
   if (snap != null && a.totalBalance != null) {
     const gap = a.totalBalance - snap;
     const gapTxt = `${gap >= 0 ? '+' : '−'}${_shAda(Math.abs(gap))} ₳`;
-    recon = `<div class="sh-recon">Active stake at epoch <b>${ep}</b> was <b>${_shAda(snap)} ₳</b>; the live balance is
+    const nextTxt = (data.nextEpoch != null && data.nextStake != null)
+      ? ` Epoch <b>${data.nextEpoch}</b> has not started, but its snapshot was taken at the last boundary and is already
+         fixed at <b>${_shAda(data.nextStake)} ₳</b> — that is what will be active when it begins.`
+      : '';
+    recon = `<div class="sh-recon">Active stake at epoch <b>${ep}</b> is <b>${_shAda(snap)} ₳</b>; the live balance is
       <b>${_shAda(a.totalBalance)} ₳</b> (<b>${gapTxt}</b>). The snapshot is frozen at the epoch boundary, so rewards paid
       and coins moved since then only appear in the live figure — and land in active stake about two epochs later.
-      ${a.pendingRewards ? `Of the rewards earned, <b>${_shAda(a.pendingRewards)} ₳</b> is not yet withdrawable (spendable two epochs after it was earned).` : ''}</div>`;
+      ${a.pendingRewards ? `Of the rewards earned, <b>${_shAda(a.pendingRewards)} ₳</b> is not yet withdrawable (spendable two epochs after it was earned).` : ''}${nextTxt}</div>`;
+  } else if (data.nextStake != null) {
+    // No snapshot in force yet — a freshly-delegated account whose first
+    // snapshot is the one that takes effect next epoch. next-epoch-snap-v80
+    recon = `<div class="sh-recon">No active stake in force yet. The epoch <b>${data.nextEpoch}</b> snapshot has already been
+      taken and is fixed at <b>${_shAda(data.nextStake)} ₳</b> — that stake starts working when epoch
+      <b>${data.nextEpoch}</b> begins.${a.totalBalance != null ? ` The live balance is <b>${_shAda(a.totalBalance)} ₳</b>.` : ''}</div>`;
   }
   return `<div class="sh-acct">${cells}</div>${recon}`;
 }
@@ -549,33 +575,90 @@ async function openStakeHistory(stake) {
     : '';
 
   // Per-epoch table, newest first.
+  //
+  // The newest row is normally epoch tip+1: every source labels a stake snapshot
+  // with the epoch it becomes ACTIVE in, and that snapshot is fixed a whole
+  // epoch ahead (the one taken at the N-1/N boundary is epoch N+1's active
+  // stake). It is real data, not a glitch \u2014 but it must read as "next", not as
+  // now, or the table looks like it is reporting an epoch that hasn't started.
+  // next-epoch-snap-v80
+  const tipEpoch = (data.currentEpoch != null) ? data.currentEpoch : _currentEpoch;
   const epochs = data.epochs.slice().reverse();
-  const rowsHtml = epochs.map((e) => `
-    <tr>
-      <td class="sh-ep">${e.epoch}</td>
+  const rowsHtml = epochs.map((e) => {
+    const future = tipEpoch != null && e.epoch != null && e.epoch > tipEpoch;
+    const tag = future
+      ? `<span class="sh-next" title="${esc(`Epoch ${e.epoch} has not started (the chain is in epoch ${tipEpoch}). `
+        + `Its active stake was snapshotted at the epoch ${tipEpoch - 1}/${tipEpoch} boundary and is already fixed \u2014 `
+        + `it takes effect when epoch ${e.epoch} begins.`)}">next</span>`
+      : '';
+    return `
+    <tr${future ? ' class="sh-future"' : ''}>
+      <td class="sh-ep">${e.epoch}${tag}</td>
       <td class="sh-bal">${_shAda(e.runningBalance)} \u20b3</td>
       <td class="sh-delta">${_shDelta(e.delta)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
-  // Intra-epoch events (db-sync only), newest first.
+  // Movements (db-sync only), newest first. Two sources in one list:
+  //   - `events`    rewards in / withdrawals out, from the reward tables
+  //   - `transfers` ADA actually moved in or out, per tx, from the UTxO walk
+  // Transfers were the gap: a deposit is neither a reward nor a withdrawal, so a
+  // balance change had no explanation anywhere in this modal, and then turned up
+  // two epochs later as an unexplained step in the active-stake series.
+  // utxo-moves-v81
+  const moveList = [
+    ...(Array.isArray(data.events) ? data.events : []),
+    ...(Array.isArray(data.transfers) ? data.transfers : []),
+  ];
   let eventsHtml = '';
-  if (Array.isArray(data.events) && data.events.length) {
-    const evs = data.events.slice().reverse();
+  if (moveList.length) {
+    // Newest first: by epoch, then by timestamp where we have one (transfers do,
+    // reward rows are epoch-grained and sort after them within the same epoch).
+    const evs = moveList.slice().sort((x, y) => {
+      const de = (y.epoch ?? -1) - (x.epoch ?? -1);
+      if (de) return de;
+      return String(y.at || '').localeCompare(String(x.at || ''));
+    });
     const evRows = evs.map((v) => {
       const label = v.kind === 'reward' ? 'reward in'
         : v.kind === 'withdrawal' ? 'withdrawal out'
         : v.kind === 'treasury' ? 'treasury payout in'
         : v.kind === 'reserves' ? 'reserves payout in'
         : v.kind === 'proposal_refund' ? 'proposal refund in'
+        : v.kind === 'transfer' ? (v.amount > 0 ? 'received' : 'sent')
         : v.kind;
       const amt = v.amount == null ? '\u2014'
         : (v.amount > 0 ? `<span class="sh-up">+${_shAda(v.amount)}</span>`
                         : `<span class="sh-dn">${_shAda(v.amount)}</span>`);
-      const tx = v.txHash ? `<span class="sh-tx" title="${v.txHash}">${v.txHash.slice(0, 12)}\u2026</span>` : '\u2014';
+      const tx = v.txHash ? `<span class="sh-tx" title="${esc(v.txHash)}${v.at ? `\n${esc(v.at)}` : ''}">${esc(v.txHash.slice(0, 12))}\u2026</span>` : '\u2014';
       return `<tr><td class="sh-ep">${v.epoch ?? '\u2014'}</td><td>${label}</td><td class="sh-delta">${amt} \u20b3</td><td>${tx}</td></tr>`;
     }).join('');
+
+    // The reconciliation the notification needs: what moved this epoch, and
+    // which snapshot it lands in. A transfer during epoch N is snapshotted at
+    // the N/N+1 boundary, so it becomes active stake in epoch N+2.
+    let netLine = '';
+    const moveEpochs = data.transfers?.length
+      ? data.transfers.map((t) => t.epoch).filter((e) => e != null) : [];
+    const newestMoveEp = moveEpochs.length ? Math.max(...moveEpochs) : null;
+    if (newestMoveEp != null) {
+      const net = data.transfers
+        .filter((t) => t.epoch === newestMoveEp)
+        .reduce((s, t) => s + (t.amount || 0), 0);
+      netLine = `<div class="sh-net">Net moved in epoch <b>${newestMoveEp}</b>:
+        <b class="${net >= 0 ? 'sh-up' : 'sh-dn'}">${net >= 0 ? '+' : ''}${_shAda(net)} \u20b3</b>
+        \u2014 snapshotted at the ${newestMoveEp}/${newestMoveEp + 1} boundary, so it becomes active stake in epoch
+        <b>${newestMoveEp + 2}</b>.</div>`;
+    }
+
+    const coverage = !Array.isArray(data.transfers) || !data.transfers.length
+      ? 'rewards and withdrawals only \u2014 transfers unavailable from this source'
+      : (data.transfersTruncated
+        ? 'most recent transfers only; rewards and withdrawals are complete'
+        : 'complete');
     eventsHtml = `
-      <div class="sh-subhead">Rewards &amp; withdrawals <span class="sh-dim">(exact from db-sync, newest first)</span></div>
+      ${netLine}
+      <div class="sh-subhead">Movements <span class="sh-dim">(exact from db-sync, newest first \u2014 ${coverage})</span></div>
       <table class="sh-table">
         <thead><tr><th>epoch</th><th>type</th><th class="sh-delta">amount</th><th>tx</th></tr></thead>
         <tbody>${evRows}</tbody>
@@ -585,11 +668,10 @@ async function openStakeHistory(stake) {
   const chart = _shSparkline(data.epochs);
 
   // Two tabs: Active stake (per-epoch table + running-balance chart) and
-  // Intra-epoch movements (rewards in / withdrawals out from db-sync). The
-  // movements tab is only offered when there are events (db-sync path).
-  const hasEvents = Array.isArray(data.events) && data.events.length > 0;
-  const moveTabBtn = hasEvents
-    ? `<button class="sh-tab" type="button" data-shtab="moves">Intra-epoch movements</button>`
+  // Movements (rewards, withdrawals AND ADA transferred in/out, from db-sync).
+  // Offered whenever either kind of movement exists. /*utxo-moves-v81*/
+  const moveTabBtn = moveList.length
+    ? `<button class="sh-tab" type="button" data-shtab="moves">Movements</button>`
     : '';
 
   body.innerHTML = `
@@ -603,7 +685,7 @@ async function openStakeHistory(stake) {
     <div class="sh-pane sh-pane-on" data-shpane="stake">
       <div class="sh-split">
         <div class="sh-top">
-          <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first)</span></div>
+          <div class="sh-subhead">Active stake by epoch <span class="sh-dim">(newest first${data.nextEpoch != null ? `; ep ${data.nextEpoch} is next epoch's snapshot, already taken` : ''})</span></div>
           <div class="sh-tablewrap">
             <table class="sh-table">
               <thead><tr><th>epoch</th><th class="sh-bal">balance</th><th class="sh-delta">change</th></tr></thead><!--/*sh-align*/-->
@@ -619,8 +701,12 @@ async function openStakeHistory(stake) {
     </div>
 
     <div class="sh-pane" data-shpane="moves">
-      <div class="sh-move-note">Rewards are shown against the epoch they were <b>earned</b>. They settle into active stake about two epochs later, so a reward here lines up with a balance rise a couple of epochs on in the Active stake tab - that lag is expected, not a discrepancy.</div>
-      ${eventsHtml || '<div class="sh-dim" style="padding:12px">No intra-epoch movements recorded.</div>'}
+      <div class="sh-move-note"><b>received</b> / <b>sent</b> is ADA moving in or out of the account, per transaction — this is what a
+        balance-change notification reports. <b>reward in</b> / <b>withdrawal out</b> are reward-account events; rewards are shown against
+        the epoch they were <b>earned</b>. Everything here reaches active stake on the same delay: a movement during epoch N is
+        snapshotted at the N/N+1 boundary and counts from epoch N+2. That lag is expected, not a discrepancy — it is why a
+        movement listed here has no matching row in the Active stake tab until two epochs on.</div>
+      ${eventsHtml || '<div class="sh-dim" style="padding:12px">No movements recorded.</div>'}
     </div>
   `;
 
@@ -729,9 +815,22 @@ async function openDeepDive(stake) {
   }
   const fmt = (n) => n == null ? '\u2014' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
+  // Active stake = the snapshot IN FORCE (at or below the tip). Sources also hold
+  // the next epoch's snapshot, already fixed but not yet working; fall back to it
+  // only for an account that has no in-force snapshot at all (just delegated),
+  // and say which epoch it starts. next-epoch-snap-v80
+  const ddNextTip = (detail.nextEpoch != null && detail.nextStake != null);
+  const ddFromNext = (detail.balance == null && ddNextTip);
+  const ddActiveVal = ddFromNext ? detail.nextStake : detail.balance;
+  const ddActiveSub = ddFromNext ? `(from ep ${detail.nextEpoch})`
+    : (detail.snapshotEpoch != null ? `(snapshot, ep ${detail.snapshotEpoch})` : '(epoch snapshot)');
+  const ddActiveTip = ddFromNext
+    ? `No snapshot in force yet \u2014 this account's first snapshot is epoch ${detail.nextEpoch}, already taken and fixed, which starts working when that epoch begins.`
+    : `Total delegated stake at the epoch snapshot in force${detail.snapshotEpoch != null ? ` (epoch ${detail.snapshotEpoch})` : ''}. Includes un-withdrawn rewards as at that boundary, which stake automatically each epoch. Frozen at the boundary \u2014 see Live balance for the current figure.${ddNextTip ? `\nEpoch ${detail.nextEpoch} has not started, but its snapshot is already fixed at ${fmt(detail.nextStake)} \u20b3.` : ''}`;
+
   body.innerHTML = `
     <div class="dd-stats">
-      <div class="dd-stat" title="Total delegated stake at the epoch snapshot${detail.snapshotEpoch != null ? ` (epoch ${detail.snapshotEpoch})` : ''}. Includes un-withdrawn rewards as at that boundary, which stake automatically each epoch. Frozen at the boundary \u2014 see Live balance for the current figure."><div class="l">Active stake<span class="l-sub">${detail.snapshotEpoch != null ? `(snapshot, ep ${detail.snapshotEpoch})` : '(epoch snapshot)'}</span></div><div class="v">${fmt(detail.balance)}<span class="u">\u20b3</span></div></div>
+      <div class="dd-stat" title="${esc(ddActiveTip)}"><div class="l">Active stake<span class="l-sub">${ddActiveSub}</span></div><div class="v">${fmt(ddActiveVal)}<span class="u">\u20b3</span></div></div>
       <div class="dd-stat" title="Live controlled balance right now: spendable UTxO plus the undrawn reward account. This is what an explorer shows for the account (the 2 \u20b3 key deposit is excluded)."><div class="l">Live balance<span class="l-sub">(UTxO + undrawn)</span></div><div class="v">${fmt(detail.account ? detail.account.totalBalance : null)}<span class="u">\u20b3</span></div></div>
       <div class="dd-stat" title="Rewards earned and not yet withdrawn. They sit in the reward account and re-stake automatically each epoch."><div class="l">Undrawn rewards</div><div class="v">${fmt(detail.withdrawable)}<span class="u">\u20b3</span></div></div>
       <div class="dd-stat" title="Lifetime total rewards ever credited to this stake account across all pools \u2014 pool rewards plus any treasury / reserves payouts."><div class="l">Rewards earned</div><div class="v">${fmt(detail.rewardsSum)}<span class="u">\u20b3</span></div></div>
@@ -913,9 +1012,15 @@ function renderUnified() {
   // the newest epoch snapshot, Koios/Blockfrost serve live stake. Label what it
   // actually is \u2014 an unqualified "live stake" that lags an explorer reads as a
   // bug. Per-account live figures are in the Stake modal. /*acct-live-v79*/
+  // db-sync serves the newest COMPLETE snapshot, which is normally the one for
+  // the NEXT epoch (a snapshot is fixed a whole epoch before it takes effect).
+  // Say so on the label rather than printing a bare future epoch number.
+  // next-epoch-snap-v80
   const snapRow = _duRows.find((r) => r.stakeBasis === 'snapshot');
+  const snapEp = snapRow ? snapRow.basisEpoch : null;
+  const snapAhead = snapEp != null && _currentEpoch != null && snapEp > _currentEpoch;
   const stakeCol = snapRow
-    ? `active stake<span class="du-basis" title="Active stake at the epoch ${snapRow.basisEpoch ?? '?'} snapshot \u2014 frozen at the epoch boundary, so it reads slightly under an explorer's live balance. Open a delegator's Stake history for the live UTxO + undrawn rewards.">ep ${snapRow.basisEpoch ?? '?'}</span>`
+    ? `active stake<span class="du-basis" title="Active stake at the epoch ${snapEp ?? '?'} snapshot \u2014 frozen at an epoch boundary, so it reads slightly under an explorer's live balance. ${snapAhead ? `Epoch ${snapEp} has not started: its snapshot was taken at the last boundary and is already fixed, so this is the stake that takes effect when it begins. ` : ''}Open a delegator's Stake history for the live UTxO + undrawn rewards.">ep ${snapEp ?? '?'}${snapAhead ? ' next' : ''}</span>`
     : 'live stake';
 
   const head = `<div class="du-row head">

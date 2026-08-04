@@ -26,6 +26,39 @@ export const DBSYNC_TESTED_SCHEMA = '15.44.6';
 const lovelaceToAda = (v) => (v == null ? null : Number(v) / 1e6);
 const numOrNull = (v) => (v == null ? null : Number(v));
 
+/* Split a per-epoch active-stake series at the chain tip. next-epoch-snap-v80
+ *
+ * Every source labels a stake snapshot with the epoch it becomes ACTIVE in, and
+ * that snapshot is fixed one epoch ahead of the tip: the snapshot taken at the
+ * N-1/N boundary is the active stake for epoch N+1. So mid-epoch-N the newest
+ * row a source can serve is N+1 — real, already-determined data for an epoch
+ * that has not started. Callers must therefore never treat "newest row" as
+ * "active now"; take `current` for that, and present `next` as the future
+ * figure it is.
+ *
+ * `rows` oldest→newest, each { epoch, ... }. With no currentEpoch (source that
+ * can't tell us the tip) we degrade to the old behaviour: newest row wins.
+ */
+function splitAtTip(rows, currentEpoch) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return { current: null, next: null, tip: null };
+  let tip = numOrNull(currentEpoch);
+  if (tip == null) return { current: list[list.length - 1], next: null, tip: null };
+  // Our tip comes from the epoch cache and can lag a boundary by a refresh.
+  // A snapshot is only ever one epoch ahead of the chain, so a row further ahead
+  // than that means the tip is stale, not the data — advance it.
+  const newest = numOrNull(list[list.length - 1].epoch);
+  if (newest != null && newest - 1 > tip) tip = newest - 1;
+  let current = null, next = null;
+  for (const r of list) {
+    const ep = numOrNull(r && r.epoch);
+    if (ep == null) continue;
+    if (ep <= tip) current = r;
+    else if (!next || numOrNull(next.epoch) > ep) next = r;   // first future row
+  }
+  return { current, next, tip };
+}
+
 // Strict sanitisation — values are inlined into SQL (the transport runs
 // parameterless), so guard hard even though they're app-sourced, not user text.
 function safeHex(hex) {
@@ -763,7 +796,7 @@ async function getAccountNow(esc) {
  * figure); the live account figures (UTxO + undrawn rewards) come from
  * getAccountNow and are what an explorer's account page shows.
  */
-async function getDelegatorDetail(stake, _currentEpoch) {
+async function getDelegatorDetail(stake, currentEpoch) {
   if (!_ready || !stake) return null;
   const esc = String(stake).replace(/'/g, "''");
 
@@ -820,11 +853,16 @@ async function getDelegatorDetail(stake, _currentEpoch) {
   if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
   const lastRow = hist.length ? hist[hist.length - 1] : null;
+  // Active NOW = newest snapshot at or below the tip; `lastRow` is normally the
+  // next epoch's pre-computed snapshot. /*next-epoch-snap-v80*/
+  const { current: curRow, next: nextRow } = splitAtTip(hist, currentEpoch);
 
   return {
     stake,
-    balance: lastRow ? lovelaceToAda(lastRow.amount) : null,   // active stake @ latest snapshot
-    snapshotEpoch: lastRow ? Number(lastRow.epoch) : null,
+    balance: curRow ? lovelaceToAda(curRow.amount) : null,     // active stake @ current snapshot
+    snapshotEpoch: curRow ? Number(curRow.epoch) : null,
+    nextEpoch: nextRow ? Number(nextRow.epoch) : null,
+    nextStake: nextRow ? lovelaceToAda(nextRow.amount) : null,
     rewardsSum: acct ? acct.rewardsEarned : null,
     withdrawalsSum: acct ? acct.withdrawn : null,
     withdrawable: acct ? acct.rewardsAvailable : null,
@@ -837,13 +875,113 @@ async function getDelegatorDetail(stake, _currentEpoch) {
   };
 }
 
+/* Most recent movements returned. The scan is already bounded by the account's
+ * own output count (the stake_address_id index), so this only caps rendering.
+ * The modal states when it truncates rather than implying completeness.
+ * utxo-moves-v81 */
+const TRANSFER_ROW_LIMIT = 300;
+
+/**
+ * Per-tx balance movements for one stake account — the ADA that actually moved
+ * in and out, which rewards/withdrawals alone never show. utxo-moves-v81
+ *
+ * WHY THIS EXISTS: a delegator's balance changing is the single most common
+ * question the movements tab gets asked, and until now it could not answer it —
+ * a 500 ADA deposit appeared nowhere, because it is neither a reward nor a
+ * withdrawal. The per-epoch series shows the same money two epochs later as an
+ * unexplained step. This closes that gap.
+ *
+ * `net` per tx = value received by the account's addresses − value spent from
+ * them − any reward withdrawal in the same tx. Subtracting the withdrawal is
+ * what stops it being double counted: it already has its own row, and without
+ * this the tx would read as free money arriving rather than a fee being paid.
+ *
+ * SPEND DETECTION — why both sources are unioned rather than one picked:
+ * db-sync can record a spend in `tx_in`, or as `tx_out.consumed_by_tx_id` when
+ * consumed-tx-out mode is on, and an installation can be mid-way between the
+ * two. Measured on a real 15.50.6 node here: `tx_in` held 339M rows while only
+ * 39.8M of 353M `tx_out` rows carried `consumed_by_tx_id`. Picking the wrong one
+ * does NOT error — it silently under-reports spends, which is the worst possible
+ * failure for a balance view. A UTxO can be spent only once, so UNION-ing both
+ * and de-duplicating on the output id is correct whichever mode is in force.
+ *
+ * PERFORMANCE — the shape matters. Bounding the scan by a tx-id floor derived
+ * from `block.epoch_no` cost 11s on its own (that MIN/MAX walk, not the account
+ * work). The `stake_address_id` index already bounds the scan to one account's
+ * outputs, so there is no floor at all: measured 48ms for a 1178-output account,
+ * 310ms for the worst of a sampled set. Do not reintroduce an epoch floor.
+ * Equally, a `LEFT JOIN … COALESCE(i.tx_in_id, o.consumed_by_tx_id)` reads as
+ * tidier but gives the planner no selective predicate and hash-joins all of
+ * `tx_in` — it ran past two minutes. Keep the two scans separate.
+ *
+ * SCHEMA VARIANT: `tx_out.stake_address_id` (default, verified here) or a join
+ * through `address` when db-sync runs with `tx_out.use_address_table`. That one
+ * fails loudly on a missing column, so trying it second is safe. UNVERIFIED —
+ * there was no address-table install to test against.
+ */
+async function getAccountTransfers(esc) {
+  // `outs` is every output ever paid to this stake credential — the one scan
+  // that matters, and the index makes it cheap.
+  const build = (useAddrTable) => `
+    WITH a AS (SELECT id FROM stake_address WHERE view = '${esc}'),
+    outs AS (
+      SELECT o.id, o.tx_id, o.index, o.value, o.consumed_by_tx_id
+      FROM tx_out o
+      ${useAddrTable
+        ? 'JOIN address ad ON ad.id = o.address_id WHERE ad.stake_address_id = (SELECT id FROM a)'
+        : 'WHERE o.stake_address_id = (SELECT id FROM a)'}
+    ),
+    spent_rows AS (
+      SELECT i.tx_in_id AS tx_id, o.id AS out_id, o.value
+      FROM outs o JOIN tx_in i ON i.tx_out_id = o.tx_id AND i.tx_out_index = o.index
+      UNION
+      SELECT o.consumed_by_tx_id AS tx_id, o.id AS out_id, o.value
+      FROM outs o WHERE o.consumed_by_tx_id IS NOT NULL
+    ),
+    spent AS (SELECT tx_id, SUM(value) AS amt FROM spent_rows GROUP BY tx_id),
+    recv  AS (SELECT tx_id, SUM(value) AS amt FROM outs GROUP BY tx_id),
+    wd AS (
+      SELECT w.tx_id, SUM(w.amount) AS amt FROM withdrawal w
+      WHERE w.addr_id = (SELECT id FROM a) GROUP BY w.tx_id
+    ),
+    ids AS (SELECT tx_id FROM recv UNION SELECT tx_id FROM spent)
+    SELECT b.epoch_no::text AS epoch,
+           (COALESCE(r.amt,0) - COALESCE(s.amt,0) - COALESCE(w.amt,0))::text AS net,
+           encode(t.hash,'hex') AS txhash,
+           to_char(b.time,'YYYY-MM-DD"T"HH24:MI:SS"+00:00"') AS at
+    FROM ids
+    JOIN tx t ON t.id = ids.tx_id
+    JOIN block b ON b.id = t.block_id
+    LEFT JOIN recv r ON r.tx_id = ids.tx_id
+    LEFT JOIN spent s ON s.tx_id = ids.tx_id
+    LEFT JOIN wd w ON w.tx_id = ids.tx_id
+    ORDER BY t.id DESC
+    LIMIT ${TRANSFER_ROW_LIMIT}`;
+
+  for (const useAddrTable of [false, true]) {
+    try {
+      const rows = await pgQuery(_cfg, build(useAddrTable));
+      return (rows || []).map((r) => ({
+        epoch: numOrNull(r.epoch),
+        kind: 'transfer',
+        amount: lovelaceToAda(r.net),
+        txHash: r.txhash || null,
+        at: r.at || null,
+      })).filter((t) => t.amount !== 0);       // a tx that nets to zero moved nothing
+    } catch (e) {
+      console.warn(`[dbsync] transfers (addressTable=${useAddrTable}) failed:`, e.message ?? e);
+    }
+  }
+  return [];                                   // degrade to rewards/withdrawals only
+}
+
 /**
  * DELEGATOR_STAKE_HISTORY - per-epoch active-stake series for one delegator,
  * plus intra-epoch tx-level movements (db-sync exclusive). Source-agnostic shape
  * so the modal renders the same regardless of provider; Koios/Blockfrost return
  * epochs only (no events).
  */
-async function getDelegatorStakeHistory(stake) {
+async function getDelegatorStakeHistory(stake, currentEpoch) {
   if (!_ready || !stake) return null;
   const esc = String(stake).replace(/'/g, "''");
 
@@ -904,17 +1042,29 @@ async function getDelegatorStakeHistory(stake) {
     });
   }
 
+  // ADA moved in/out per tx — the movements rewards/withdrawals can't show.
+  // Bounded window, so it is reported alongside. /*utxo-moves-v81*/
+  const transfers = await getAccountTransfers(esc);
+
   const account = await getAccountNow(esc);
-  const latest = epochs.length ? epochs[epochs.length - 1] : null;
+  // epoch_stake carries the NEXT epoch's snapshot as soon as db-sync has it, so
+  // the reconciliation basis is the newest row at or below the tip, not the
+  // newest row. /*next-epoch-snap-v80*/
+  const { current, next, tip } = splitAtTip(epochs, currentEpoch);
   return {
     stake,
     source: 'dbsync',
     granularity: 'epoch+intra',
     epochs,
     events,
+    transfers,                                      // [{epoch, kind:'transfer', amount, txHash, at}]
+    transfersTruncated: transfers.length >= TRANSFER_ROW_LIMIT,   // UI says so rather than implying completeness
     account,                                        // live UTxO + undrawn rewards
-    snapshotEpoch: latest ? latest.epoch : null,
-    snapshotStake: latest ? latest.runningBalance : null,
+    currentEpoch: tip,
+    snapshotEpoch: current ? current.epoch : null,
+    snapshotStake: current ? current.runningBalance : null,
+    nextEpoch: next ? next.epoch : null,            // already snapshotted, starts later
+    nextStake: next ? next.runningBalance : null,
   };
 }
 
@@ -940,7 +1090,7 @@ export const dbsyncSource = {
       case DataKind.DELEGATOR_DETAIL:
         return getDelegatorDetail(params.stake, params.currentEpoch);
       case DataKind.DELEGATOR_STAKE_HISTORY:
-        return getDelegatorStakeHistory(params.stake);
+        return getDelegatorStakeHistory(params.stake, params.currentEpoch);
       default:
         throw new Error(`db-sync source can't provide ${kind}`);
     }

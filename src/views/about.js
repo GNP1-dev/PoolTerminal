@@ -12,7 +12,7 @@ import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getTransport, getSession, isConnected } from '../data/session.js';
 
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 
 function safeReach(s) { try { return s.reachable(); } catch { return false; } }
 

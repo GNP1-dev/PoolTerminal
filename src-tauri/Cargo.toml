@@ -1,6 +1,6 @@
 [package]
 name = "poolterminal"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bloomberg-terminal-style desktop dashboard for Cardano stake pool operators"
 authors = ["GNP1-dev"]
 edition = "2021"

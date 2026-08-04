@@ -60,6 +60,35 @@ function parseJson(out, fallback) {
 }
 function lovelaceToAda(l) { return l == null ? null : Number(l) / 1_000_000; }
 
+/* Split a per-epoch active-stake series at the chain tip. next-epoch-snap-v80
+ *
+ * /accounts/{stake}/history labels each row with the epoch the stake becomes
+ * ACTIVE in, and that snapshot is fixed one epoch ahead of the tip (the snapshot
+ * taken at the N-1/N boundary is epoch N+1's active stake). Mid-epoch-N the
+ * newest row is therefore N+1 — real data for an epoch that has not started.
+ * `current` is what is active now; `next` is that future row, to be labelled as
+ * such rather than passed off as current. `rows` oldest→newest, each { epoch }.
+ */
+function splitAtTip(rows, currentEpoch) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return { current: null, next: null, tip: null };
+  let tip = currentEpoch == null ? NaN : Number(currentEpoch);
+  if (!Number.isFinite(tip)) return { current: list[list.length - 1], next: null, tip: null };
+  // Our tip comes from the epoch cache and can lag a boundary by a refresh.
+  // A snapshot is only ever one epoch ahead of the chain, so a row further ahead
+  // than that means the tip is stale, not the data — advance it.
+  const newest = Number(list[list.length - 1].epoch);
+  if (Number.isFinite(newest) && newest - 1 > tip) tip = newest - 1;
+  let current = null, next = null;
+  for (const r of list) {
+    const ep = Number(r && r.epoch);
+    if (!Number.isFinite(ep)) continue;
+    if (ep <= tip) current = r;
+    else if (!next || Number(next.epoch) > ep) next = r;   // first future row
+  }
+  return { current, next, tip };
+}
+
 /** GET a Blockfrost path with the project_id header; returns parsed JSON or fallback. */
 async function bfGet(path, fallback) {
   if (!_key) return fallback;
@@ -253,13 +282,17 @@ async function getDelegatorDetail(stake, currentEpoch) {
   const firstUsIdx = runs.findIndex((r) => r.poolId === _poolBech32);
   if (firstUsIdx > 0) cameFrom = runs[firstUsIdx - 1].poolId;
 
-  const lastHist = hist.length ? hist[hist.length - 1] : null;
+  // Active NOW = newest snapshot at or below the tip; the last history row is
+  // normally the next epoch's pre-computed snapshot. /*next-epoch-snap-v80*/
+  const { current: curHist, next: nextHist } = splitAtTip(hist, currentEpoch);
   return {
     stake,
-    // Active stake at the latest snapshot (same basis as db-sync/Koios);
+    // Active stake at the current snapshot (same basis as db-sync/Koios);
     // `account` below carries the live figures. /*acct-live-v79*/
-    balance: lastHist ? lovelaceToAda(lastHist.amount) : null,
-    snapshotEpoch: lastHist ? lastHist.epoch : null,
+    balance: curHist ? lovelaceToAda(curHist.amount) : null,
+    snapshotEpoch: curHist ? curHist.epoch : null,
+    nextEpoch: nextHist ? nextHist.epoch : null,
+    nextStake: nextHist ? lovelaceToAda(nextHist.amount) : null,
     rewardsSum: acct ? lovelaceToAda(acct.rewards_sum) : null,
     withdrawalsSum: acct ? lovelaceToAda(acct.withdrawals_sum) : null,
     withdrawable: acct ? lovelaceToAda(acct.withdrawable_amount) : null,
@@ -702,7 +735,9 @@ async function getStakeHistoryDetail(stake, currentEpoch) {
     epochs.push({ epoch: r.epoch, stake: bal, delta, runningBalance: bal });
     prev = bal;
   }
-  const latest = epochs.length ? epochs[epochs.length - 1] : null;
+  // The newest row is normally the NEXT epoch's snapshot — real, but not active
+  // yet. Reconcile against the current one. /*next-epoch-snap-v80*/
+  const { current, next, tip } = splitAtTip(epochs, currentEpoch);
   return {
     stake,
     source: 'blockfrost',
@@ -710,8 +745,11 @@ async function getStakeHistoryDetail(stake, currentEpoch) {
     epochs,
     events: [],
     account: accountFromBf(acct),
-    snapshotEpoch: latest ? latest.epoch : null,
-    snapshotStake: latest ? latest.runningBalance : null,
+    currentEpoch: tip,
+    snapshotEpoch: current ? current.epoch : null,
+    snapshotStake: current ? current.runningBalance : null,
+    nextEpoch: next ? next.epoch : null,            // already snapshotted, starts later
+    nextStake: next ? next.runningBalance : null,
   };
 }
 

@@ -6,13 +6,15 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> **v0.3.0 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+> **v0.3.1 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+>
+> New in v0.3.1: the **operational certificate counters now refresh live**. Previously they were read once when the app connected to your node and never again, so after a KES rotation the panel could keep showing pre-rotation values while the KES fields beside them updated correctly. **If you rotated KES while running v0.3.0, re-check your counter with `cardano-cli`.** See the [release notes](https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.1).
 >
 > New in v0.3.0: a delegator's **Movements** now lists the ADA actually moved in and out per transaction - not just rewards and withdrawals - so a balance-change notification can be traced to the transaction behind it and to the epoch its stake lands in. Per-epoch active stake also stops presenting the next epoch's snapshot as the current one.
 >
 > New in v0.2.0: a **LOGS** workspace (journal queries, minted-block history, propagation history, epoch-transition view), **ALERTS** - Telegram alerting with no agent on your block producer, the **KES hourglass**, and delegator balances reconciled against live account state.
 
-> _Last updated: 4 August 2026_ <!-- readme-beta-v3 -->
+> _Last updated: 27 August 2026_ <!-- readme-beta-v3 -->
 
 > ### ⚠️ This is a beta. I need your help testing it.
 >

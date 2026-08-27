@@ -139,6 +139,9 @@ export class LiveDataSource {
     this._kesPeriods = null;
     this._kesExpiryMs = null;
     this._kesAt = 0;
+    this._opCertDisk = null;   /*opcert-live-v93*/
+    this._opCertChain = null;
+    this._opCertAtMs = null;
     this._lastPulseScore = null;
 
     // Ideal blocks — computed once per epoch from cardano-cli stake-snapshot.
@@ -241,6 +244,9 @@ export class LiveDataSource {
     if (!probe?.opCertPath) {
       this._kesDays    = null;
       this._kesPeriods = null;
+      this._opCertDisk = null;   /*opcert-live-v93*/
+      this._opCertChain = null;
+      this._opCertAtMs = null;
       this._kesAt      = now;
       return;
     }
@@ -257,6 +263,24 @@ export class LiveDataSource {
       const end  = info.qKesEndKesInterval;
       const slotsPerKes = info.qKesSlotsPerKesPeriod || 129600;
       this._kesPeriods = Math.max(0, end - cur);
+
+      // Op cert counters ride the SAME response as the KES fields — never a
+      // separate call. They used to come from the one-shot connect probe, which
+      // froze them at connect-time values while the KES fields refreshed live,
+      // making a stale reading look trustworthy right after a rotation. On any
+      // parse miss they go null (unknown), never hold a previous reading.
+      // /*opcert-live-v93*/
+      const ocDisk  = info.qKesOnDiskOperationalCertificateNumber;
+      const ocChain = info.qKesNodeStateOperationalCertificateNumber;
+      if (Number.isFinite(ocDisk) && Number.isFinite(ocChain)) {
+        this._opCertDisk  = ocDisk;
+        this._opCertChain = ocChain;
+        this._opCertAtMs  = Date.now();
+      } else {
+        this._opCertDisk = null;
+        this._opCertChain = null;
+        this._opCertAtMs = null;
+      }
 
       // Establish ONE stable expiry instant, then derive days from it — so the
       // countdown only ever decreases. Preference:
@@ -291,6 +315,9 @@ export class LiveDataSource {
       this._kesDays     = null;
       this._kesPeriods  = null;
       this._kesExpiryMs = null;
+      this._opCertDisk  = null;   /*opcert-live-v93*/
+      this._opCertChain = null;
+      this._opCertAtMs  = null;
     }
     this._kesAt = now;
   }
@@ -345,6 +372,9 @@ export class LiveDataSource {
       kesDaysRemaining:    this._kesDays,
       kesPeriodsRemaining: this._kesPeriods,
       kesKeyExpiryUnix:    this._kesExpiryMs ? Math.floor(this._kesExpiryMs / 1000) : null,
+      opCertDisk:          this._opCertDisk,    /*opcert-live-v93*/
+      opCertChain:         this._opCertChain,
+      opCertAsOfMs:        this._opCertAtMs,
       peersIn:  null,
       peersOut: null,
       blockProduction: readModel.currentBlockProduction() || { ...ZERO_BP, ideal: this._ideal ?? 0 },

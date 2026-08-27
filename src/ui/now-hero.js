@@ -158,6 +158,27 @@ export function renderHero(snap) {
     setHTML('hero-kes-sub', `${line1}${line2}Expires ${dd} ${mmm} ${yyyy} ${hh}:${mm}<br><span class="n2-kes-note">1 KES period = 1.5 days</span>`);
   }
 
+  // --- Op cert counters ---
+  // Stash the snapshot's opcert reading on the cell for now2's paintGauges
+  // (same pattern as kesExpiry above). The values ride the same 60s
+  // kes-period-info call as the KES fields — no more one-shot probe cache.
+  // When the snapshot carries none (call failed, no opCertPath, demo, relay)
+  // the attributes are DELETED so a held value can never outlive its source.
+  // /*opcert-live-v93*/
+  const ocEl = byId('hero-kes-opcert');
+  if (ocEl) {
+    if (Number.isFinite(snap.opCertDisk) && Number.isFinite(snap.opCertChain)) {
+      ocEl.dataset.ocDisk  = String(snap.opCertDisk);
+      ocEl.dataset.ocChain = String(snap.opCertChain);
+      if (snap.opCertAsOfMs != null) ocEl.dataset.ocAsof = String(snap.opCertAsOfMs);
+      else delete ocEl.dataset.ocAsof;
+    } else {
+      delete ocEl.dataset.ocDisk;
+      delete ocEl.dataset.ocChain;
+      delete ocEl.dataset.ocAsof;
+    }
+  }
+
   prev = {
     pulse: pp.score,
     adopted: bp.adopted,

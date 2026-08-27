@@ -74,6 +74,7 @@ const N2_HTML = `
     .n2-kes-opcert { margin-top:8px; text-align:center; }
     .n2-kes-opcert-lbl { font-size:9px; letter-spacing:.6px; text-transform:uppercase; color:var(--pt-text-muted,#97A0B0); margin-bottom:3px; }
     .n2-kes-opcert-lines { font-size:11px; line-height:1.35; }
+    .n2-kes-opcert-asof { font-size:9px; color:var(--pt-text-muted,#97A0B0); margin-top:2px; } /*opcert-live-v93*/
     .n2-kes-note { font-size:9px; color:var(--pt-text-muted,#6f7d99); opacity:.8; }
     .pt-speedo-tick { font-family:ui-monospace,monospace; font-size:9px; fill:#6f7d99; }
     .n2-density-grid { display:grid; grid-template-columns:repeat(3,auto); gap:3px 12px; justify-content:center; margin-top:8px; font-size:11px; font-family:ui-monospace,monospace; }
@@ -296,12 +297,13 @@ const N2_HTML = `
         ${hourglassHTML({ id: 'n2-kes', color: '#ffc24a' })}
         <div class="n2-val" id="hero-kes-val" style="color:#ffc24a">—</div>
         <div class="n2-sub" id="hero-kes-sub">—</div>
-        <div class="n2-kes-opcert" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when they match, or disk is one ahead just after a KES rotation.">
+        <div class="n2-kes-opcert" id="hero-kes-opcert" title="Operational certificate counter: on disk vs on chain (node protocol state). Healthy when disk equals chain or is ahead of it; the chain number catches up when the pool mints its next block.">
           <div class="n2-kes-opcert-lbl">opcert</div>
           <div class="n2-kes-opcert-lines" id="hero-kes-opcert-val">
             <div id="hero-kes-opcert-disk">— on disk</div>
             <div id="hero-kes-opcert-chain">— on chain</div>
           </div>
+          <div class="n2-kes-opcert-asof" id="hero-kes-opcert-asof"></div>
         </div>
         <div id="hero-kes-bar" style="display:none"></div>
       </div>
@@ -658,8 +660,18 @@ function paintGauges() {
     setHourglass(root, 'n2-kes', daysLeft / KES_TOTAL_DAYS, kesCol);
     if (kv) kv.style.color = kesCol;
   }
-  // Op cert counters (disk/chain) - gLiveView health rule: green when disk == chain
-  // or disk == chain+1 (rotated, not yet minted with); red otherwise.
+  // Op cert counters (disk/chain), read from the data-oc-* attributes the 1s
+  // loop stashes on the cell (ui/now-hero.js) — i.e. from the SAME 60s
+  // kes-period-info call that feeds the KES fields. They used to come from the
+  // one-shot connect probe, which froze them at connect-time values for the
+  // life of the app: after a rotation the panel showed fresh KES numbers next
+  // to a stale opcert pair until the next reload. /*opcert-live-v93*/
+  //
+  // Health rule: green when disk >= chain. Disk ahead by ANY amount is the
+  // normal state between a rotation and the next minted block, and a pool that
+  // goes a long time between blocks can legitimately sit two or more ahead
+  // after successive rotations. Red only when disk is BEHIND chain, which
+  // should be impossible in normal operation.
   const oc = root.querySelector('#hero-kes-opcert');
   if (oc) {
     const pr = getNodeProbe() || {};
@@ -668,26 +680,35 @@ function paintGauges() {
     // otherwise live-looking dashboard. Show a healthy synthetic pair instead.
     // /*demo-hero-v82*/
     const demo = getMode() === 'demo';
-    const d = demo ? 26 : pr.opCertDisk, c = demo ? 26 : pr.opCertChain;
+    const d = demo ? 26 : (oc.dataset.ocDisk  != null ? Number(oc.dataset.ocDisk)  : NaN);
+    const c = demo ? 26 : (oc.dataset.ocChain != null ? Number(oc.dataset.ocChain) : NaN);
+    const asofMs = demo ? NaN : Number(oc.dataset.ocAsof ?? NaN);
     const ocv = oc.querySelector('#hero-kes-opcert-val') || oc;
+    const diskEl  = oc.querySelector('#hero-kes-opcert-disk');
+    const chainEl = oc.querySelector('#hero-kes-opcert-chain');
+    const asofEl  = oc.querySelector('#hero-kes-opcert-asof');
     if (Number.isFinite(d) && Number.isFinite(c)) {
-      const ok = (d === c) || (d === c + 1);
-      const diskEl = oc.querySelector('#hero-kes-opcert-disk');
-      const chainEl = oc.querySelector('#hero-kes-opcert-chain');
+      const ok = d >= c;
       if (diskEl) diskEl.textContent = `${d} on disk`;
       if (chainEl) chainEl.textContent = `${c} on chain`;
+      let asofTxt = '';
+      if (Number.isFinite(asofMs)) {
+        const t = new Date(asofMs);
+        asofTxt = `as of ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+      }
+      if (asofEl) asofEl.textContent = asofTxt;
       ocv.style.color = ok ? '#5dff9b' : '#ff5a5a';
       oc.title = ok
-        ? `Operational certificate counter healthy: disk ${d}, chain ${c}.`
-        : `Operational certificate counter MISMATCH: disk ${d}, chain ${c}. Expected disk == chain or one ahead.`;
+        ? `Operational certificate counter healthy: disk ${d}, chain ${c}. Disk equal to or ahead of chain is normal; the chain number catches up when the pool mints its next block.${asofTxt ? ` Reading ${asofTxt}.` : ''}`
+        : `Operational certificate counter ERROR: disk ${d} is BEHIND chain ${c}. The chain has seen a newer certificate than the one this node is running with. Check which op.cert the node loaded.${asofTxt ? ` Reading ${asofTxt}.` : ''}`;
     } else if (pr.role && pr.role !== 'BP') {
       oc.style.display = 'none';   // relays have no op cert
     } else {
-      const diskEl = oc.querySelector('#hero-kes-opcert-disk');
-      const chainEl = oc.querySelector('#hero-kes-opcert-chain');
       if (diskEl) diskEl.textContent = 'querying';
       if (chainEl) chainEl.textContent = 'node…';
+      if (asofEl) asofEl.textContent = '';
       ocv.style.color = '';
+      oc.title = 'Operational certificate counter unknown: no current kes-period-info reading. A stale value is never shown here.';
     }
   }
   // Epoch thermometer: percent

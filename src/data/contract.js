@@ -34,6 +34,9 @@
  * @property {boolean} atTip
  * @property {number}  kesDaysRemaining
  * @property {number}  kesPeriodsRemaining
+ * @property {number|null} opCertDisk    on-disk op cert counter, null = unknown (live only, opcert-live-v93)
+ * @property {number|null} opCertChain   on-chain (node state) counter, null = unknown
+ * @property {number|null} opCertAsOfMs  wall-clock ms when the pair was read
  * @property {number}  peersIn
  * @property {number}  peersOut
  * @property {boolean} forging

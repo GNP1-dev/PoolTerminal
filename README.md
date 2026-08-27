@@ -6,7 +6,9 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> **v0.3.1 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+> **v0.3.2 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+>
+> New in v0.3.2: **delegators joining the pool now appear before their stake goes active** — previously a new delegator was invisible until the epoch boundary. Pending rows are dulled, tagged with the epoch they activate, and kept out of pool totals. Also fixes a query that overstated a pending delegator's stake, and the version number shown in the app, which was hardcoded and wrong in three places.
 >
 > New in v0.3.1: the **operational certificate counters now refresh live**. Previously they were read once when the app connected to your node and never again, so after a KES rotation the panel could keep showing pre-rotation values while the KES fields beside them updated correctly. **If you rotated KES while running v0.3.0, re-check your counter with `cardano-cli`.** See the [release notes](https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.1).
 >

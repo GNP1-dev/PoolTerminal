@@ -11,8 +11,7 @@
 import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getTransport, getSession, isConnected } from '../data/session.js';
-
-export const APP_VERSION = '0.3.0';
+import { getAppVersion } from '../data/tauri.js';   /*app-version-v94*/
 
 function safeReach(s) { try { return s.reachable(); } catch { return false; } }
 
@@ -161,8 +160,13 @@ export function mountAbout(canvas) {
       currentSetupHtml() +
       connectionHtml() +
       SECTIONS +
-      `<div class="ab-foot">App version ${APP_VERSION}</div>` +
+      `<div class="ab-foot">App version <span id="ab-appver">…</span></div>` +
     `</div>`;
+  // Version comes from the Tauri runtime, never a string in src. /*app-version-v94*/
+  getAppVersion().then((v) => {
+    const el = document.getElementById('ab-appver');
+    if (el && v) el.textContent = v;
+  });
   const rc = document.getElementById('ab-reconnect');
   if (rc) rc.addEventListener('click', () => {
     // Reuse the tickertape mode-badge flow: it opens the connect screen with

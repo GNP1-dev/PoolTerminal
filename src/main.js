@@ -39,7 +39,7 @@ import { mountAlerts, unmountAlerts } from './views/alerts.js';
 import { loadAlertConfig } from './data/alerts-config.js';
 import { startAlertsEngine, runAlertChecks } from './data/alerts-engine.js';
 import { mountDataSources, unmountDataSources } from './views/data-sources.js';
-import { mountAbout, unmountAbout, APP_VERSION } from './views/about.js';
+import { mountAbout, unmountAbout } from './views/about.js';
 import { mountMap, unmountMap, isMapMounted, updateMapPeers } from './views/map.js';
 import { mountDelegators, unmountDelegators } from './views/delegators.js';
 import { showConnectModal, resumeLive } from './views/connect.js';
@@ -47,7 +47,7 @@ import { showSettingsModal } from './views/settings.js';
 import { showSetupWizard } from './views/wizard.js';
 import { resetReadModel, getLatestSlowBlock } from './data/read-model.js';   /*change-node-reset-v80*/
 import { resetNowLoading } from './views/now.js';
-import { nodeExec, invoke } from './data/tauri.js';
+import { nodeExec, invoke, getAppVersion } from './data/tauri.js';   /*app-version-v94*/
 import { getSession, setNodeProbe, getNodeProbe, loadConfig, markDisconnected } from './data/session.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
@@ -486,7 +486,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const settingsGear = document.getElementById('ttape-settings');
   if (settingsGear) settingsGear.addEventListener('click', () => showSettingsModal());
   const brandVer = document.getElementById('ttape-appver');
-  if (brandVer) brandVer.textContent = 'v' + APP_VERSION;
+  if (brandVer) getAppVersion().then((v) => { if (v) brandVer.textContent = 'v' + v; });   /*app-version-v94*/
 
   setMode('demo');
   paintMode();

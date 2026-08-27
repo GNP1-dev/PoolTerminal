@@ -240,7 +240,7 @@ const DELEGATORS_HTML = `
     .d-sortbtn:hover { color: var(--pt-text-primary); border-color: var(--pt-accent-blue); }
     .d-sortbtn.active { background: var(--pt-accent-blue); color: #fff; border-color: var(--pt-accent-blue); }
     /* Unified row: rank | addr | BIG bar | loyalty% | tenure | wt | penalties | stake | % */
-    .du-row { display: grid; grid-template-columns: 32px 150px 320px 64px 58px 48px 116px 92px 52px 150px; align-items: center; gap: 10px;
+    .du-row { display: grid; grid-template-columns: 32px 150px 302px 64px 58px 48px 116px 110px 52px 150px; align-items: center; gap: 10px;   /* stake col widened 92 to 110 for full whole-ADA figures - stake-whole-ada-v95 */
       padding: 7px 10px; border-bottom: 0.5px solid var(--pt-border); }
     .du-row.head { font: 700 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.6px; color: var(--pt-accent-blue); border-bottom: 1.5px solid var(--pt-border); position: sticky; top: 0; background: var(--pt-bg, #0d1117); z-index: 2; }
     .du-row:not(.head):hover { background: rgba(90,140,220,0.10); cursor: pointer; }
@@ -261,6 +261,11 @@ const DELEGATORS_HTML = `
        which vanished before you could switch to the Deleg/Stake buttons). */
     .du-row.hit, .du-row.hit td { background: rgba(214,178,70,0.30) !important; }
     .du-row.hit { box-shadow: inset 3px 0 0 var(--pt-accent-gold, #d6b246); }
+    /* Pending joiner rows: visible but dulled until their stake goes active. /*pending-joiners-v92*/
+    .du-row.du-pend { opacity: 0.5; }
+    .du-row.du-pend:hover { opacity: 0.85; }
+    .du-addr .joining { color: var(--pt-accent-blue); font: 700 9px ui-monospace, monospace;
+      text-transform: uppercase; letter-spacing: 0.4px; margin-left: 6px; white-space: nowrap; }
     @keyframes duhit { 0% { background: rgba(214,178,70,0.55); } 100% { background: rgba(214,178,70,0.30); } }
     .d-search { display: flex; align-items: center; gap: 8px; margin: 8px 8px 4px; }
     .d-search input { flex: 1; min-width: 0; background: var(--pt-bg, #0d1117); border: 1px solid var(--pt-border); border-radius: 6px; color: var(--pt-text-primary); font: 400 11px ui-monospace, monospace; padding: 6px 9px; }
@@ -268,6 +273,8 @@ const DELEGATORS_HTML = `
     .d-search button:hover { color: var(--pt-text-primary); }
     .d-search .msg { font: 400 11px ui-monospace, monospace; color: var(--pt-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
     .d-search .msg .full { color: var(--pt-accent-blue); cursor: pointer; }
+    .d-join-link { color: var(--pt-accent-blue); cursor: pointer; }   /* join-jump-v98 */
+    .d-join-link:hover { text-decoration: underline; }
     .du-barwrap { background: var(--pt-bg-strip, #1a2230); border-radius: 4px; height: 18px; overflow: hidden; display: flex; }
     .du-score { font: 700 14px ui-monospace, monospace; color: #fff; text-align: right; }
     .du-num { font: 600 11px ui-monospace, monospace; color: var(--pt-text-primary); text-align: right; }
@@ -293,6 +300,7 @@ const DELEGATORS_HTML = `
     .loy-seg { height: 18px; display: block; }
     .loy-seg-ten { background: #4a9eff; }
     .loy-seg-stk { background: #d6b246; }
+    .loy-seg-ceiling { background: rgba(214,178,70,0.10); border: 1px dashed #d6b246; box-sizing: border-box; border-radius: 3px; }   /* hollow = not yet earned - pend-ceiling-v98 */
     .loy-stats { font: 400 10px ui-monospace, monospace; color: var(--pt-text-muted); text-align: right; white-space: nowrap; }
     .loy-stats .score { font: 700 13px ui-monospace, monospace; color: var(--pt-text-primary); }
     .loy-stats .sub { display: block; margin-top: 2px; }
@@ -338,7 +346,6 @@ const DELEGATORS_HTML = `
   </div>`;
 
 const fmtAda = (n) => n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
-const fmtAdaFull = (n) => n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
 const shortStake = (s) => !s ? '—' : `${s.slice(0, 12)}…${s.slice(-6)}`;
 
 // Copy text to clipboard, with a brief check-mark on the button that fired.
@@ -859,12 +866,12 @@ function tenureLabel(epochs) {
   if (months < 24) return `${months.toFixed(months < 10 ? 1 : 0)}mo`;
   return `${(months / 12).toFixed(1)}yr`;
 }
-const fmtStakeShort = (ada) => {
-  if (ada == null) return '—';
-  if (ada >= 1_000_000) return `${(ada / 1_000_000).toFixed(1)}M`;
-  if (ada >= 1_000) return `${Math.round(ada / 1_000)}k`;
-  return String(ada);
-};
+// List rows show whole ADA with thousands separators (200,102 ₳) — no decimals,
+// no k/M abbreviation (the old form also leaked raw floats below 1,000 ₳, e.g.
+// "482.438102"). Pending and active rows share this. The exact figure stays in
+// the per-delegator modal and tooltips. /*stake-whole-ada-v95*/
+const fmtStakeShort = (ada) =>
+  (ada == null ? '—' : Number(ada).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 
 // Loyalty weighting (tunable). Score = tenureScore(0-100) × stakeWeight(0-1),
 // where stakeWeight = avg_stake / (avg_stake + K) sends dust → ~0 while
@@ -957,25 +964,49 @@ function unifiedRowHtml(r, idx, totalStakeLov, ownerSet) {
   const tipStk = hasLoy ? `Current stake ${Number(r.curStake).toLocaleString()} \u20b3 \u2192 stake-weight ${stakeWeightPct}% (dust\u22480, whales saturate). Gold = stake share.` : '';
   const tipScore = hasLoy ? `Loyalty ${r.loyalty.toFixed(1)}/100 = tenure-rank(${r.tScore.toFixed(0)}) \u00d7 stake-weight(${(r.stakeWeight).toFixed(2)})${r.defected ? ' \u00d7 0.25' : ''}${r.reductionPenalty < 0.999 ? ` \u00d7 ${r.reductionPenalty.toFixed(2)}` : ''}.` : 'No loyalty data';
 
-  const bar = hasLoy
-    ? `<span class="du-barwrap" title="Loyalty ${r.loyalty.toFixed(0)}/100 \u2014 blue tenure, gold stake.">
+  // Pending joiner: delegation cert seen on-chain but not yet in an epoch
+  // snapshot. Row is dulled, tagged with the epoch it activates, and kept out
+  // of the active-stake %/totals so the pool numbers stay honest. /*pending-joiners-v92*/
+  const isPend = !!r.pending;
+
+  // Pending rows get a HOLLOW gold outline, not a filled segment: the filled
+  // bar's length is the loyalty score, which is zero without tenure, so solid
+  // gold here would claim a score that hasn't been earned. The outline sits at
+  // 100 x stakeWeight, exactly the bar an active row shows at max tenure with
+  // no penalties: the ceiling this stake grows toward, in the same units on
+  // the same axis. /*pend-ceiling-v98*/
+  let bar = `<span class="du-barwrap"></span>`;
+  if (hasLoy) {
+    bar = `<span class="du-barwrap" title="Loyalty ${r.loyalty.toFixed(0)}/100 \u2014 blue tenure, gold stake.">
          <span class="loy-seg loy-seg-ten" style="width:${tenW}%" title="${tipTen}"></span>
          <span class="loy-seg loy-seg-stk" style="width:${stkW}%" title="${tipStk}"></span>
-       </span>`
-    : `<span class="du-barwrap"></span>`;
+       </span>`;
+  } else if (isPend) {
+    const sw = (r.liveStake || 0) / ((r.liveStake || 0) + LOY_K);
+    const swPct = Math.round(sw * 100);
+    const tipPend = `Stake-weight ${swPct}% of a possible 100 (dust counts for almost nothing, whales saturate). The outline is the ceiling the loyalty bar grows toward. Tenure, and the loyalty score, start when this stake goes active in epoch ${r.activeEpochNo ?? '?'}.`;
+    bar = `<span class="du-barwrap" title="${tipPend}">
+         <span class="loy-seg loy-seg-ceiling" style="width:${(sw * 100).toFixed(1)}%" title="${tipPend}"></span>
+       </span>`;
+  }
 
   let mark = '';
   if (isMe) mark = '<span class="me">you</span>';
-  return `<div class="du-row" data-stake="${r.stake}">
-    <span class="du-rank${idx < 3 ? ' top' : ''}">${idx + 1}</span>
+  if (isPend) mark += `<span class="joining" title="Delegation seen on-chain, not yet active stake. Becomes active in epoch ${r.activeEpochNo ?? '?'}.">new · ep ${r.activeEpochNo ?? '?'}</span>`;
+  const stakeTip = isPend
+    ? `Live wallet balance (unspent UTxO). This delegation is not yet active. It becomes active stake in epoch ${r.activeEpochNo ?? '?'}.`
+    : (r.stakeBasis === 'snapshot' ? `Active stake at the epoch ${r.basisEpoch ?? '?'} snapshot. Open Stake history for the live balance (UTxO + undrawn rewards).` : 'Current live stake (UTxO + undrawn rewards)');
+  const rank = r._rank ?? (idx + 1);
+  return `<div class="du-row${isPend ? ' du-pend' : ''}" data-stake="${r.stake}">
+    <span class="du-rank${!isPend && rank <= 3 ? ' top' : ''}">${isPend ? '·' : rank}</span>
     <span class="du-addr" title="${r.stake}\nClick for full stake history"><span class="du-addr-t">${shortStake(r.stake)}${mark}</span><button class="du-copy" type="button" data-copy="${r.stake}" title="Copy full stake address">\u29C9 copy</button></span>
     ${bar}
     <span class="du-score" title="${tipScore}">${hasLoy ? r.loyalty.toFixed(0) : '\u2014'}</span>
     <span class="du-num" title="${tipTen}">${hasLoy ? tenureLabel(r.tenure) : '\u2014'}</span>
     <span class="du-num dim" title="${tipStk}">${hasLoy ? stakeWeightPct + '%' : '\u2014'}</span>
     <span class="du-pen">${penCell}</span>
-    <span class="du-stake" title="${r.stakeBasis === 'snapshot' ? `Active stake at the epoch ${r.basisEpoch ?? '?'} snapshot. Open Stake history for the live balance (UTxO + undrawn rewards).` : 'Current live stake (UTxO + undrawn rewards)'}">${fmtStakeShort(r.liveStake)} \u20b3</span>
-    <span class="du-pct">${pct.toFixed(2)}%</span>
+    <span class="du-stake" title="${stakeTip}">${fmtStakeShort(r.liveStake)} \u20b3</span>
+    <span class="du-pct">${isPend ? '\u2014' : pct.toFixed(2) + '%'}</span>
     <span class="du-actions"><button class="du-actbtn du-deleg" type="button" data-stake="${r.stake}" title="Delegation history (pool movements)">Deleg</button><button class="du-actbtn du-stakehist" type="button" data-stake="${r.stake}" title="Stake history (per-epoch balance)">Stake</button></span>
   </div>`;
 }
@@ -1000,8 +1031,17 @@ function renderUnified() {
   if (!wrap) return;
   const dustOn = !!document.getElementById('d-dust')?.checked;
   let view = _duRows.filter((r) => !dustOn || (r.liveStake || 0) >= LOY_DUST_FLOOR);
+  // Pending joiners sort as full list members (the v92 pin-to-top override is
+  // gone). Stake sort: inline — their stake is real and comparable. Loyalty
+  // sort: they have NO loyalty value (unmeasured, not zero), so they sort
+  // last, ordered by stake among themselves. They stay dulled + unranked;
+  // the hero's "+N joining" note is the discovery cue. /*pend-sort-v97*/
   if (_duSort === 'stake') view.sort((a, b) => (b.liveStakeLovelace || 0) - (a.liveStakeLovelace || 0));
-  else view.sort((a, b) => (b.loyalty ?? -1) - (a.loyalty ?? -1));
+  else view.sort((a, b) =>
+    ((b.loyalty ?? -1) - (a.loyalty ?? -1))   // no-value rows (all pending) below every scored row, incl. genuine 0s
+    || ((b.liveStakeLovelace || 0) - (a.liveStakeLovelace || 0)));
+  let _rankN = 1;
+  view.forEach((r) => { r._rank = r.pending ? null : _rankN++; });
 
   _duView = view;
   const hidden = _duRows.length - view.length;
@@ -1099,32 +1139,6 @@ function renderEmpty(root) {
          The rest of PoolTerminal works without it.</p>
       <p class="v-muted">Once a source is connected, this view fills automatically.</p>
     </div>`;
-}
-
-function renderTable(el, list, totalStake) {
-  const rows = list.map((d, i) => {
-    const pct = totalStake ? (d.liveStakeLovelace / totalStake) * 100 : 0;
-    const barW = Math.max(2, Math.round(pct * 1.6));   // visual scale
-    const badge = d.isOwner ? '<span class="badge badge-pledge">pledge</span>' : '';
-    return `<tr data-stake="${d.stake}" title="Click to view full stake history">
-      <td class="left">${i + 1}</td>
-      <td class="left addr">${shortStake(d.stake)}${badge}<span class="click-hint">Click to view full stake history →</span></td>
-      <td>${fmtAda(d.liveStake)}</td>
-      <td>${pct.toFixed(2)}%</td>
-      <td class="left"><span class="bar" style="width:${barW}px"></span></td>
-    </tr>`;
-  }).join('');
-  el.innerHTML = `
-    <table>
-      <thead><tr>
-        <th>#</th><th class="left">Stake address</th><th>Live stake ₳</th><th>% of pool</th><th class="left">&nbsp;</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-  // Row click → deep-dive modal
-  el.querySelectorAll('tr[data-stake]').forEach((tr) => {
-    tr.addEventListener('click', () => openDeepDive(tr.getAttribute('data-stake')));
-  });
 }
 
 // ---- Loading overlay + staged progress -------------------------------------
@@ -1257,11 +1271,15 @@ export async function mountDelegators(canvas) {
   if (!_cacheFresh) { _duListCache = list; _duLiveCache = live; _duCacheTs = Date.now(); }
 
   // Hero stats (computed on the FULL list — totals are always whole-pool).
-  const totalStakeLov = list.reduce((s, d) => s + (d.liveStakeLovelace || 0), 0);
+  // Pending joiners (cert on-chain, stake not yet active) are excluded from the
+  // totals and the top slot: the hero reports active figures. /*pending-joiners-v92*/
+  const activeList = list.filter((d) => !d.pending);
+  const pendCount = list.length - activeList.length;
+  const totalStakeLov = activeList.reduce((s, d) => s + (d.liveStakeLovelace || 0), 0);
   // Largest single delegator by stake - the list order from Koios is not
   // reliably stake-descending, so compute the max explicitly.
-  const top = list.reduce((m, d) => (!m || (d.liveStakeLovelace || 0) > (m.liveStakeLovelace || 0)) ? d : m, null);
-  setText('d-count', live?.liveDelegators != null ? String(live.liveDelegators) : String(list.length));
+  const top = activeList.reduce((m, d) => (!m || (d.liveStakeLovelace || 0) > (m.liveStakeLovelace || 0)) ? d : m, null);
+  setText('d-count', live?.liveDelegators != null ? String(live.liveDelegators) : String(activeList.length));
   setText('d-stake', fmtAda(live?.liveStake));
   setText('d-active', live?.activeStake != null ? fmtAda(live.activeStake) : '—');
   setText('d-top', top ? fmtAda(top.liveStake) : '—');
@@ -1290,7 +1308,20 @@ export async function mountDelegators(canvas) {
       if (diff !== 0) churnNote = ` · ${diff > 0 ? '+' : ''}${diff} vs last epoch`;
     }
   } catch { /* ignore */ }
-  setText('d-count-sub', `live${churnNote}`);
+  // "+N joining" is a link that jumps to the first pending row in the list —
+  // now that pending rows sort as full members (pend-sort-v97) they land on
+  // the LAST page under the default loyalty sort, so the counter alone would
+  // say they exist without saying where. Reuses the search jump (page + scroll
+  // + pulse). /*join-jump-v98*/
+  const countSub = document.getElementById('d-count-sub');
+  if (countSub) {
+    countSub.innerHTML = `live${churnNote}${pendCount ? ` · <span class="d-join-link" id="d-join-link" title="Show the joining delegators in the list">+${pendCount} joining</span>` : ''}`;
+    const jl = document.getElementById('d-join-link');
+    if (jl) jl.addEventListener('click', () => {
+      const p = _duView.find((r) => r.pending) || _duRows.find((r) => r.pending);
+      if (p) jumpToStake(p.stake);
+    });
+  }
 
   // Dust filter (default ON): hide delegators under 5 ₳. Totals/hero stay
   // Build the unified table: merge the stake list with loyalty data (keyed by

@@ -22,14 +22,19 @@
 import { DBSYNC_TESTED_SCHEMA as schemaTested, initDbsync } from '../data/dbsync-query.js';
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
-import { setMode } from '../data/index.js';
-import { isConnected, getSession } from '../data/session.js';
+import { setMode, getMode } from '../data/index.js';   /*wz-cancel-v95*/
+import { isConnected, getSession, loadConfig } from '../data/session.js';
 import { applyBlockfrostKey } from '../data/read-model.js';
 import { setKoiosToken, hasKoiosToken, getKoiosToken } from '../data/koios-token.js';
 import { setPaused } from '../data/koios-meter.js';
 import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
+import { getAppVersion } from '../data/tauri.js';   /*app-version-v94*/
 
-const APP_VERSION = '0.1.0';   // keep in step with package.json
+// Resolved from the Tauri runtime at module load; the wizard's final step is
+// always rendered long after this settles. Never hardcode a version here — the
+// old constant sat on 0.1.0 for three releases. /*app-version-v94*/
+let APP_VERSION = '…';
+getAppVersion().then((v) => { if (v) APP_VERSION = v; });
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -541,6 +546,12 @@ const STEPS = [
 
 const STYLE = `
 .pt-modal-wizard { max-width: 620px; }
+.wz-header { display: flex; align-items: center; justify-content: space-between; }   /* wz-cancel-v95 */
+.wz-close-grp { display: flex; align-items: center; gap: 7px; }   /* esc-hint-v96: rendered only when cancel is available, so the hint never lies */
+.wz-esc-hint { font-size: 10px; color: var(--pt-text-muted, #97A0B0); white-space: nowrap; }
+.wz-esc-hint kbd { font: 600 9px ui-monospace, monospace; color: var(--pt-text-muted, #97A0B0); border: 1px solid rgba(120,150,190,0.35); border-radius: 3px; padding: 1px 4px 2px; background: rgba(120,150,190,0.08); }
+.wz-close { background: none; border: 0; color: var(--pt-text-muted, #97A0B0); font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+.wz-close:hover { color: var(--pt-text-primary, #E6EBF2); }
 .wz-progress { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px; }
 .wz-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(120,150,190,0.3); transition: background .25s, transform .25s; }
 .wz-dot.wz-dot-on { background: var(--pt-accent-blue, #4aa3ff); transform: scale(1.35); }
@@ -789,13 +800,26 @@ export function showSetupWizard(opts = {}) {
   }
   let idx = Number.isInteger(opts._startIndex) ? opts._startIndex : 0;
 
+  // Escapable only when there is a working setup to fall back to: a live
+  // session (Settings > re-run while connected), or demo mode on an install
+  // that already has a saved config. First-run gets NO close control — cancel
+  // there would strand an unconfigured app (the Welcome step's demo link is
+  // that path's way out) — and neither does the disconnect/change-node flow,
+  // where the old session is already torn down so there is nothing to return
+  // to. Cancelling writes nothing: every choice lives in `wiz` until
+  // applyWizard() runs on Finish, so the existing config stands untouched.
+  // /*wz-cancel-v95*/
+  const _savedCfg = (() => { try { return loadConfig(); } catch { return null; } })();
+  const canCancel = isConnected() || (getMode() === 'demo' && !!(_savedCfg && _savedCfg.transport));
+
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="pt-modal-backdrop" id="wz-modal">
       <div class="pt-modal pt-modal-wizard">
         <div class="wz-progress" id="wz-progress"></div>
-        <div class="pt-modal-header">
+        <div class="pt-modal-header wz-header">
           <div class="pt-modal-title" id="wz-title"></div>
+          ${canCancel ? '<div class="wz-close-grp"><span class="wz-esc-hint"><kbd>Esc</kbd> to close</span><button class="wz-close" id="wz-close" type="button" title="Close and keep your current setup">✕</button></div>' : ''}
         </div>
         <style>${STYLE}</style>
         <div class="wz-body" id="wz-body"></div>
@@ -810,6 +834,24 @@ export function showSetupWizard(opts = {}) {
   document.body.appendChild(modal);
 
   const $ = (id) => modal.querySelector(id);
+
+  // Cancel = discard: remove the modal, save nothing, return to the app as it
+  // was. Escape mirrors the ✕. The keydown listener self-cleans if the modal
+  // was removed by another path (connect hand-off, demo link, Finish).
+  // /*wz-cancel-v95*/
+  const cancelWizard = () => {
+    document.removeEventListener('keydown', onWizKey);
+    modal.remove();
+  };
+  function onWizKey(e) {
+    if (!modal.isConnected) { document.removeEventListener('keydown', onWizKey); return; }
+    if (e.key === 'Escape') cancelWizard();
+  }
+  if (canCancel) {
+    document.addEventListener('keydown', onWizKey);
+    const xb = $('#wz-close');
+    if (xb) xb.addEventListener('click', cancelWizard);
+  }
 
   // Skip-aware navigation: a step whose skip(wiz) returns true is passed over. /*wz-skip-v61*/
   const stepVisible = (i) => { const s = STEPS[i]; return !(s && typeof s.skip === 'function' && s.skip(wiz)); };

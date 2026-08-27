@@ -316,7 +316,7 @@ export async function getDelegatorList() {
   // otherwise a db-sync install reads a little under an explorer and looks wrong.
   // Live stake per account needs a UTxO anti-join (~50ms each, ~6s pool-wide), so
   // it stays on-demand in the per-delegator modal. /*acct-live-v79*/
-  return (rows || []).map((r) => {
+  const out = (rows || []).map((r) => {
     const lov = Number(r.lovelace);
     return {
       stake: r.stake,
@@ -327,6 +327,64 @@ export async function getDelegatorList() {
       basisEpoch: numOrNull(r.epoch),
     };
   });
+
+  // Pending joiners: accounts whose LATEST delegation cert points at us with an
+  // active_epoch_no beyond the newest complete snapshot — on-chain already, but
+  // invisible in epoch_stake for up to 2 epochs. Without these rows a brand-new
+  // delegator does not exist in the DELEGATORS view until the snapshot lands.
+  // Their stake figure is the live wallet balance (unspent UTxO sum), basis
+  // 'live', flagged `pending` so the view dulls them and skips them in active
+  // totals. The window self-closes: once the snapshot completes they move into
+  // the query above. Joiner counts are tiny, so the UTxO sum is cheap. A
+  // failure here only loses the bonus rows, never the list. /*pending-joiners-v92*/
+  //
+  // The UTxO set MUST be the tx_in anti-join AND consumed_by_tx_id (see the
+  // getAccountActivity header: this db-sync records most spends only in tx_in,
+  // so filtering on consumed_by_tx_id alone counts long-spent outputs and
+  // inflated a 200k account to 12M). Same rule as acct-live-v79.
+  // /*pend-utxo-antijoin-v94*/
+  try {
+    const pend = await pgQuery(_cfg, `
+      WITH cur AS (SELECT MAX(epoch_no) AS e FROM epoch_stake_progress WHERE completed),
+      joiners AS (
+        SELECT DISTINCT d.addr_id FROM delegation d
+        WHERE d.pool_hash_id = ${_poolId} AND d.active_epoch_no > (SELECT e FROM cur)
+      ),
+      latest AS (
+        SELECT DISTINCT ON (d.addr_id) d.addr_id, d.pool_hash_id, d.active_epoch_no, d.tx_id
+        FROM delegation d JOIN joiners j ON j.addr_id = d.addr_id
+        ORDER BY d.addr_id, d.tx_id DESC
+      ),
+      pend AS (
+        SELECT l.addr_id, l.active_epoch_no FROM latest l
+        WHERE l.pool_hash_id = ${_poolId}
+          AND NOT EXISTS (SELECT 1 FROM epoch_stake es WHERE es.addr_id = l.addr_id
+                          AND es.pool_id = ${_poolId} AND es.epoch_no = (SELECT e FROM cur))
+          AND NOT EXISTS (SELECT 1 FROM stake_deregistration sd
+                          WHERE sd.addr_id = l.addr_id AND sd.tx_id > l.tx_id)
+      )
+      SELECT sa.view::text AS stake, pd.active_epoch_no::text AS active_epoch,
+             COALESCE(SUM(txo.value),0)::text AS lovelace
+      FROM pend pd
+      JOIN stake_address sa ON sa.id = pd.addr_id
+      LEFT JOIN tx_out txo ON txo.stake_address_id = pd.addr_id AND txo.consumed_by_tx_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM tx_in ti WHERE ti.tx_out_id = txo.tx_id AND ti.tx_out_index = txo.index)
+      GROUP BY sa.view, pd.active_epoch_no`);
+    for (const r of (pend || [])) {
+      const lov = Number(r.lovelace);
+      out.push({
+        stake: r.stake,
+        liveStake: lov / 1_000_000,
+        liveStakeLovelace: lov,
+        isOwner: owners.has(r.stake),
+        stakeBasis: 'live',
+        basisEpoch: null,
+        pending: true,
+        activeEpochNo: numOrNull(r.active_epoch),
+      });
+    }
+  } catch { /* pending joiners are a bonus — the snapshot list stands alone */ }
+  return out;
 }
 
 /**

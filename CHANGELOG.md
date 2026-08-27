@@ -6,6 +6,48 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
+## [0.3.2] - 2026-08-27
+
+### Added
+
+- **Delegators joining the pool now appear before their stake goes
+  active.** Previously a new delegator was invisible until the epoch
+  boundary. Pending rows are dulled, tagged with the epoch their stake
+  activates, and excluded from pool totals and the delegator count. The
+  count card shows "+N joining" as a link that jumps to them.
+- Pending rows show a dashed gold outline on the loyalty bar, sized to
+  their stake weight. It marks the ceiling the bar will grow toward
+  rather than a score, since tenure only starts accruing once the stake
+  is active.
+- The setup wizard can be closed when it is opened from Settings on a
+  working install, with a close button and Escape. Cancelling discards
+  everything and leaves the existing configuration untouched. First-run
+  and the Change Node flow deliberately have no close control, since
+  cancelling there would leave the app unusable.
+
+### Fixed
+
+- **The version shown in the app was hardcoded and wrong.** The header,
+  About view and setup wizard each carried their own string; the wizard's
+  had said 0.1.0 since three releases ago. All three now read the version
+  from the packaged binary, so they cannot drift again.
+- **A pending delegator's stake was shown far too high** — one 200,102
+  ADA joiner displayed as 12,010,647 ADA. The query summed transaction
+  outputs filtered only on `consumed_by_tx_id`, which is sparsely
+  populated in db-sync, so long-spent outputs were counted as unspent.
+  The figure was closer to lifetime ADA received than current balance.
+  It now uses a proper UTxO anti-join. Active rows were never affected,
+  as they come from the ledger's own snapshot.
+- Stake in the delegator list is shown in whole ADA. Small balances were
+  previously printed as raw floats and large ones abbreviated.
+- Sorting the delegator list now repositions pending rows. They sort
+  inline by stake, and group at the end when sorting by loyalty, since a
+  pending delegator has no loyalty score to compare.
+
+### Removed
+
+- Two dead functions in the delegators view with no callers.
+
 ## [0.3.1] - 2026-08-27
 
 ### Fixed
@@ -69,6 +111,7 @@ behaviour may change between minor versions.
 
 - Initial release.
 
+[0.3.2]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.2
 [0.3.1]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.1
 [0.3.0]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.0
 [0.2.0]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.2.0

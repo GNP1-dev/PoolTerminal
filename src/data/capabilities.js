@@ -37,7 +37,7 @@ export const DataKind = Object.freeze({
   REWARD_ADDRESS: 'REWARD_ADDRESS',
   // Live pool & delegators (DELEGATORS view — own pool)
   POOL_LIVE: 'POOL_LIVE',               // rich live summary: live/active stake, saturation, pledge, counts
-  DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators: [{ stake, liveStake, stakeBasis:'snapshot'|undefined, basisEpoch }] — db-sync serves the epoch_stake snapshot, Koios/Blockfrost serve live stake, so rows declare their basis
+  DELEGATOR_LIST: 'DELEGATOR_LIST',     // current delegators: [{ stake, liveStake, stakeBasis:'snapshot'|undefined, basisEpoch }] — db-sync serves the epoch_stake snapshot, Koios/Blockfrost serve live stake, so rows declare their basis. db-sync also appends not-yet-active joiners flagged { pending:true, activeEpochNo, stakeBasis:'live' } /*pending-joiners-v92*/
   DELEGATOR_LIST_LIVE: 'DELEGATOR_LIST_LIVE', // live delegators, intra-epoch: [{ stake, liveStake, liveStakeLovelace, latestDelegTx, activeEpochNo }]
   DELEGATOR_DETAIL: 'DELEGATOR_DETAIL', // one delegator: snapshot balance + live `account` (utxo, rewardsAvailable, totalBalance), rewards, tenure, drep, pool trail
   // NOTE on epoch labelling for both kinds above and below: every source labels

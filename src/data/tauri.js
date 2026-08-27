@@ -31,3 +31,19 @@ export function invoke(cmd, args) {
 export function nodeExec(command) {
   return invoke('ssh_run', { command });
 }
+
+// Packaged app version, straight from the Tauri runtime (core app plugin, the
+// version field in tauri.conf.json). The ONLY source of the displayed version:
+// hardcoded strings in src drifted at every release (About showed 0.3.0 on a
+// 0.3.1 build, the wizard still said 0.1.0). Resolved once, cached; a failed
+// resolve returns '' and retries on the next call. /*app-version-v94*/
+let _appVerPromise = null;
+export function getAppVersion() {
+  if (!_appVerPromise) {
+    _appVerPromise = Promise.resolve()
+      .then(() => invoke('plugin:app|version'))
+      .then((v) => String(v || ''))
+      .catch(() => { _appVerPromise = null; return ''; });
+  }
+  return _appVerPromise;
+}

@@ -6,6 +6,80 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
+## [0.3.3] - 2026-08-28
+
+### Added
+
+- **Demo mode now populates every view.** Previously only the Dashboard had
+  synthetic data and the other tabs rendered empty, which meant anyone
+  evaluating PoolTerminal before connecting it to a block producer saw
+  half an application. Delegators, History, Notifications, Node health,
+  Logs, Data, Map and both Relay tabs are now filled from a single
+  deterministic synthetic world: a 211-epoch pool with 107 delegators,
+  two pending joiners, realistic luck, lost blocks and blockless epochs.
+  Figures are internally consistent across tabs and stable within an
+  epoch, so what you see on one screen agrees with every other.
+- Stake addresses and transaction hashes in demo mode are correctly
+  formed but resolve to nothing on chain, so no demo delegator can be
+  looked up and found to be a real person.
+- A leak-audit harness (`src/dev/leak-tour.js`), inert unless armed, which
+  fills every live-side surface, switches to demo, walks all twelve tabs
+  and scans each for real values. It runs against a packaged build, so a
+  release can be audited as the artefact users will actually download.
+- `RELEASING.md`, a release checklist gated on that audit.
+
+### Fixed
+
+- **Real pool data could appear in demo mode.** Three view-level caches
+  held live data and repainted it after a switch to demo: the delegator
+  list (every delegator address, stake and loyalty row, plus the pool's
+  hero figures), the dashboard's last snapshot including upcoming leader
+  slot times, and the on-chain metadata feed. All three are now dropped
+  when the mode changes, and the delegator cache additionally records
+  which mode filled it. An operator could previously have screenshotted a
+  screen labelled DEMO that was showing their own delegators.
+- **Demo mode made external network calls.** It geolocated the user's own
+  IP address, and every map fetched its basemap from a CDN. Geolocation
+  is now synthetic in demo, and the basemap is bundled, which also means
+  maps work offline in live mode.
+- **The Logs workspace showed real values in demo.** Its sample output had
+  been captured from a real node during development and lightly relabelled,
+  so demo mode displayed genuine leader-slot counts, block heights,
+  process IDs and KES periods. All samples are now generated from the
+  synthetic world. The About view no longer names the connected host in
+  demo, and the Alerts view no longer renders a real bot token or chat ID.
+- **Background collectors kept running after switching to demo.** Long
+  history and enrichment loops carried on until they were rejected by the
+  isolation guard, filling the console with errors and consuming retry
+  attempts. They now stop cleanly on a mode change and resume on return
+  to live.
+- **Reconnecting to a node required the whole setup wizard again.**
+  Disconnecting now returns to the connect screen prefilled from saved
+  configuration, so reconnecting is a single action. The wizard remains
+  one click away for genuinely changing node or settings, and a failed
+  connection explains itself rather than dropping into setup.
+- **Disconnecting deleted the local cache.** Any visit to demo mode by way
+  of Disconnect cost the operator their entire notification history. The
+  cache is now cleared at connect time and only when connecting to a
+  different pool, which preserves the protection it was there for at none
+  of the cost.
+- **Telegram alert configuration was stored in that cache**, so
+  disconnecting silently deleted the bot settings, which then appeared to
+  vanish at the next launch. Alert configuration now lives with the other
+  user settings, where no cache-clearing routine can reach it. Existing
+  settings are migrated automatically.
+- **Logs defaults are derived from the connected node.** They were
+  previously hardcoded, which meant they suited one particular layout and
+  every other operator had to correct them by hand. The unit name and
+  blocklog path are now read from the node's own environment.
+
+### Removed
+
+- Personal values that had been hardcoded as defaults and examples: a
+  block producer's LAN address and username in the connect form, a real
+  delegator's stake address in a developer test, a specific pool ticker as
+  a fallback, and several non-standard paths presented as defaults.
+
 ## [0.3.2] - 2026-08-27
 
 ### Added
@@ -111,6 +185,7 @@ behaviour may change between minor versions.
 
 - Initial release.
 
+[0.3.3]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.3
 [0.3.2]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.2
 [0.3.1]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.1
 [0.3.0]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.0

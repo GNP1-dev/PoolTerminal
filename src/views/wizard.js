@@ -372,7 +372,7 @@ const STEPS = [
       ${prereq}
       <div class="wz-subhead">SSH to the db-sync machine</div>
       <div class="wz-row">
-        <div class="wz-field"><label>SSH host</label><input id="wz-ssh-host" type="text" value="${esc(ssh.host || '')}" placeholder="192.168.0.x or hostname" autocomplete="off"></div>
+        <div class="wz-field"><label>SSH host</label><input id="wz-ssh-host" type="text" value="${esc(ssh.host || '')}" placeholder="192.168.1.x or hostname" autocomplete="off"></div>
         <div class="wz-field" style="flex:0.4"><label>Port</label><input id="wz-ssh-port" type="number" value="${ssh.port || 22}" autocomplete="off"></div>
       </div>
       <div class="wz-field"><label>SSH username</label><input id="wz-ssh-user" type="text" value="${esc(ssh.username || '')}" autocomplete="off"></div>
@@ -905,6 +905,10 @@ export function showSetupWizard(opts = {}) {
       if (d) d.addEventListener('click', () => {   /*wz-demo-welcome-v37*/
         setMode('demo');
         modal.remove();
+        // Tell main.js the mode flipped so the badge repaints (it now carries
+        // the click-to-return-to-LIVE affordance) and the view remounts on
+        // demo data. /*demo-world-v99*/
+        window.dispatchEvent(new Event('pt:mode-changed'));
         if (onComplete) onComplete(wiz);
       });
     }

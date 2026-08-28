@@ -21,6 +21,7 @@
  */
 
 import { invoke } from '../data/tauri.js';
+import { getMode } from '../data/index.js';   /*alerts-demo-blank-v103*/
 import {
   getAlertConfig, saveAlertConfig, ALERT_DEFS,
 } from '../data/alerts-config.js';
@@ -63,7 +64,15 @@ async function detectChatId(token) {
 
 export function mountAlerts(root) {
   mounted = true;
-  const cfg = getAlertConfig();
+  // Demo renders the UNCONFIGURED shell: the real config would put the user's
+  // bot token in the DOM (masked input, but present) and the chat ID in plain
+  // text - real values on a demo screen. Alerts only fire in live mode anyway.
+  // Edits made in demo are discarded with the throwaway object, never saved
+  // over live config. /*alerts-demo-blank-v103*/
+  const demo = getMode() === 'demo';
+  const cfg = demo
+    ? { telegram: { token: '', chatId: '' }, alerts: {}, cooldownMin: 15, quietHours: { enabled: false, from: '23:00', to: '07:00' }, recent: [] }
+    : getAlertConfig();
   root.innerHTML = renderShell(cfg);
   wireUp(root, cfg);
 }

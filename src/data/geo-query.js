@@ -54,7 +54,18 @@ async function runCmd(command) {
   return r?.stdout ?? '';
 }
 
+// DEMO ISOLATION /*demo-world-v99*/: in demo mode every geo answer comes from
+// the synthetic world — the batch lookup and the own-location probe are the
+// two places demo used to leak: ip-api.com was called (via the node's curl!)
+// and the OWN-IP lookup geolocated the user's real home. The cached-entry
+// getter is gated too, because the persisted cache may hold a previous LIVE
+// session's real locations under the self key.
+import { getMode } from './index.js';
+import { demoGeo, demoOwnGeo } from './demo-world.js';
+const _demo = () => { try { return getMode() === 'demo'; } catch { return false; } };
+
 export function getCachedGeo(ip) {
+  if (_demo()) return demoGeo(ip);
   return cache.get(ip) || null;
 }
 
@@ -63,6 +74,7 @@ export function getCachedGeo(ip) {
  * Returns when done (whether successful or not).
  */
 export async function lookupGeoBatch(ips, runner) {
+  if (_demo()) return;   // demo IPs resolve via getCachedGeo -> demoGeo; no network ever /*demo-world-v99*/
   const run = runner || runCmd;
   const need = [...new Set(ips)].filter(
     (ip) => ip && !cache.has(ip) && !isPrivateIp(ip)
@@ -120,6 +132,7 @@ export async function lookupGeoBatch(ips, runner) {
  * Resolve our own node's public location. Cached after first call.
  */
 export async function getOwnLocation(runner, key) {
+  if (_demo()) return demoOwnGeo();   // never geolocate the real host in demo /*demo-world-v99*/
   const run = runner || runCmd;
   const selfKey = key || SELF_KEY;
   if (cache.has(selfKey)) return cache.get(selfKey);

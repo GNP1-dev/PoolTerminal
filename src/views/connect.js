@@ -20,6 +20,7 @@ import { invoke } from '../data/tauri.js';
 import { loadConfig, saveConfig, markConnected, setTransport, isConnected } from '../data/session.js';
 import { setMode } from '../data/index.js';
 import { resetNowLoading } from './now.js';
+import { ensureCacheForPool } from '../data/read-model.js';   /*pool-scoped-cache-v102*/
 
 const MODAL_HTML = `
 <div class="pt-modal-backdrop" id="cn-modal">
@@ -72,7 +73,7 @@ const MODAL_HTML = `
       <div class="pt-field-row">
         <div class="pt-field" style="flex: 2">
           <label>Host</label>
-          <input id="cn-host" type="text" placeholder="192.168.0.62" autocomplete="off">
+          <input id="cn-host" type="text" placeholder="192.168.1.10" autocomplete="off">
         </div>
         <div class="pt-field" style="flex: 0.6">
           <label>Port</label>
@@ -80,14 +81,14 @@ const MODAL_HTML = `
         </div>
         <div class="pt-field" style="flex: 1.5">
           <label>Username</label>
-          <input id="cn-user" type="text" placeholder="russell" autocomplete="off">
+          <input id="cn-user" type="text" placeholder="ada" autocomplete="off">
         </div>
       </div>
       </div>
 
       <div class="pt-field">
         <label>Env file path (on the node)</label>
-        <input id="cn-env" type="text" placeholder="/opt/cardano/cnode_bp/scripts/env" autocomplete="off">
+        <input id="cn-env" type="text" placeholder="/opt/cardano/cnode/scripts/env" autocomplete="off">
         <div class="pt-field-hint">Your Guild Operators env file. Sourced once with "offline" flag so all paths come from one canonical source.</div>
       </div>
 
@@ -150,6 +151,7 @@ const MODAL_HTML = `
       <div class="pt-modal-status" id="cn-status" style="display:none"></div>
     </div>
     <div class="pt-modal-actions">
+      <button id="cn-wizard" class="pt-btn pt-btn-secondary" style="display:none;margin-right:auto" title="Full guided setup: change node, data sources, notifications">Run setup wizard…</button>
       <button id="cn-cancel" class="pt-btn pt-btn-secondary" style="display:none">Cancel</button>
       <button id="cn-back" class="pt-btn pt-btn-secondary" style="display:none">Back</button>
       <button id="cn-connect" class="pt-btn pt-btn-primary">Connect</button>
@@ -218,7 +220,7 @@ function validate(conn) {
   }
   if (!conn.host) return 'Host is required';
   if (/^(localhost|127\.0\.0\.1|::1)$/i.test(conn.host))
-    return 'For SSH, enter the node\u2019s real address (e.g. 192.168.0.62), not localhost. Use "This machine" if PoolTerminal runs on the node itself.';
+    return 'For SSH, enter the node\u2019s real address (e.g. 192.168.1.10), not localhost. Use "This machine" if PoolTerminal runs on the node itself.';
   if (!conn.user) return 'Username is required';
   if (!conn.envFile) return 'Env file path is required';
   if (conn.authMethod === 'agent') return null;
@@ -338,6 +340,7 @@ export async function resumeLive(cfg, onDone) {
     markConnected(cfg, envVars);
     resetNowLoading();
     setMode('live');
+    await ensureCacheForPool(envVars.POOL_ID);   // clears the cache only if the pool changed /*pool-scoped-cache-v102*/
     console.log('[resume] reused existing session, env re-probed OK');
     if (onDone) onDone({ mode: 'live', envVars });
     return true;
@@ -361,10 +364,10 @@ export function showConnectModal(onDone, opts = {}) {
   const isLocalHostVal = (h) => !h || /^(localhost|127\.0\.0\.1|::1)$/i.test(String(h).trim());
   byId('cn-host').value = (cfg.transport !== 'local' && !isLocalHostVal(cfg.host))
     ? cfg.host
-    : '192.168.0.62';
+    : '192.168.1.10';
   byId('cn-port').value = cfg.port || 22;
-  byId('cn-user').value = cfg.user || 'russell';
-  byId('cn-env').value = cfg.envFile || '/opt/cardano/cnode_bp/scripts/env';
+  byId('cn-user').value = cfg.user || 'ada';
+  byId('cn-env').value = cfg.envFile || '/opt/cardano/cnode/scripts/env';
   byId('cn-auth-order').value = cfg.authOrder || 'code_then_password';
   byId('cn-auth-method').value = cfg.authMethod || 'password';
   byId('cn-conn-type').value = cfg.transport || 'ssh';
@@ -376,7 +379,7 @@ export function showConnectModal(onDone, opts = {}) {
   // When switching to SSH, never leave a leftover "localhost" in the host box.
   byId('cn-conn-type').addEventListener('change', () => {
     if (byId('cn-conn-type').value !== 'local' && isLocalHostVal(byId('cn-host').value)) {
-      byId('cn-host').value = '192.168.0.62';
+      byId('cn-host').value = '192.168.1.10';
     }
   });
 
@@ -393,6 +396,26 @@ export function showConnectModal(onDone, opts = {}) {
   if (opts.showBack) {
     const bk = byId('cn-back');
     if (bk) { bk.style.display = ''; bk.addEventListener('click', () => { modal.remove(); if (onDone) onDone({ mode: 'back' }); }); }
+  }
+
+  // Opened as the fast-reconnect path (Disconnect / Change Node): the modal is
+  // prefilled from saved config, so returning to the SAME node is one action.
+  // The full wizard stays one click away for actually changing node or
+  // settings — but is no longer the forced route back to a connection the
+  // user already had. On a failed connect the error stays inline (setErr
+  // below) with this escape visible beside it. Dynamic import avoids a
+  // wizard<->connect module cycle. /*reconnect-fast-v100*/
+  if (opts.offerWizard) {
+    const wz = byId('cn-wizard');
+    if (wz) {
+      wz.style.display = '';
+      wz.addEventListener('click', () => {
+        modal.remove();
+        import('./wizard.js').then((m) => m.showSetupWizard({
+          onComplete: () => { if (onDone) onDone({ mode: 'live' }); },
+        })).catch((e) => console.warn('[connect] wizard load failed:', e?.message ?? e));
+      });
+    }
   }
 
 
@@ -521,6 +544,7 @@ export function showConnectModal(onDone, opts = {}) {
       markConnected(conn, envVars);
       resetNowLoading();   // fresh connection — show the loading sequence again
       setMode('live');
+      await ensureCacheForPool(envVars.POOL_ID);   // clears the cache only if the pool changed /*pool-scoped-cache-v102*/
 
       modal.remove();
       if (onDone) onDone({ mode: 'live', envVars });

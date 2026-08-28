@@ -23,7 +23,7 @@ import { getCachedGeo, getOwnLocation, lookupGeoBatch } from '../data/geo-query.
 
 const W = 720;
 const H = 360;
-const WORLD_URL   = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_land.geojson';
+const WORLD_URL = 'assets/ne_110m_land.geojson';   // local copy - no CDN call, works offline and keeps demo network-silent /*demo-world-v99*/
 const WORLD_CACHE = 'pt-world-map-path-v1';
 
 let worldPath = null;

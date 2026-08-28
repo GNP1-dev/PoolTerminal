@@ -102,7 +102,7 @@ const LIVE_KINDS = new Set([DataKind.DELEGATOR_LIST_LIVE, DataKind.POOL_LIVE]);
 // ---- Registry --------------------------------------------------------------
 
 class CapabilityRegistry {
-  constructor() { this._sources = []; }
+  constructor() { this._sources = []; this._modeGate = null; }
 
   /** Replace all sources (called on connect / config change). */
   setSources(sources) { this._sources = Array.isArray(sources) ? sources.slice() : []; }
@@ -111,9 +111,25 @@ class CapabilityRegistry {
   clear() { this._sources = []; }
   all() { return this._sources.slice(); }
 
+  /**
+   * Mode gate: a function returning 'demo' | 'live' (wired once from main.js,
+   * keeping this module free of data-layer imports). In demo mode ONLY the
+   * synthetic 'demo' source may answer; in live mode the demo source never
+   * answers. This is the wall that stops a previously connected live source
+   * (Koios, db-sync, Blockfrost all stay registered and reachable) from
+   * serving REAL pool data into a screen labelled DEMO — the demo-isolation
+   * hard rule, enforced at the single point every lookup passes through.
+   * (demo-world-v99)
+   */
+  setModeGate(fn) { this._modeGate = typeof fn === 'function' ? fn : null; }
+
   /** Sources that currently provide `kind` and are reachable. */
   _candidates(kind) {
+    let mode = null;
+    try { mode = this._modeGate ? this._modeGate() : null; } catch { mode = null; }
     return this._sources.filter((s) => {
+      if (mode === 'demo' && s.id !== 'demo') return false;
+      if (mode === 'live' && s.id === 'demo') return false;
       try { return s.reachable() && s.provides().includes(kind); }
       catch { return false; }
     });

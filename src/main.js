@@ -48,7 +48,10 @@ import { showSetupWizard } from './views/wizard.js';
 import { resetReadModel, getLatestSlowBlock } from './data/read-model.js';   /*change-node-reset-v80*/
 import { resetNowLoading } from './views/now.js';
 import { nodeExec, invoke, getAppVersion } from './data/tauri.js';   /*app-version-v94*/
-import { getSession, setNodeProbe, getNodeProbe, loadConfig, markDisconnected } from './data/session.js';
+import { getSession, setNodeProbe, getNodeProbe, loadConfig, markDisconnected, isConnected } from './data/session.js';   /*demo-world-v99*/
+import { registry } from './data/capabilities.js';
+import { demoSource } from './data/demo-world.js';
+import { setInvokeModeGate } from './data/tauri.js';
 import { probeNode } from './data/node-probe.js';
 import { queryPeers } from './data/peers-query.js';
 import { initToasts } from './ui/toast.js';
@@ -228,7 +231,9 @@ async function fastPollTick() {
 
     // Alerts engine: evaluate enabled alerts against this cycle's data and fire
     // Telegram messages. Defensive - reads what's available, skips the rest.
-    try {
+    // LIVE ONLY: alerts must never evaluate DEMO data - a configured Telegram
+    // bot would receive real messages about a synthetic pool. /*demo-world-v99*/
+    if (getMode() === 'live') try {
       let peerCount = null;
       if (_lastPeers && Array.isArray(_lastPeers.peers)) peerCount = _lastPeers.peers.length;
       // Hand the engine a slow block ONCE. Its slow_block check has no
@@ -266,10 +271,14 @@ async function fastPollTick() {
       );
     }
 
-    // Peers refresh every Nth second (live mode only; demo paints via snap).
-    if (getMode() === 'live' && nowSec - lastPeersRefreshTime >= PEERS_REFRESH_EVERY_S) {
+    // Peers refresh every Nth second. Live scrapes the node; demo serves the
+    // synthetic peer set through the same render path, so the peers panel, the
+    // relay strip and the MAP tab all populate in demo too (the map used to
+    // stay empty because this block was live-only). /*demo-world-v99*/
+    if (nowSec - lastPeersRefreshTime >= PEERS_REFRESH_EVERY_S) {
       lastPeersRefreshTime = nowSec;
-      queryPeers().then((r) => {
+      const peersP = getMode() === 'live' ? queryPeers() : dataSource().getPeers();
+      peersP.then((r) => {
         if (!r) return;
         _lastPeers = r;
         if (r.metrics) {
@@ -309,10 +318,21 @@ function paintMode() {
   const isDemo = getMode() === 'demo';
   modeBadge.classList.toggle('pt-mode-demo', isDemo);
   if (isDemo) {
-    modeBadge.textContent = '● DEMO';
+    // The way back from demo (there was none: entering demo over a live
+    // session left reconnect-or-restart as the only exits). The live SSH
+    // session survives untouched underneath - demo only re-routes the data
+    // layer - so one click flips the router back. /*demo-world-v99*/
+    const back = isConnected();
+    modeBadge.textContent = back ? '● DEMO · click for LIVE' : '● DEMO';
+    modeBadge.title = back
+      ? 'Demo mode. Your live connection is still open - click to return to it.'
+      : 'Demo mode - synthetic data, no node connection.';
+    modeBadge.style.cursor = back ? 'pointer' : '';
   } else {
     const s = getSession();
     modeBadge.textContent = `● LIVE · ${s.host || '—'}`;
+    modeBadge.title = 'Live connection status';
+    modeBadge.style.cursor = '';   /*demo-world-v99*/
   }
 }
 
@@ -384,6 +404,52 @@ window.addEventListener('DOMContentLoaded', () => {
   console.log('PoolTerminal — Phase 3 (1s fast loop, cncli bootstrap-only)');
   canvasEl = document.getElementById('pt-canvas');
 
+  // DEMO ISOLATION WIRING /*demo-world-v99*/ — three pieces, wired before
+  // anything polls:
+  //  1. the registry's mode gate: in demo ONLY the synthetic source answers,
+  //     in live the synthetic source never answers (see capabilities.js);
+  //  2. the invoke shim's backstop, which fails loudly if any demo code path
+  //     still reaches a node / Postgres / HTTP command;
+  //  3. the demo source itself, registered once - the gate does the routing.
+  registry.setModeGate(getMode);
+  setInvokeModeGate(getMode);
+  registry.register(demoSource);
+
+  // The way back from demo (bug fix): clicking the DEMO badge returns to the
+  // still-open live session. Everything mode-sensitive re-routes on the next
+  // 1s tick; the mounted view is remounted so cached demo paint is replaced.
+  const _modeBadgeEl = document.getElementById('ttape-mode');
+  if (_modeBadgeEl) _modeBadgeEl.addEventListener('click', () => {
+    if (getMode() !== 'demo' || !isConnected()) return;
+    setMode('live');
+    setRoleBadge((getNodeProbe() || {}).role || null);
+    latestSnap = null;
+    // The event is the single mode-change signal: the listener below repaints
+    // the badge and remounts, and every module holding a mode-sensitive cache
+    // (delegators du-cache, now.js instant-repaint, metadata-feed buffer)
+    // drops it on this event. /*mode-cache-v102*/
+    window.dispatchEvent(new Event('pt:mode-changed'));
+  });
+  // Anything that flips the mode outside this file (the wizard's "explore
+  // demo" link) announces it here, so the badge and the mounted view follow.
+  window.addEventListener('pt:mode-changed', () => {
+    paintMode();
+    mountView(activeView || 'now2');
+  });
+
+  // Demo-isolation leak tour (dev harness - see src/dev/leak-tour.js and
+  // RELEASING.md). Runs ONLY when armed via localStorage from the devtools
+  // console; in an unarmed app the module is never imported. /*leak-tour-v104*/
+  try {
+    if (localStorage.getItem('poolterminal.dev.leaktour') === '1') {
+      import('./dev/leak-tour.js').then((m) => m.runLeakTour({
+        registry, setMode, getMode, mountView, paintMode, startPolling, setOwnPoolTicker,
+      })).catch((e) => console.warn('[leak-tour] load failed:', e?.message ?? e));
+    }
+  } catch { /* localStorage unavailable */ }
+
+
+
   // Cross-tab notification toasts (listens for pt:notif-events from read-model).
   initToasts();
   initNotifications();   // unread badge + live feed refresh
@@ -442,17 +508,20 @@ window.addEventListener('DOMContentLoaded', () => {
     // Confirm first - this cuts the live connection, clears the cache and
     // restarts setup, so guard against an accidental click. /*disconnect-danger-v84*/
     const _ok = await confirmDialog({
-      title: 'Disconnect and change node?',
-      message: 'This disconnects from the current node, clears cached data, and restarts setup.\n\nContinue?',
+      title: 'Disconnect from this node?',
+      message: 'This disconnects from the current node.\n\nYour saved connection details, cached history and notifications are kept - reconnecting to the same node is one step, and the full setup wizard stays available for changing node.\n\nContinue?',
       confirmLabel: 'Disconnect',
       cancelLabel: 'Cancel',
       danger: true,
     });
     if (!_ok) return;
-    // Change Node = clean slate: wipe all in-memory state AND the disk cache,
-    // then re-run the setup wizard, so no data from the previous node bleeds
-    // into the tabs. cache_clear_all is best-effort (pool-keyed tables, so a
-    // different pool wouldn't collide anyway, but we clear to be certain).
+    // Disconnect wipes IN-MEMORY state only. The disk cache is no longer
+    // cleared here: that blanket cache_clear_all cost the user their entire
+    // notification history (and, while alert config lived in the meta table,
+    // their Telegram bot) on EVERY disconnect - including a mere demo detour.
+    // Cross-pool protection moved to connect time: ensureCacheForPool() in
+    // read-model clears the cache only when the connecting pool actually
+    // differs from the one the cache was built for. /*pool-scoped-cache-v102*/
     // First, actually disconnect: stop the poll timer (startPolling() no-ops if
     // fastTimer is still set, so it MUST be cleared), close the SSH session, and
     // clear the session flag so the wizard sees a disconnected node. /*change-node-disconnect-v81*/
@@ -461,7 +530,6 @@ window.addEventListener('DOMContentLoaded', () => {
     try { markDisconnected(); } catch (e) { /* */ }
     try { resetReadModel(); } catch (e) { /* */ }
     try { resetNowLoading(); } catch (e) { /* */ }
-    try { await invoke('cache_clear_all'); } catch (e) { /* best-effort */ }
     clearLastMetrics();
     latestSnap = null;   // force firstSnap on the next poll so bootstrap() re-arms the read-model /*change-node-bootstrap-v82*/
     lastFastError = null;
@@ -475,12 +543,23 @@ window.addEventListener('DOMContentLoaded', () => {
     setPeerCounts(null, null);
     resetPeersPanel();
     resetRelayMap();
-    showSetupWizard({ onComplete: () => {
+    // Reconnect = the SAME path startup uses: the connect screen prefilled
+    // from saved config, so returning to the last-used node is one action
+    // (literally one click on key/agent auth; enter credentials on 2FA, which
+    // are never persisted by design). The full wizard is offered as a button
+    // inside the modal for actually changing node - it is no longer the forced
+    // seven-step route back to a connection the user already had. Only a
+    // config-less install (nothing saved to reconnect TO) still gets the
+    // wizard directly. /*reconnect-fast-v100*/
+    const _relive = () => {
       mountView('now2');
       paintMode();
       runProbeAndPaintRole();
       startPolling();
-    } });
+    };
+    const _saved = loadConfig();
+    if (_saved && _saved.transport) showConnectModal(() => _relive(), { offerWizard: true });
+    else showSetupWizard({ onComplete: _relive });
   });
 
   const settingsGear = document.getElementById('ttape-settings');

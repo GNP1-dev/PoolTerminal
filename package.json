@@ -1,7 +1,7 @@
 {
   "name": "poolterminal",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Bloomberg-terminal-style desktop dashboard for Cardano stake pool operators",
   "type": "module",
   "scripts": {

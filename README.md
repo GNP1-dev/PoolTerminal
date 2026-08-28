@@ -6,7 +6,9 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> **v0.3.2 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+> **v0.3.3 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+>
+> New in v0.3.3: **demo mode now populates every view**, so you can see what PoolTerminal does across all twelve tabs before connecting it to anything. Also fixes several cases where real pool data could appear in demo mode, makes reconnecting to your node a single action instead of the full setup wizard, and stops a disconnect from clearing your notification history and Telegram settings.
 >
 > New in v0.3.2: **delegators joining the pool now appear before their stake goes active** — previously a new delegator was invisible until the epoch boundary. Pending rows are dulled, tagged with the epoch they activate, and kept out of pool totals. Also fixes a query that overstated a pending delegator's stake, and the version number shown in the app, which was hardcoded and wrong in three places.
 >
@@ -16,7 +18,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 >
 > New in v0.2.0: a **LOGS** workspace (journal queries, minted-block history, propagation history, epoch-transition view), **ALERTS** - Telegram alerting with no agent on your block producer, the **KES hourglass**, and delegator balances reconciled against live account state.
 
-> _Last updated: 27 August 2026_ <!-- readme-beta-v3 -->
+> _Last updated: 28 August 2026_ <!-- readme-beta-v3 -->
 
 > ### ⚠️ This is a beta. I need your help testing it.
 >

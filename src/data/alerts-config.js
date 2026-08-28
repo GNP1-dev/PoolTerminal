@@ -2,16 +2,24 @@
  * PoolTerminal - Alerts configuration + definitions.
  *
  * Holds the catalogue of available alerts (ALERT_DEFS) and load/save of the
- * user's alert configuration. Config is persisted to the cache meta table via
- * the Rust cache_meta_get/set commands (same store used for other app state),
- * so it survives restarts. An in-memory copy is kept for synchronous reads.
+ * user's alert configuration. Config is persisted to localStorage - the same
+ * store as the Koios token and Blockfrost key - because this is USER
+ * configuration, not pool data: it used to live in the cache meta table, and
+ * every cache reset (the old blanket clear on Disconnect) silently deleted
+ * the Telegram token and every alert toggle, killing the bot on the next app
+ * launch. Keeping it out of the cache entirely means no future cache-clearing
+ * routine can take it out again by accident. A one-time migration below
+ * rescues any config still sitting in the meta table of a pre-v102 install.
+ * An in-memory copy is kept for synchronous reads. (alerts-cfg-store-v102)
  *
  * The alerts themselves fire from alerts-engine.js, which reads this config.
  */
 
 import { invoke } from './tauri.js';
+import { getMode } from './index.js';   /*alerts-demo-blank-v103*/
 
-const META_KEY = 'alerts_config_v1';
+const META_KEY = 'alerts_config_v1';               // legacy location (cache meta), read once for migration
+const LS_KEY = 'poolterminal.alerts.v1';           // canonical location
 
 // Catalogue of alerts. Each fires from data the app already receives, so no new
 // node queries are needed. severity drives the card accent + quiet-hours rules.
@@ -89,13 +97,24 @@ export function getAlertConfig() {
 }
 
 export async function loadAlertConfig() {
+  let raw = null;
+  try { raw = localStorage.getItem(LS_KEY); } catch { raw = null; }
+  if (!raw) {
+    // One-time migration from the legacy cache-meta location (pre-v102).
+    // If the cache was already wiped there is nothing to rescue - the user
+    // re-enters their bot token once. /*alerts-cfg-store-v102*/
+    try {
+      raw = await invoke('cache_meta_get', { key: META_KEY });
+      if (raw) {
+        try { localStorage.setItem(LS_KEY, raw); } catch { /* keep going */ }
+        console.log('[alerts] config migrated from cache meta to localStorage');
+      }
+    } catch { raw = null; }
+  }
   try {
-    const raw = await invoke('cache_meta_get', { key: META_KEY });
-    if (raw) {
-      _config = Object.assign(structuredClone(DEFAULT_CONFIG), JSON.parse(raw));
-    } else {
-      _config = structuredClone(DEFAULT_CONFIG);
-    }
+    _config = raw
+      ? Object.assign(structuredClone(DEFAULT_CONFIG), JSON.parse(raw))
+      : structuredClone(DEFAULT_CONFIG);
   } catch {
     _config = structuredClone(DEFAULT_CONFIG);
   }
@@ -103,11 +122,12 @@ export async function loadAlertConfig() {
 }
 
 export function saveAlertConfig(cfg) {
+  // Demo hands the Alerts view a throwaway blank config so real credentials
+  // never render on a demo screen - a save from that view must not clobber
+  // the user's REAL config (in memory or on disk). /*alerts-demo-blank-v103*/
+  try { if (getMode() === 'demo') return; } catch { /* fall through */ }
   _config = cfg;
-  // fire-and-forget persist
-  try {
-    invoke('cache_meta_set', { key: META_KEY, value: JSON.stringify(cfg) });
-  } catch { /* ignore */ }
+  try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch { /* ignore */ }
 }
 
 // Append a fired alert to the recent list (capped) and persist.

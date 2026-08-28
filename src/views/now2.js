@@ -836,6 +836,11 @@ const MF_DEMO_MSGS = [
 
 let _mfPollTimer = null, _mfDripTimer = null, _mfSinceId = 0, _mfBuffer = [], _mfDemo = false, _mfDemoIdx = 0, _mfPaused = false;
 
+// Mode flip empties the metadata-feed buffer: it can hold REAL CIP-20 chain
+// messages fetched from db-sync while live, which would otherwise keep
+// dripping into the DEMO feed (and vice versa). /*mode-cache-v102*/
+window.addEventListener('pt:mode-changed', () => { _mfBuffer.length = 0; _mfSinceId = 0; });
+
 function mfFilters(canvas) {
   const get = (k) => { const el = canvas.querySelector('.n2-mf-menu input[data-mf="' + k + '"]'); return !!(el && el.checked); };
   return { bots: get('bots'), clean: get('clean'), bets: get('bets') };

@@ -11,6 +11,7 @@
  */
 
 import './contract.js';
+import { demoPeers, demoBlockProduction } from './demo-world.js';   /*demo-world-v99*/
 
 const SHELLEY_START = 1596491091;
 const SHELLEY_EPOCH = 208;
@@ -48,27 +49,14 @@ export class DemoDataSource {
   }
 
   async getPeers() {   /*demo-peers-v66d*/
-    const ips = [
-      '34.121.55.12', '18.156.201.44', '52.14.88.203', '3.75.190.11',
-      '95.216.34.108', '65.108.201.9', '138.201.44.7', '167.99.12.55',
-      '104.248.33.19', '159.89.44.201', '45.79.201.8', '198.244.190.3',
-    ];
-    const rtts = [8, 12, 16, 22, 31, 44, 58, 77, 95, 120, 140, 165];
-    const peers = ips.map((ip, i) => ({ ip, port: 3001 + (i % 3), rtt: rtts[i] }));
-    return {
-      total: peers.length,
-      peers,
-      metrics: { outgoingConns: 8, incomingConns: 4, duplexConns: 3, prunableConns: 2 },
-    };
+    // Peer set lives in demo-world: RFC 5737 documentation-range IPs (the old
+    // list used real cloud ranges that geolocated to real datacenters), each
+    // with fixed synthetic geo for the MAP tab. /*demo-world-v99*/
+    return demoPeers();
   }
 
   async getNowSnapshot() {
     const e = realEpoch();
-    const seed = epochSeed(e.epoch);
-    const leader = 18 + Math.floor(seed * 6);
-    const ideal = leader / (0.93 + seed * 0.12);
-    const luckPercent = Math.round((leader / ideal) * 100);
-    const adopted = Math.min(leader, Math.round(leader * e.progress));
     const pulseScore = 90 + Math.round(4 * Math.sin(nowSec() / 600) + 2);
     // Synthetic chain height: ~1 block per 20s since Shelley start.
     const tipBlock = Math.floor((nowSec() - SHELLEY_START) / 20);
@@ -81,17 +69,11 @@ export class DemoDataSource {
       syncPercent: 100.0, atTip: true,
       kesDaysRemaining: 47, kesPeriodsRemaining: 34,
       peersIn: 8 + Math.floor(Math.random() * 4), peersOut: 12,
-      blockProduction: {
-        leader, ideal: Math.round(ideal * 10) / 10, luckPercent,
-        adopted, confirmed: adopted, lost: 0,
-        // The block-box spinner lifts on leaderKnown, which the LIVE path sets
-        // once the leadership schedule has actually been read from the node.
-        // Demo has a real (synthetic) schedule behind these figures, but omitted
-        // the flag - so the panel sat on "Waiting for block data" until the 100s
-        // safety timeout, then revealed values it had held all along. Same class
-        // as the BLOCKS/OPCERT cells. /*demo-hero-v82*/
-        leaderKnown: true,
-      },
+      // Production figures come from demo-world's current-epoch row, the same
+      // row HISTORY's table ends on - the Dashboard and History tabs cannot
+      // disagree. leaderKnown lifts the block-box spinner (demo-hero-v82).
+      // /*demo-world-v99*/
+      blockProduction: demoBlockProduction(),
       poolPulse: {
         score: pulseScore, delta: 2,
         components: {

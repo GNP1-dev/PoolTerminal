@@ -11,7 +11,7 @@ use serde::Serialize;
 pub struct SshKey {
     /// Display name, e.g. "id_ed25519".
     pub name: String,
-    /// Absolute path, e.g. "/home/russell/.ssh/id_ed25519".
+    /// Absolute path, e.g. "/home/you/.ssh/id_ed25519".
     pub path: String,
     /// Best-guess key type from the filename, for the UI label.
     pub kind: String,

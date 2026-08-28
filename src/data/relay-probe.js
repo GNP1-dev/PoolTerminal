@@ -288,6 +288,17 @@ export async function relayPeers(id, mode, probe) {
 }
 
 export async function relaySnapshot(id, mode) {
+  // Demo isolation: the whole relay dashboard runs off this one call, so a
+  // single branch here feeds it synthetically — no SSH, no Prometheus, and a
+  // previously connected REAL relay session is never scraped while demo is
+  // active. /*demo-world-v99*/
+  try {
+    const { getMode } = await import('./index.js');
+    if (getMode() === 'demo') {
+      const { demoRelaySnapshot } = await import('./demo-world.js');
+      return demoRelaySnapshot(id);
+    }
+  } catch { /* fall through to live */ }
   let probe = _probeCache.get(id);
   if (!probe || !probe.ok) probe = await relayProbe(id, mode);
   if (!probe.ok) return { probe, health: { ok: false, reason: probe.reason }, peers: [] };

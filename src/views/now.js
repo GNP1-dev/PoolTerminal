@@ -382,6 +382,12 @@ function buildSteps() {
 /** Reset the load-once gate — call on a fresh connection so the loader shows. */
 export function resetNowLoading() { _initialLoadComplete = false; _lastSnap = null; _lastUpcoming = null; }
 
+// Mode flip drops the instant-repaint caches: _lastSnap holds the last LIVE
+// hero snapshot and _lastUpcoming the REAL leader-slot ETAs - repainting
+// either into a DEMO mount is the same leak class as the delegators du-cache.
+// /*mode-cache-v102*/
+window.addEventListener('pt:mode-changed', resetNowLoading);
+
 // The overlay is done when every (role-appropriate) step is ready AND the first
 // real fast-loop snapshot has rendered. Steps are REBUILT each check: the node
 // role isn't resolved at mount time, so a BP would otherwise get a relay-style
@@ -451,10 +457,14 @@ export async function refreshLifetimeBlocks() {
     // as broken, not as "no data". Synthetic, consistent with the demo pool.
     // /*demo-hero-v82*/
     if (getMode() === 'demo') {
+      // Totals come from demo-world's epoch history, so this cell always sums
+      // to what the HISTORY tab shows. /*demo-world-v99*/
+      const { demoLifetime } = await import('../data/demo-world.js');
+      const lt = demoLifetime();
       const el = document.getElementById('hero-blocks-val');
       const sub = document.getElementById('hero-blocks-sub');
-      if (el) el.textContent = (3_124).toLocaleString();
-      if (sub) sub.textContent = '211 epochs';
+      if (el) el.textContent = lt.blocks.toLocaleString();
+      if (sub) sub.textContent = `${lt.epochs} epochs`;
       return;
     }
     // Authoritative lifetime total from Koios pool_info.block_count (the exact

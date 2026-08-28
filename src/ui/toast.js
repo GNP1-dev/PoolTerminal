@@ -191,8 +191,10 @@ export function initToasts() {
 /** Manual smoke test from the devtools console: `window.__ptToastTest?.()`. */
 export function _toastTest() {
   onNotifEvents({ detail: [
-    { type: 'stake_down', stake: 'stake1u9c4ch00fa03m9enzy8c6vuy85mra0ltyannzpjugu8vdms6kg7na',
-      detail: { amount: 43749651, delta: -14058077, epoch: 636 } },
+    // Synthetic address (valid bech32, resolves to nothing on-chain) — an
+    // earlier version used a real delegator's address here. /*privacy-sweep-v101*/
+    { type: 'stake_down', stake: 'stake1ux09uc6jcr4r3ma4xg5gejfc7kv20tywaznesk3szajp5es8xm0ca',
+      detail: { amount: 41250000, delta: -12500000, epoch: 636 } },
     { type: 'join_redelegated', stake: 'stake1uxample0000000000000000000000000000000000abcde',
       detail: { amount: 250000000, fromPool: 'pool1abc', fromTicker: 'ADACT', epoch: 636 } },
   ] });

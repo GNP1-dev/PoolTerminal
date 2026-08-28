@@ -14,8 +14,10 @@
 
 import { invoke } from '../data/tauri.js';
 import { getMode } from '../data/index.js';
+import { demoWorld, demoClock, demoTxHash } from '../data/demo-world.js';   /*logs-demo-world-v103*/
 import { getBlockHistory } from '../data/dbsync-query.js';
 import { getPropagationHistory, enrichSlowBlockPools } from '../data/read-model.js';
+import { getSession } from '../data/session.js';   /*logs-derived-defaults-v106*/
 
 // Propagation history time-window (ms). null = all time. Default 24h so the
 // sparkline stays granular instead of squashing months of blocks into one strip.
@@ -32,8 +34,8 @@ import { dbsyncMachine } from '../data/read-model.js';
 
 // The Cardano systemd units typically present on a Guild/CNTools node. The user
 // can override the block-producer unit name if theirs differs.
-const DEFAULT_BP_UNIT = 'cnode_bp.service';
-const DEFAULT_BLOCKLOG_DB = '/opt/cardano/cnode_bp/guild-db/blocklog/blocklog.db';
+const DEFAULT_BP_UNIT = 'cnode.service';   // stock Guild default - operators with custom unit names set theirs in the Logs config /*privacy-sweep-v101*/
+const DEFAULT_BLOCKLOG_DB = '/opt/cardano/cnode/guild-db/blocklog/blocklog.db';
 
 // Persisted config (unit name + default line bound). Kept in localStorage like
 // the app's other lightweight settings.
@@ -175,7 +177,7 @@ const QUERIES = [
 ];
 
 // Derive a CNCLI unit name from the configured BP unit. Guild names them
-// "<bp>-cncli-<role>.service", e.g. cnode_bp-cncli-leaderlog.service.
+// "<bp>-cncli-<role>.service", e.g. cnode-cncli-leaderlog.service.
 // Blocks minted: read the local CNCLI blocklog SQLite DB (read-only). This is
 // the node's own record of forged blocks and their on-chain fate. NOTE: it only
 // covers what CNCLI has recorded on THIS node (here epochs 605+), NOT the pool's
@@ -292,10 +294,32 @@ const CSS = `
 
 let _lastOutput = '';
 
+// Defaults DERIVED from the connected node's env, not hardcoded for any one
+// layout. Guild convention: the unit is named after the cnode directory
+// (CNODE_HOME=/opt/cardano/cnode -> cnode.service; a dual-node layout's
+// /opt/cardano/cnode_bp -> cnode_bp.service) and the blocklog DB lives under
+// it. The v101 privacy sweep swapped the dev box's custom values for stock
+// ones and silently broke every install that relied on the old defaults
+// matching its layout (no saved config = the defaults WERE the config, and
+// every Logs query came back empty against a nonexistent unit). Deriving from
+// CNODE_HOME serves stock and custom layouts alike, with no personal values
+// in source. A saved config always wins; the stock constants remain the
+// fallback when no env is known (demo / not yet connected).
+// /*logs-derived-defaults-v106*/
+function derivedDefaults() {
+  try {
+    const home = String((getSession().envVars || {}).CNODE_HOME || '').replace(/\/+$/, '');
+    const base = home.split('/').pop();
+    if (home && base) return { unit: `${base}.service`, db: `${home}/guild-db/blocklog/blocklog.db` };
+  } catch { /* fall through */ }
+  return { unit: DEFAULT_BP_UNIT, db: DEFAULT_BLOCKLOG_DB };
+}
+
 export function mountLogs(canvas) {
   _cfg = loadCfg();
-  if (!_cfg.bpUnit) _cfg.bpUnit = DEFAULT_BP_UNIT;
-  if (!_cfg.blocklogDb) _cfg.blocklogDb = DEFAULT_BLOCKLOG_DB;
+  const _dd = derivedDefaults();   /*logs-derived-defaults-v106*/
+  if (!_cfg.bpUnit) _cfg.bpUnit = _dd.unit;
+  if (!_cfg.blocklogDb) _cfg.blocklogDb = _dd.db;
 
   const demo = (getMode() === 'demo');
 
@@ -305,12 +329,16 @@ export function mountLogs(canvas) {
       ${demo ? '<div class="lg-demo-note">Demonstration mode - connect to a node to query live logs. Sample output shown below.</div>' : ''}
       <div class="lg-config">
         <label for="lg-unit">BP journal unit</label>
-        <input id="lg-unit" type="text" spellcheck="false" autocomplete="off" value="${escAttr(_cfg.bpUnit)}">
+        <input id="lg-unit" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BP_UNIT : _cfg.bpUnit)}"${demo ? ' disabled' : ''}>
         <label for="lg-db">Blocklog DB</label>
-        <input id="lg-db" type="text" spellcheck="false" autocomplete="off" value="${escAttr(_cfg.blocklogDb)}" style="min-width:320px">
-        <button class="lg-save" id="lg-save" type="button">Save</button>
+        <input id="lg-db" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BLOCKLOG_DB : _cfg.blocklogDb)}" style="min-width:320px"${demo ? ' disabled' : ''}>
+        <button class="lg-save" id="lg-save" type="button"${demo ? ' disabled' : ''}>Save</button>
         <span class="lg-status" id="lg-cfg-status"></span>
       </div>
+      <!-- Demo shows the stock defaults, disabled: the config fields echo the
+           user's SAVED unit and paths, which are real values on a demo screen
+           (and editing them in demo would silently rewrite live config).
+           /*logs-demo-world-v103*/ -->
       <div class="lg-queries" id="lg-queries">
         ${QUERIES.map((q) => `<button class="lg-qbtn" type="button" data-q="${q.id}" title="${escAttr(q.hint)}">${escHtml(q.label)}</button>`).join('')}
       </div>
@@ -326,6 +354,7 @@ export function mountLogs(canvas) {
   const unitInput = canvas.querySelector('#lg-unit');
   const dbInput = canvas.querySelector('#lg-db');
   canvas.querySelector('#lg-save').addEventListener('click', () => {
+    if (demo) return;   // demo must never rewrite the user's live logs config /*logs-demo-world-v103*/
     _cfg.bpUnit = sanitizeUnit(unitInput.value);
     unitInput.value = _cfg.bpUnit;
     if (dbInput) { _cfg.blocklogDb = sanitizePath(dbInput.value); dbInput.value = _cfg.blocklogDb; }
@@ -342,6 +371,15 @@ export function mountLogs(canvas) {
       if (q) runQuery(canvas, q, demo);
     });
   });
+
+  // Demo opens on populated sample output instead of "Pick a query above" -
+  // the demo layer was already here, but the tab looked blank until the first
+  // click. /*demo-world-v99*/
+  if (demo && QUERIES.length) {
+    const first = canvas.querySelector('.lg-qbtn');
+    if (first) first.classList.add('on');
+    runQuery(canvas, QUERIES[0], true);
+  }
 
   // copy output
   canvas.querySelector('#lg-copy').addEventListener('click', () => {
@@ -594,11 +632,11 @@ async function runBlocklog(canvas, q, demo) {
 
 async function loadDbsyncBlocks(inner, demo) {
   if (demo) {
-    const rows = [
-      ['643','296123','2026-07-17T08:00:14+00:00','onchain','13689109','4340','518994488363'],
-      ['640','354715','2026-07-03T00:16:46+00:00','onchain','13627716','4','0a4513855591'],
-    ];
-    inner.innerHTML = renderBlocklog([['onchain','334']], rows, true);
+    // Derived from demo-world (the old rows were the dev pool's REAL minted
+    // blocks - real heights, timestamps and hash prefixes - plus its real
+    // lifetime total). /*logs-demo-world-v103*/
+    const rows = demoBlockRows('onchain');
+    inner.innerHTML = renderBlocklog([['onchain', String(demoWorld().lifetimeBlocks)]], rows, true);
     setStatus('#lg-status', 'Blocks minted (db-sync) - demonstration data');
     return;
   }
@@ -621,10 +659,12 @@ async function loadDbsyncBlocks(inner, demo) {
 
 async function loadLocalBlocks(inner, demo) {
   if (demo) {
+    // Derived from demo-world (see the db-sync branch above). /*logs-demo-world-v103*/
+    const w = demoWorld();
+    const recent = w.history.slice(-3).reduce((s, r) => s + r.adopted, 0);
     inner.innerHTML = renderBlocklog(
-      [['confirmed','28'],['ghosted','1']],
-      [['642','100122','2026-07-10T01:33:33+00:00','confirmed','13657913','1004','9c1faa22bb01'],
-       ['640','354715','2026-07-03T00:16:46+00:00','confirmed','13627716','870','3f2ade90aa17']], false);
+      [['confirmed', String(recent)], ['ghosted', '1']],
+      demoBlockRows('confirmed'), false);
     setStatus('#lg-status', 'Blocks minted (local) - demonstration data');
     return;
   }
@@ -744,30 +784,68 @@ function escAttr(s) {
   return escHtml(s).replace(/"/g, '&quot;');
 }
 
+// Synthetic blocklog rows from the demo world's last producing epochs:
+// heights walk back from the synthetic tip, hashes come from the seeded tx
+// generator, timestamps derive from the epoch clock. /*logs-demo-world-v103*/
+function demoBlockRows(status) {
+  const w = demoWorld();
+  const c = demoClock();
+  const producing = w.history.filter((r) => r.adopted > 0).slice(-2).reverse();
+  return producing.map((r, i) => {
+    const slotInEpoch = (r.epoch * 97313) % 432000;
+    const ageS = (c.epoch - r.epoch) * 432000 + (c.slotInEpoch - slotInEpoch);
+    const at = new Date(Date.now() - Math.max(3600, ageS) * 1000).toISOString().replace(/\.\d+Z$/, '+00:00');
+    return [String(r.epoch), String(slotInEpoch), at, status,
+      String(c.tipBlock - Math.ceil(Math.max(3600, ageS) / 20)),
+      String(900 + (r.epoch % 7) * 480), demoTxHash('blk', r.epoch).slice(0, 12)];
+  });
+}
+
+// Demo journal output, generated from the demo world. The old version was
+// canned lines pasted from a REAL journal during development - real slots,
+// PIDs, KES period, and the pool's actual "Ideal slots 0.62 / Luck 483.87%"
+// leader-log line survived a light relabelling and shipped in three releases.
+// Everything below now derives from demo-world, so it can't be anyone's real
+// data AND it agrees with the numbers the Dashboard and History show.
+// /*logs-demo-world-v103*/
 function demoSample(id) {
+  const w = demoWorld();
+  const c = demoClock();
+  const PID = 4242;
+  const jt = (minAgo) => {   // "Aug 28 03:14:22" journal-style stamp
+    const d = new Date(Date.now() - minAgo * 60000);
+    const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+    const p = (n) => String(n).padStart(2, '0');
+    return `${mon} ${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+  const slotAgo = (minAgo) => c.absSlot - minAgo * 60;
+  const isoAgo = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString().replace(/\.\d+Z$/, '+00:00');
+  const kesPeriod = Math.floor(c.absSlot / 129600);
+  const kesExpiry = new Date(Date.now() + 47 * 86400000).toISOString().slice(0, 10);
+  const luck = w.cur.ideal > 0 ? ((w.cur.leader / w.cur.ideal) * 100).toFixed(2) : '0.00';
   const D = {
     errwarn: [
-      'Jul 16 03:14:22 demo-bp cnode_bp[565905]: [..][demo:ChainDB](Warning,12) Chain extended, new tip 3f2a... at slot 192600001',
-      'Jul 15 22:04:03 demo-bp cnode_bp[565905]: [..][demo:KESInfo](Warning,7) Operational certificate KES period 512 - 12 periods until expiry',
+      `${jt(38)} demo-bp cnode[${PID}]: [..][demo:ChainDB](Warning,12) Chain extended, new tip ${demoTxHash('lg', 1).slice(0, 4)}... at slot ${slotAgo(38)}`,
+      `${jt(311)} demo-bp cnode[${PID}]: [..][demo:KESInfo](Warning,7) Operational certificate KES period ${kesPeriod} - 34 periods until expiry`,
     ],
     recent: [
-      'Jul 17 08:00:14 demo-bp cnode_bp[565905]: [..][demo:Forge.AdoptedBlock](Info) Adopted block, slot 192708923',
-      'Jul 17 07:58:02 demo-bp cnode_bp[565905]: [..][demo:ChainDB.AddBlock](Info) Added block to current chain, tip slot 192708700',
+      `${jt(12)} demo-bp cnode[${PID}]: [..][demo:Forge.AdoptedBlock](Info) Adopted block, slot ${slotAgo(12)}`,
+      `${jt(14)} demo-bp cnode[${PID}]: [..][demo:ChainDB.AddBlock](Info) Added block to current chain, tip slot ${slotAgo(14)}`,
     ],
     kes: [
-      'Jul 15 22:04:03 demo-bp cnode_bp[565905]: [..][demo:KESInfo](Warning,7) KES period 512 - 12 periods until expiry (approx 2026-09-02)',
+      `${jt(311)} demo-bp cnode[${PID}]: [..][demo:KESInfo](Warning,7) KES period ${kesPeriod} - 34 periods until expiry (approx ${kesExpiry})`,
     ],
     restart: [
-      'Jul 10 09:12:44 demo-bp cnode_bp[561200]: [..] Node version: cardano-node 11.0.1 - linux',
-      'Jul 10 09:12:46 demo-bp cnode_bp[561200]: [..][demo:ChainDB] Started opening Chain DB',
+      `${jt(37 * 1440)} demo-bp cnode[4180]: [..] Node version: cardano-node 10.5.1 - linux`,
+      `${jt(37 * 1440)} demo-bp cnode[4180]: [..][demo:ChainDB] Started opening Chain DB`,
     ],
     rollback: [],
     leader: [
-      'Jul 12 09:46:32 demo-bp cnode_bp-cncli-leaderlog[40876]: LEADER: slot[192708923] slotInEpoch[296123] at[2026-07-17T08:00:14+00:00]',
-      'Jul 12 09:46:32 demo-bp cnode_bp-cncli-leaderlog[40876]: Leaderslots: 3 - Ideal slots for epoch based on active stake: 0.62 - Luck factor 483.87%',
+      `${jt(2880)} demo-bp cnode-cncli-leaderlog[4310]: LEADER: slot[${slotAgo(12)}] slotInEpoch[${Math.max(0, c.slotInEpoch - 720)}] at[${isoAgo(12)}]`,
+      `${jt(2880)} demo-bp cnode-cncli-leaderlog[4310]: Leaderslots: ${w.cur.leader} - Ideal slots for epoch based on active stake: ${w.cur.ideal} - Luck factor ${luck}%`,
     ],
     validate: [
-      'Jul 17 08:00:40 demo-bp cnode_bp-cncli-validate[41022]: Block validation: slot[192708923] status[adopted]',
+      `${jt(11)} demo-bp cnode-cncli-validate[4311]: Block validation: slot[${slotAgo(12)}] status[adopted]`,
     ],
   };
   const lines = D[id];

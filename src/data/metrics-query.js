@@ -36,7 +36,16 @@ function readMetric(text, name) {
 }
 
 let lastMetrics = null;
-export function getLastMetrics() { return lastMetrics; }
+// Demo isolation: the last scrape is REAL node metrics — never paint it in
+// demo. The synthetic stand-in omits mempoolBytes/blockDelay* on purpose, so
+// now2's mempool-flow and propagation panels fall through to their own demo
+// fallbacks. /*demo-world-v99*/
+import { getMode } from './index.js';
+import { demoNodeMetrics } from './demo-world.js';
+export function getLastMetrics() {
+  try { if (getMode() === 'demo') return demoNodeMetrics(); } catch { /* fall through */ }
+  return lastMetrics;
+}
 export function clearLastMetrics() { lastMetrics = null; }
 
 export async function queryMetrics() {

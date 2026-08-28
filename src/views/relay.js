@@ -24,6 +24,7 @@ import {
   relaySnapshot, clearRelayProbe, relayExec, setRelaySelector,
 } from '../data/relay-probe.js';
 import { getCachedGeo, lookupGeoBatch, getOwnLocation } from '../data/geo-query.js';
+import { getMode } from '../data/index.js';   /*demo-world-v99*/
 
 const LABEL = { relay1: 'Relay 1', relay2: 'Relay 2' };
 const POLL_MS = 2000;
@@ -335,7 +336,7 @@ function gapStats(times, now, win) {
 // Reuses the geo cache shared with the BP map; own-location is resolved over
 // THIS relay's egress so the gold self-dot sits at the relay, not the BP.
 const MAP_W = 720, MAP_H = 360;
-const WORLD_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_land.geojson';
+const WORLD_URL = 'assets/ne_110m_land.geojson';   // local copy - no CDN call, works offline and keeps demo network-silent /*demo-world-v99*/
 const WORLD_CACHE = 'pt-world-map-path-v1';
 let _worldPath = null, _worldLoading = false;
 function lngToX(lng) { return (lng + 180) * MAP_W / 360; }
@@ -445,7 +446,9 @@ function renderPeerList(id) {
 function renderDashboard(id) {
   const s = st(id);
   const cfg = loadCfg(id) || {};
-  const where = s.mode === 'local' ? 'this machine' : (cfg.host || '—');
+  // Demo shows a synthetic hostname, never a saved real one. /*demo-world-v99*/
+  const where = s.mode === 'demo' ? `${id}.demo.example`
+    : s.mode === 'local' ? 'this machine' : (cfg.host || '—');
   return `
     <div class="rl-wrap">
       <div class="rl-panel rl-hero">
@@ -453,7 +456,7 @@ function renderDashboard(id) {
           <div class="rl-name">
             <span class="rl-dot" id="rl-dot-${id}" style="color:#6f7d99;background:#6f7d99"></span>
             ${LABEL[id]}
-            <span class="rl-badge" id="rl-where-${id}">${s.mode === 'local' ? 'LOCAL' : 'SSH'} · ${where}</span>
+            <span class="rl-badge" id="rl-where-${id}">${s.mode === 'demo' ? 'DEMO' : s.mode === 'local' ? 'LOCAL' : 'SSH'} · ${where}</span>
             <span class="rl-badge rl-conntimer" id="rl-conntimer-${id}" title="Time connected">0:00</span>
           </div>
           <div class="rl-hero-actions">
@@ -1018,6 +1021,23 @@ async function mountRelay(id, root) {
   ensureStyle();
   const s = st(id);
   s.root = root;
+  // DEMO: a full synthetic relay dashboard (data via relaySnapshot's demo
+  // branch), never the connect form — relay monitoring is a distinguishing
+  // feature and must be visible to someone evaluating the app. The disconnect
+  // button is hidden: there is nothing real to disconnect. /*demo-world-v99*/
+  if (getMode() === 'demo') {
+    s.mode = 'demo'; s.active = true; s.hidden = false;
+    if (!s.connectedAt) s.connectedAt = Date.now();
+    root.innerHTML = renderDashboard(id);
+    wireDashboard(id, root);
+    const disc = root.querySelector(`#rl-disc-${id}`);
+    if (disc) disc.style.display = 'none';
+    if (!s.timer) startPoll(id);
+    startEcg(id); startClock(id);
+    loadWorldMap().then(() => paintMap(id)); paintMap(id);
+    return;
+  }
+  if (s.mode === 'demo') { s.active = false; s.mode = null; stopPoll(id); }   // left demo: back to the real connect flow
   if (s.active && (s.mode === 'local' || (await relayIsConnected(id)))) {
     // Returning to the tab: the poll has kept running in the background, so
     // blockTimes / density are already current. Re-render and resume rendering.

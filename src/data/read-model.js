@@ -35,6 +35,14 @@ import * as blockfrost from './blockfrost-query.js';
 if (blockfrost.setBfMetaCache) blockfrost.setBfMetaCache((k) => cacheMetaGet(k), (k, v) => cacheMetaSet(k, v));
 import { DataKind, registry } from './capabilities.js';
 import { getNotifPollMs, getNotifThresholdLovelace, getNotifSource } from './notif-settings.js';
+// Demo isolation: every read API views consume gets a demo branch below, so a
+// DEMO screen can never serve rows a LIVE session wrote into the shared SQLite
+// cache (an operator's real delegators/history labelled as demo data), and the
+// demo world never writes into that cache. getMode is a function declaration,
+// so the import cycle through index.js is hoisting-safe. /*demo-world-v99*/
+import { getMode } from './index.js';
+import { demoEpochHistory, demoHistoryMeta, demoSamples, demoNotifications, demoWorld, demoSource } from './demo-world.js';
+const _demoMode = () => { try { return getMode() === 'demo'; } catch { return false; } };
 
 // ============================================================
 // History data source selector (architecture note §6)
@@ -173,6 +181,12 @@ const _REWARD_FIELDS = ['delegRewards', 'memberRewards', 'ros', 'margin', 'fixed
 function _isRealVal(v) { return v != null; }
 
 async function cachePutEpoch(epoch, data) {
+  // Collectors quiesce in demo (see the loop-level aborts): a fire-and-forget
+  // backfill started while live must stop touching the cache the moment the
+  // mode flips, not march on for hundreds of epochs. This is the write-side
+  // choke point; loops also abort so done-flags stay unset and the job
+  // resumes cleanly on return to live. /*collector-quiesce-v105*/
+  if (_demoMode()) return;
   try {
     let merged = data;
     try {
@@ -194,6 +208,7 @@ async function cacheGetEpochsRaw(fromEpoch, toEpoch) {
   catch (e) { console.warn('[read-model] cache_get_epochs:', e.message ?? e); return []; }
 }
 async function cachePutSample(metric, value) {
+  if (_demoMode()) return;   /*collector-quiesce-v105*/
   try { await invoke('cache_put_sample', { poolId: poolHex(), metric, value }); }
   catch (e) { console.warn('[read-model] cache_put_sample:', e.message ?? e); }
 }
@@ -206,19 +221,23 @@ async function cacheMetaGet(key) {
   catch (e) { console.warn('[read-model] cache_meta_get:', e.message ?? e); return null; }
 }
 async function cacheMetaSet(key, value) {
+  if (_demoMode()) return;   /*collector-quiesce-v105*/
   try { await invoke('cache_meta_set', { key, value }); }
   catch (e) { console.warn('[read-model] cache_meta_set:', e.message ?? e); }
 }
 // --- Loyalty snapshot cache (computed once per epoch; see delegators view) ---
 export async function cacheGetLoyalty() {
+  if (_demoMode()) return demoSource.get('DELEGATOR_LOYALTY');   /*demo-world-v99*/
   try { return (await invoke('cache_get_loyalty', { poolId: poolHex() })) || []; }
   catch (e) { console.warn('[read-model] cache_get_loyalty:', e.message ?? e); return []; }
 }
 export async function cacheLoyaltyEpoch() {
+  if (_demoMode()) return demoWorld().epoch;   /*demo-world-v99*/
   try { return await invoke('cache_loyalty_epoch', { poolId: poolHex() }); }
   catch (e) { console.warn('[read-model] cache_loyalty_epoch:', e.message ?? e); return null; }
 }
 export async function cachePutLoyalty(computedEpoch, rows) {
+  if (_demoMode()) return;   // demo never writes the live cache /*demo-world-v99*/
   try { await invoke('cache_put_loyalty', { poolId: poolHex(), computedEpoch, rows }); }
   catch (e) { console.warn('[read-model] cache_put_loyalty:', e.message ?? e); }
 }
@@ -250,6 +269,7 @@ async function cacheGetNotifEvents(limit) {
 
 let _bech32 = null;
 export function ensurePoolBech32() {   /*pool-id-runtime-B*/
+  if (_demoMode()) return null;   // a switched-to-demo session must not leak the real pool id /*demo-world-v99*/
   if (_bech32) return _bech32;
   const hex = poolHex();
   if (!/^[0-9a-f]{56}$/.test(hex)) {
@@ -328,7 +348,7 @@ export async function backfillIfNeeded() {
     // INSERT-OR-REPLACE overwrites existing rows in place — no wipe needed.
     // Ideal stays null for epochs Koios didn't compute a pct for; the filler
     // backfills those from epoch_info so this pass stays fast (one Koios call).
-    for (const h of hist) await cachePutEpoch(h.epoch, historyRow(h));
+    for (const h of hist) { if (_demoMode()) return; await cachePutEpoch(h.epoch, historyRow(h)); }   /*collector-quiesce-v105*/
 
     await cacheMetaSet('backfill_version', BACKFILL_VERSION);
     await cacheMetaSet('backfill_high_epoch', String(Math.max(...hist.map((h) => h.epoch))));
@@ -358,6 +378,7 @@ let _idealFillInFlight = false;
 let _idealFillDone = false;
 
 export async function refreshIdealFiller() {
+  if (_demoMode()) return;   /*collector-quiesce-v105*/
   if (!KOIOS_ENABLED) return;
   if (!_backfillDone || _idealFillDone || _idealFillInFlight) return;
   const now = Date.now();
@@ -383,6 +404,7 @@ export async function refreshIdealFiller() {
 
     const addr = await ensureRewardAddr();
     for (const r of need.slice(0, IDEAL_FILL_BATCH)) {
+      if (_demoMode()) return;   // quiesce mid-fill; resumes on return to live /*collector-quiesce-v105*/
       const d = { ...r.data };
       let changed = false;
       if (needIdeal(r)) {
@@ -537,7 +559,7 @@ export async function refreshSemiLive() {
 }
 
 /** Last Koios pool_info (live stake, delegators, saturation, pledge) or null. */
-export function liveInfo() { return _lastInfo; }
+export function liveInfo() { return _demoMode() ? null : _lastInfo; }   /*demo-world-v99*/
 
 // ============================================================
 // 3. Block production (current epoch)
@@ -832,6 +854,7 @@ export function isUpcomingReady() { return _ubCurSlots !== null && _ubCurSlots !
  *  'ready' = computed (the slot list may legitimately be empty). The schedule
  *  comes from `cardano-cli query leadership-schedule`, not cncli. */
 export function upcomingScheduleState() {
+  if (_demoMode()) return 'ready';   // demo serves its own schedule /*demo-world-v99*/
   const curArr  = Array.isArray(_ubCurSlots);
   const nextArr = Array.isArray(_ubNextSlots);
   // Anything to actually show -> ready.
@@ -859,6 +882,9 @@ export function upcomingScheduleState() {
 
 /** Per-epoch history records (parsed JSON payloads), ascending by epoch. */
 export async function getEpochHistory(fromEpoch, toEpoch) {
+  if (_demoMode()) {   /*demo-world-v99*/
+    return demoEpochHistory().filter((r) => r.epoch >= fromEpoch && r.epoch <= toEpoch);
+  }
   const rows = await cacheGetEpochsRaw(fromEpoch, toEpoch);
   return rows.map((r) => ({ epoch: r.epoch, capturedAt: r.captured_at, ...r.data }));
 }
@@ -946,7 +972,7 @@ async function backfillFromDbsync(currentEpoch) {
     const from = first || Math.max(1, currentEpoch - 500);
     const t0 = performance.now();
     const rows = await dbsync.fetchHistory(from, currentEpoch);
-    for (const r of rows) await cachePutEpoch(r.epoch, r);
+    for (const r of rows) { if (_demoMode()) return; await cachePutEpoch(r.epoch, r); }   /*collector-quiesce-v105*/
     _dbsyncBackfillDone = true;
     console.log(`[dbsync] backfill: ${rows.length} epochs ${from}–${currentEpoch} in ${Math.round(performance.now() - t0)}ms`);
   } catch (e) {
@@ -977,7 +1003,7 @@ async function refreshRecentDbsync(currentEpoch) {
     const from = Math.max(1, currentEpoch - 2);
     const to = currentEpoch - 1;          // exclude current epoch (live path owns it)
     const rows = await dbsync.fetchHistory(from, to);
-    for (const r of rows) await cachePutEpoch(r.epoch, r);
+    for (const r of rows) { if (_demoMode()) return; await cachePutEpoch(r.epoch, r); }   /*collector-quiesce-v105*/
   } catch (e) {
     console.warn('[dbsync] recent refresh failed:', e.message ?? e);
   }
@@ -1003,6 +1029,7 @@ let _dbsyncIdealInFlight = false;
 // epoch at a time. Runs once after backfill. Ideal is computed for every closed
 // epoch that had pool stake — including zero-block epochs (luck 0% is real).
 async function dbsyncIdealFiller(currentEpoch) {
+  if (_demoMode()) return;   /*collector-quiesce-v105*/
   if (_dbsyncIdealDone || _dbsyncIdealInFlight || !_dbsyncBackfillDone) return;
   _dbsyncIdealInFlight = true;
   try {
@@ -1020,6 +1047,7 @@ async function dbsyncIdealFiller(currentEpoch) {
     ]);
     let filled = 0;
     for (const r of need) {
+      if (_demoMode()) return;   // quiesce mid-fill; resumes on return to live /*collector-quiesce-v105*/
       const netStake = netStakeAll[r.epoch];
       const nb = netBlocks[r.epoch];
       if (netStake && nb != null) {
@@ -1074,7 +1102,7 @@ async function backfillFromBlockfrost(currentEpoch) {
     const t0 = performance.now();
     const rows = await registry.get(DataKind.EPOCH_BLOCKS, { from: null, to: currentEpoch });
     if (Array.isArray(rows) && rows.length) {
-      for (const r of rows) await cachePutEpoch(r.epoch, r);
+      for (const r of rows) { if (_demoMode()) return; await cachePutEpoch(r.epoch, r); }   /*collector-quiesce-v105*/
       _bfBackfillDone = true;
       console.log(`[blockfrost] backfill: ${rows.length} epochs in ${Math.round(performance.now() - t0)}ms`);
     } else {
@@ -1140,6 +1168,7 @@ async function ensureKoios() {
 // key. Safe to call on connect and from the DELEGATORS view.
 let _blockfrostInit = false;
 export async function ensureBlockfrost() {
+  if (_demoMode()) return false;   // demo never initialises a real source /*demo-world-v99*/
   if (_blockfrostInit) return blockfrost.blockfrostSource.reachable();
   if (!blockfrost.hasBlockfrostKey()) return false;   // optional — silent without a key
   _blockfrostInit = true;
@@ -1187,14 +1216,14 @@ async function backfillFromKoios(currentEpoch) {
     if (!(await ensureKoios())) { console.warn('[koios] backfill skipped — not reachable'); return; }
     const t0 = performance.now();
     const rows = await koiosHist.fetchHistory(null, currentEpoch);   // ONE call
-    for (const r of rows) await cachePutEpoch(r.epoch, r);
+    for (const r of rows) { if (_demoMode()) return; await cachePutEpoch(r.epoch, r); }   /*collector-quiesce-v105*/
     // Recently-settled epochs are returned with null rewards by Koios until it
     // computes them (a day or so later). Re-fetch the trailing window every run
     // so those null->real transitions overwrite the stale cached nulls.
     try {
       const fromE = Math.max(0, currentEpoch - 12);
       const recent = await koiosHist.fetchHistory(fromE, currentEpoch);
-      for (const r of recent) await cachePutEpoch(r.epoch, r);
+      for (const r of recent) { if (_demoMode()) return; await cachePutEpoch(r.epoch, r); }   /*collector-quiesce-v105*/
     } catch (e) { console.warn('[koios] trailing re-fetch failed:', e.message ?? e); }
     _koiosBackfillDone = true;
     console.log(`[koios] backfill: ${rows.length} epochs (1 API call) in ${Math.round(performance.now() - t0)}ms`);
@@ -1207,6 +1236,7 @@ async function backfillFromKoios(currentEpoch) {
 
 /** Active history source + version, for the HISTORY header. */
 export async function getHistoryMeta() {
+  if (_demoMode()) return demoHistoryMeta();   /*demo-world-v99*/
   return {
     source: (await cacheMetaGet('history_source')) || (DATA_SOURCE === 'off' ? null : DATA_SOURCE),
     schema: await cacheMetaGet('dbsync_schema'),
@@ -1217,6 +1247,7 @@ export async function getHistoryMeta() {
 
 /** Time-series samples for a metric since a unix timestamp. */
 export async function getSamples(metric, sinceTs) {
+  if (_demoMode()) return demoSamples(metric, sinceTs);   /*demo-world-v99*/
   const rows = await cacheGetSamplesRaw(metric, sinceTs);
   return rows.map((r) => ({ t: r.captured_at, v: r.value }));
 }
@@ -1683,6 +1714,7 @@ async function classifyLeavers(stakes) {
 
 /** Live delegation-change poll. Fire-and-forget; safe to call every loop. */
 export async function refreshNotifications(currentEpoch) {
+  if (_demoMode()) return;   /*collector-quiesce-v105*/
   if (_notifInFlight) return;
   const now = Date.now();
   if (_notifAt !== 0 && now - _notifAt < getNotifPollMs()) return;
@@ -1992,6 +2024,7 @@ export async function refreshNotifications(currentEpoch) {
 
 /** Newest-first event feed for the NOTIFICATIONS view. */
 export async function getNotifications(limit = 200) {
+  if (_demoMode()) return demoNotifications(limit);   /*demo-world-v99*/
   return cacheGetNotifEvents(limit);
 }
 
@@ -1999,6 +2032,7 @@ export async function getNotifications(limit = 200) {
  *  delegator snapshot — so monitoring continues forward from now and the next
  *  poll won't re-emit "joins" for every existing delegator. Returns true on success. */
 export async function clearNotifications() {
+  if (_demoMode()) return true;   // nothing real to clear /*demo-world-v99*/
   try {
     await invoke('cache_clear_notif_events', { poolId: poolHex() });
     return true;
@@ -2011,6 +2045,30 @@ export async function clearNotifications() {
 // ============================================================
 // Lifecycle
 // ============================================================
+
+/**
+ * Pool-scoped cache guard, called on every successful connect with the pool
+ * now in force. Clears the disk cache ONLY when the pool actually changed
+ * since the cache was built — reconnecting to your own node keeps history,
+ * samples and the notification feed intact. This replaces the old blanket
+ * cache_clear_all at DISCONNECT time, whose over-caution (its own comment
+ * admitted the tables are pool-keyed) meant any demo visit routed through
+ * Disconnect cost a live user their entire notification history — and, until
+ * alert config moved out of the meta table, their Telegram bot.
+ * (pool-scoped-cache-v102)
+ */
+export async function ensureCacheForPool(poolHexNew) {
+  try {
+    const hex = String(poolHexNew || '').trim().toLowerCase();
+    if (!hex) return;
+    const prev = await cacheMetaGet('cache_pool_hex');
+    if (prev && String(prev).toLowerCase() !== hex) {
+      await invoke('cache_clear_all');
+      console.log(`[read-model] pool changed (${String(prev).slice(0, 12)}… -> ${hex.slice(0, 12)}…) - cache cleared`);
+    }
+    await cacheMetaSet('cache_pool_hex', hex);
+  } catch (e) { console.warn('[read-model] ensureCacheForPool:', e.message ?? e); }
+}
 
 /** Reset all module state — call on connect / mode switch / reconnect. */
 export function resetReadModel() {

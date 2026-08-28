@@ -36,6 +36,12 @@ let _ownTicker = null;
 export function setOwnPoolTicker(t) { if (t) _ownTicker = t; }
 export function getOwnPoolTicker() { return _ownTicker; }
 
+// Mode flip clears the remembered ticker so a demo notifications mount can't
+// label its pills with the REAL pool's ticker for the sub-second window before
+// the next snapshot sets DEMO1 (and vice versa on returning to live).
+// /*mode-cache-v102*/
+window.addEventListener('pt:mode-changed', () => { _ownTicker = null; });
+
 /**
  * Turn an event into { icon, title, line, tone }.
  *   tone: 'pos' (gain/join) | 'neg' (loss/leave) | 'neutral'

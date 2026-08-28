@@ -42,9 +42,14 @@ function connectionHtml() { /*ab-conn*/
   const t = getTransport();
   const sess = getSession();
   const live = isConnected();
-  const mode = t === 'local'
-    ? 'This machine (local)'
-    : `SSH \u2014 ${sess.user ? sess.user + '@' : ''}${sess.host || 'remote node'}${sess.port ? ':' + sess.port : ''}`;
+  // In demo, never print the session's real user@host:port - a demo screen
+  // must carry no real values even when a live session sits underneath.
+  // /*about-demo-conn-v103*/
+  const mode = getMode() === 'demo'
+    ? 'Demo mode - synthetic data, no node connection shown'
+    : t === 'local'
+      ? 'This machine (local)'
+      : `SSH \u2014 ${sess.user ? sess.user + '@' : ''}${sess.host || 'remote node'}${sess.port ? ':' + sess.port : ''}`;
   return `<div class="ab-setup ab-conn">
     <div class="ab-setup-h">Connection</div>
     <div class="ab-conn-row">

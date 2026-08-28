@@ -18,6 +18,7 @@
 import * as readModel from '../data/read-model.js';
 import { registry, DataKind } from '../data/capabilities.js';
 import * as blockfrost from '../data/blockfrost-query.js';
+import { getMode } from '../data/index.js';   /*demo-world-v99*/
 
 // Our own pool is resolved at runtime from the connected node (not hardcoded),
 // so anyone running PoolTerminal sees their own pool highlighted. /*pool-id-runtime-B*/
@@ -1023,7 +1024,21 @@ let _duHitStake = null;  // stake address currently highlighted by search (persi
 let _duListCache = null; // last fetched delegator list (instant re-nav cache)
 let _duLiveCache = null; // last fetched POOL_LIVE hero stats
 let _duCacheTs = 0;      // when the cache above was fetched
+let _duCacheMode = null; // mode the cache was filled in - a LIVE cache must never paint in DEMO /*mode-cache-v102*/
 const DU_CACHE_TTL = 120000; // reuse the cached list for 2 minutes
+
+// Mode flip = hard cache drop. This module cache sits ABOVE the registry and
+// read-model demo gates (it was built to dodge Koios's ~20s delegator fetch),
+// so without this a live visit followed by demo within the TTL painted the
+// REAL delegator list - a hundred real stake addresses - into a screen
+// labelled DEMO. Belt (the _duCacheMode stamp checked at mount) and braces
+// (this listener), because this is the leak class v99 existed to close.
+// /*mode-cache-v102*/
+function _duDropCaches() {
+  _duListCache = null; _duLiveCache = null; _duCacheTs = 0; _duCacheMode = null;
+  _duRows = []; _duView = []; _duHitStake = null; _duPage = 0;
+}
+window.addEventListener('pt:mode-changed', _duDropCaches);
 
 function renderUnified() {
   stopLoadCreep();
@@ -1196,6 +1211,18 @@ async function fetchAdaPrice() {
   const valEl = document.getElementById('d-ada-price');
   const subEl = document.getElementById('d-ada-price-sub');
   if (!valEl) return;
+  // Demo makes NO network calls - synthetic price, labelled as such. /*demo-world-v99*/
+  if (getMode() === 'demo') {
+    const { demoAdaPrice } = await import('../data/demo-world.js');
+    const p = demoAdaPrice();
+    valEl.innerHTML = '<span class="pt-hero-unit">$</span>' + p.usd.toFixed(4);
+    if (subEl) {
+      const up = p.chg24h >= 0;
+      subEl.textContent = (up ? '▲ ' : '▼ ') + Math.abs(p.chg24h).toFixed(2) + '% 24h (demo)';
+      subEl.style.color = up ? 'var(--pt-good, #5dff9b)' : 'var(--pt-bad, #ff5a3c)';
+    }
+    return;
+  }
   try {
     const url = 'https://api.coingecko.com/api/v3/simple/price?ids=cardano&vs_currencies=usd&include_24hr_change=true';
     const res = await fetch(url, { cache: 'no-store' });
@@ -1236,7 +1263,8 @@ export async function mountDelegators(canvas) {
   const root = canvas.querySelector('#pt-delegators');
   // Instant re-nav: reuse a recently fetched delegator list from memory rather
   // than re-querying the source (Koios pool_delegators can take ~20s). /*du-cache*/
-  const _cacheFresh = _duListCache && (Date.now() - _duCacheTs) < DU_CACHE_TTL;
+  const _cacheFresh = _duListCache && (Date.now() - _duCacheTs) < DU_CACHE_TTL
+    && _duCacheMode === getMode();   /*mode-cache-v102*/
   if (!_cacheFresh) {
     showDelegLoading();   // spinner only on a real fetch
     // Optional Blockfrost enrichment — idempotent, no-op without a key.
@@ -1268,7 +1296,7 @@ export async function mountDelegators(canvas) {
     return;
   }
   if (!Array.isArray(list)) list = [];
-  if (!_cacheFresh) { _duListCache = list; _duLiveCache = live; _duCacheTs = Date.now(); }
+  if (!_cacheFresh) { _duListCache = list; _duLiveCache = live; _duCacheTs = Date.now(); _duCacheMode = getMode(); }   /*mode-cache-v102*/
 
   // Hero stats (computed on the FULL list — totals are always whole-pool).
   // Pending joiners (cert on-chain, stake not yet active) are excluded from the

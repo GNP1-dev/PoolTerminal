@@ -19,7 +19,7 @@ import { getCachedGeo, getOwnLocation, lookupGeoBatch } from '../data/geo-query.
 
 const W = 1000;
 const H = 500;
-const WORLD_URL   = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_land.geojson';
+const WORLD_URL = 'assets/ne_110m_land.geojson';   // local copy - no CDN call, works offline and keeps demo network-silent /*demo-world-v99*/
 // MAP-specific cache key — the NOW widget caches a 720×360 path under its own
 // key; reusing it here would plot land + peers at mismatched scales (peers land
 // in the wrong country). This key stores the 1000×500 path for this view.

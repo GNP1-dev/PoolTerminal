@@ -41,7 +41,14 @@ function section(text, marker, next) {
 
 let _last = null;          // previous sample for rate deltas
 let _lastHost = null;
-export function getLastHost() { return _lastHost; }
+// Demo isolation: the last scrape is REAL host data — a switched-to-demo
+// session must not paint it. Demo serves the synthetic host. /*demo-world-v99*/
+import { getMode } from './index.js';
+import { demoHost } from './demo-world.js';
+export function getLastHost() {
+  try { if (getMode() === 'demo') return demoHost(); } catch { /* fall through */ }
+  return _lastHost;
+}
 
 export async function queryHost() {
   let out;

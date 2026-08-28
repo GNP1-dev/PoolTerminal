@@ -112,7 +112,7 @@ const conn = '<span class="nf-conn"></span>';
 
 function flowHtml(ev) {
   const d = ev.detail || {};
-  const own = getOwnPoolTicker() || 'GNP1';
+  const own = getOwnPoolTicker() || 'POOL';   /*privacy-sweep-v101*/
   switch (ev.type) {
     case 'join_redelegated':
       return otherPill(d.fromTicker || shortPool(d.fromPool)) + conn + homePill(own, 'in');

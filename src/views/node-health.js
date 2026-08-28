@@ -20,6 +20,8 @@ import * as readModel from '../data/read-model.js';
 import { getLastHost } from '../data/host-query.js';
 import { getLastMetrics } from '../data/metrics-query.js';
 import { getNodeProbe } from '../data/session.js';
+import { getMode } from '../data/index.js';   /*demo-world-v99*/
+import { demoProbe } from '../data/demo-world.js';
 
 const LIVE_REFRESH_MS = 2000;     // hero + detail
 const SPARK_REFRESH_MS = 15000;   // re-pull samples + redraw
@@ -136,7 +138,9 @@ const HEALTH_HTML = `
 function updateLive(canvas) {
   const host = getLastHost();
   const m = getLastMetrics() || {};
-  const probe = getNodeProbe() || {};
+  // Demo shows the synthetic probe, NEVER the real one — a switched-to-demo
+  // session must not print the real node's ports or uptime. /*demo-world-v99*/
+  const probe = (getMode() === 'demo' ? demoProbe() : getNodeProbe()) || {};
   const set = (id, v, cls) => {
     const el = canvas.querySelector('#' + id);
     if (!el) return;

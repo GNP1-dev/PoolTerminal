@@ -88,7 +88,7 @@ const NOW_HTML = `
       line-height: 1;
       min-width: 64px;
       color: var(--pt-status-good);
-      transition: color 0.3s linear;
+      transition: color 0.3s steps(2,end);
     }
     .pt-cp-progress {
       flex: 1;
@@ -103,7 +103,7 @@ const NOW_HTML = `
       height: 100%;
       width: 0%;
       background: var(--pt-status-good);
-      transition: width 0.3s linear, background 0.3s linear;
+      transition: width 0.3s steps(2,end), background 0.3s steps(2,end);
     }
     .pt-now { position: relative; }
     .pt-loading {

@@ -333,7 +333,7 @@ export function flashMint(root, ntanks) {
     if (!mf) continue;
     mf.style.transition = 'none';
     mf.style.opacity = '0.85';
-    setTimeout(() => { mf.style.transition = 'opacity 1s'; mf.style.opacity = '0'; }, 40);
+    setTimeout(() => { mf.style.transition = 'opacity 1s steps(6,end)'; mf.style.opacity = '0'; }, 40);
   }
 }
 

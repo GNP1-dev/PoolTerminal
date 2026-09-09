@@ -96,7 +96,7 @@ Bloomberg-flash on every changing cell:
 
 - Value increased → green tint (`pt-flash-up`)
 - Value decreased → red tint (`pt-flash-down`)
-- Duration 1.6s, ease-out
+- Duration 1.6s, stepped (`steps(8, end)`): eight paints per flash, not one per frame
 - Numeric value updates instantly; only the background tints
 
 No spinners. No loading shimmer. Stale data shown at 60% opacity, replaced when fresh.
@@ -114,6 +114,12 @@ nothing may repaint every frame:
   which skip the write when the value has not changed.
 - SVG filters (blur, glow) go on a static container, never on an element
   that moves.
+- Every CSS transition and animation on a live-updating element uses a
+  `steps()` timing function. A smooth 1.2 s needle transition re-set every
+  second never finishes, so it repaints every frame for ever: measured at
+  16% of a core for one needle plus one flash in a 1440x1000 WebKitGTK
+  window; 2.4% with `steps(8)`; 0.3% with no transition. Stepped motion
+  reads as motion; per-frame motion is what pinned the core.
 - Everything pauses while the window is hidden: the ticker stops and
   `html.pt-paused` freezes CSS animations.
 

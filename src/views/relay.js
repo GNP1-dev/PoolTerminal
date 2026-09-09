@@ -141,7 +141,7 @@ function ensureStyle() {
     .rl-gap-row { display:flex; align-items:center; gap:6px; margin:4px 0; font-size:11px; }
     .rl-gap-lbl { width:26px; color:var(--pt-text-muted,#6f7d99); text-transform:uppercase; letter-spacing:1px; }
     .rl-gap-track { flex:1; height:6px; background:rgba(120,150,200,.12); border-radius:3px; overflow:hidden; }
-    .rl-gap-fill { display:block; height:100%; width:0; border-radius:3px; transition:width .6s ease; }
+    .rl-gap-fill { display:block; height:100%; width:0; border-radius:3px; transition:width .6s steps(4,end); }
     .rl-gap-val { width:40px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; color:#e6edf3; }
 
     .rl-mp-host { width:100%; }
@@ -179,7 +179,7 @@ function ensureStyle() {
     .rl-bp-row { display:flex; align-items:center; gap:8px; font-size:12px; }
     .rl-bp-k { width:64px; color:var(--pt-text-muted,#6f7d99); white-space:nowrap; text-transform:uppercase; letter-spacing:.5px; font-size:10px; }
     .rl-bp-track { flex:1; height:7px; background:rgba(120,150,200,.12); border-radius:4px; overflow:hidden; }
-    .rl-bp-bar { display:block; height:100%; width:0; border-radius:4px; background:#5dff9b; transition:width .5s ease, background .3s; }
+    .rl-bp-bar { display:block; height:100%; width:0; border-radius:4px; background:#5dff9b; transition:width .5s steps(4,end), background .3s steps(2,end); }
     .rl-bp-v { width:52px; text-align:right; font-family:ui-monospace,monospace; font-weight:700; color:#e6edf3; }
     .rl-bp-late { margin-top:2px; }
     .rl-bp-late .rl-bp-k { color:var(--pt-text-secondary,#9fb0d0); }
@@ -193,11 +193,11 @@ function ensureStyle() {
 
     /* live ECG (red), one beat per observed block, 5-minute window */
     .rl-ecg { display:block; width:100%; height:52px; }
-    .rl-ecg-line { transition:stroke .5s; }
+    .rl-ecg-line { transition:stroke .5s steps(3,end); }
     .rl-ecg-base { stroke:rgba(120,150,200,.18); stroke-width:1; }
 
     /* gauge components inherit global pt-speedo / pt-thermo / pt-tank styling */
-    .pt-needle { transition:transform 1.2s cubic-bezier(.2,.8,.2,1); }
+    .pt-needle { transition:transform 1.2s steps(8,end); }
 
     /* connect screen */
     .rl-connect { max-width:460px; margin:14px auto; display:flex; flex-direction:column; gap:9px; padding:16px 20px; }
@@ -229,11 +229,11 @@ function ensureStyle() {
     .pt-thermo-tick { position:absolute; left:34px; transform:translateY(50%); display:flex; align-items:center; gap:3px; }
     .pt-thermo-tick-line { width:7px; height:1.5px; background:rgba(160,185,225,.5); }
     .pt-thermo-tick-lbl { font-size:8.5px; color:var(--pt-text-muted,#6f7d99); font-family:ui-monospace,monospace; }
-    .pt-thermo-fill { position:absolute; left:0; bottom:0; width:100%; border-radius:8px; transition:height 1.3s cubic-bezier(.2,.8,.2,1); }
+    .pt-thermo-fill { position:absolute; left:0; bottom:0; width:100%; border-radius:8px; transition:height 1.3s steps(8,end); }
     .pt-thermo-bulb { position:absolute; left:11px; bottom:0; width:28px; height:28px; border-radius:50%; }
     .pt-tanks { display:flex; gap:7px; align-items:flex-end; justify-content:center; height:104px; width:100%; }
-    .pt-tank { position:relative; width:46px; height:98px; border:2px solid rgba(120,150,200,.22); border-radius:7px; overflow:hidden; background:rgba(10,16,28,.5); transition:border-color .4s; }
-    .pt-tank-liq { position:absolute; left:0; bottom:0; width:100%; transition:height .55s ease; }
+    .pt-tank { position:relative; width:46px; height:98px; border:2px solid rgba(120,150,200,.22); border-radius:7px; overflow:hidden; background:rgba(10,16,28,.5); transition:border-color .4s steps(2,end); }
+    .pt-tank-liq { position:absolute; left:0; bottom:0; width:100%; transition:height .55s steps(4,end); }
     .pt-tank-cap { position:absolute; top:3px; left:0; width:100%; text-align:center; font-size:9px; color:#6f7d99; }
     .pt-tank.active { border-color:rgba(54,224,212,.45); }
     .pt-tank.spill { border-color:rgba(255,90,60,.5); }

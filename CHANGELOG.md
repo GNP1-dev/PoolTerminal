@@ -28,9 +28,26 @@ behaviour may change between minor versions.
   animation that could not be paused, now steps at 8 Hz from the same
   ticker, and the mempool sparkline's current-value marker, which pulsed
   continuously with a re-rendered glow, is now a static glow that moves
-  with each 5-second redraw. Measured on the release build on the same
-  machine, sitting on the Dashboard in demo mode: WebKit web process from
-  an average of 135% CPU to 4%.
+  with each 5-second redraw.
+
+  A connected, live Dashboard had a second layer of the same problem: the
+  tip-diff needle is re-set every second and its 1.2-second smooth CSS
+  transition never finished, so it repainted every frame for as long as
+  the node was live, and the Bloomberg flash, the mempool tanks, the
+  hero bars, the epoch thermometer and the metadata-feed slide-in each
+  added their own per-frame repaints whenever a value changed. Every
+  transition and animation on a live-updating element now uses a stepped
+  timing function, so a needle sweep costs eight paints instead of about
+  seventy and a flash eight instead of about a hundred. The motion reads
+  the same; the per-frame repaint is gone.
+
+  Measured on the release build on the same machine. Dashboard in demo
+  mode behind the connect modal: WebKit web process from an average of
+  135% CPU to 4%, and 0.2% with the window minimised. A controlled
+  1440x1000 WebKitGTK page with one needle re-set each second plus one
+  flash: 16% with the old smooth transition, 2.4% stepped, 0.3% with no
+  transition. A live-connected Dashboard on 0.3.3 averaged 25-30% of a
+  core over its whole run.
 - **The Node Health Forge card flagged CHECK on healthy pools.** It
   treated the node's `slotsMissed` counter as missed blocks and escalated
   on any non-zero value. That counter is late leadership checks: slots

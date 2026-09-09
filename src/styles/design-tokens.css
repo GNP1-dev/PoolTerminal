@@ -67,7 +67,7 @@
 
   /* ---------- Animation ---------- */
   --pt-flash-duration:   1.6s;
-  --pt-flash-easing:     ease-out;
+  --pt-flash-easing:     steps(8, end);   /* stepped, not eased: 8 paints per flash, not ~96 (cpu-1hz-v0.3.4) */
 
 }
 

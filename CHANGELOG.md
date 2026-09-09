@@ -6,6 +6,49 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
+## [0.3.4] - 2026-09-09
+
+### Fixed
+
+- **PoolTerminal no longer pins a CPU core while it is open.** The
+  Dashboard's heartbeat trace, the upcoming blocks strip and the Relay
+  tabs' ECG each ran a requestAnimationFrame loop that rewrote the page
+  sixty times a second whether or not anything had changed, and the glow
+  on every moving heartbeat complex was a Gaussian blur re-rasterised on
+  every one of those frames. Under WebKitGTK that is a full software
+  repaint per frame, and the web process sat at 100-135% CPU for as long
+  as the app was open: fan noise and battery drain on a laptop, and on a
+  machine shared with a node, CPU the node does not get. All motion now
+  runs from one shared 1 Hz ticker (everything it animates is
+  second-resolution), a write is skipped when the value has not changed,
+  the glow is applied once to the static trace container instead of to
+  each moving path, and the ticker and every CSS animation stop entirely
+  while the window is hidden. Two smaller always-on animations went the
+  same way: the KES hourglass's falling sand, which was a 60 fps SVG
+  animation that could not be paused, now steps at 8 Hz from the same
+  ticker, and the mempool sparkline's current-value marker, which pulsed
+  continuously with a re-rendered glow, is now a static glow that moves
+  with each 5-second redraw. Measured on the release build on the same
+  machine, sitting on the Dashboard in demo mode: WebKit web process from
+  an average of 135% CPU to 4%.
+- **The Node Health Forge card flagged CHECK on healthy pools.** It
+  treated the node's `slotsMissed` counter as missed blocks and escalated
+  on any non-zero value. That counter is late leadership checks: slots
+  the forge loop did not evaluate in time because of CPU, IO or a GC
+  pause, which every block producer accrues and on which the node was
+  almost never leader. It had flagged a pool that had not been scheduled
+  at all. The card now escalates only on `nodeCannotForge`, the counter
+  that means the node was scheduled and could not mint.
+
+### Changed
+
+- **Forge figures on Node Health carry their denominator.** The card now
+  reads "leader N · forged M", so a forged count of zero is seen against
+  how often the node was actually scheduled. The Live detail grid gains
+  Leader slots, Cannot-forge errors and Late leader checks, the last shown
+  as "n of total (%)" against the number of leadership checks the node set
+  out to run. Demo mode shows the same shape rather than a sterile zero.
+
 ## [0.3.3] - 2026-08-28
 
 ### Added
@@ -185,6 +228,7 @@ behaviour may change between minor versions.
 
 - Initial release.
 
+[0.3.4]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.4
 [0.3.3]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.3
 [0.3.2]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.2
 [0.3.1]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.1

@@ -6,7 +6,9 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> **v0.3.3 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+> **v0.3.4 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+>
+> New in v0.3.4: **PoolTerminal no longer pins a CPU core while it is open.** Three animation loops were repainting the dashboard sixty times a second, with the heartbeat's glow re-blurred on every frame, which held the web process at 100-135% CPU on every machine the app ran on. Motion now runs at 1 Hz with writes skipped when nothing changed, and everything pauses while the window is hidden: the same display for a fraction of the CPU, which matters on a laptop and on a desktop that also runs a node. Also stops the Node Health Forge card flagging CHECK on healthy pools, and shows forge counts against how often the node was actually scheduled.
 >
 > New in v0.3.3: **demo mode now populates every view**, so you can see what PoolTerminal does across all twelve tabs before connecting it to anything. Also fixes several cases where real pool data could appear in demo mode, makes reconnecting to your node a single action instead of the full setup wizard, and stops a disconnect from clearing your notification history and Telegram settings.
 >

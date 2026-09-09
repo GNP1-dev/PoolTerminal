@@ -457,14 +457,13 @@
   opacity: 0.45;
 }
 .pt-mp-current {
-  transform-origin: center center;
-  transform-box: fill-box;
-  animation: pt-mp-pulse 2.2s ease-in-out infinite;
+  /* Static glow. This marker used to pulse (scale 1 -> 1.6, 2.2 s, infinite)
+     with the drop-shadow re-rasterised on every frame, which alone held the
+     web process near 20% CPU, and behind the connect modal's backdrop blur
+     it re-blurred the whole window sixty times a second. The sparkline is
+     redrawn every 5 s anyway, so the marker still moves with the data.
+     /*cpu-1hz-v0.3.4*/ */
   filter: drop-shadow(0 0 3px currentColor);
-}
-@keyframes pt-mp-pulse {
-  0%, 100% { transform: scale(1);   opacity: 1;   }
-  50%      { transform: scale(1.6); opacity: 0.6; }
 }
 
 .pt-mp-stats-grid {
@@ -803,3 +802,11 @@
   border-color: var(--pt-accent-blue-bright);
 }
 .pt-btn-secondary { /* default base style is fine */ }
+
+/* ---- Hidden window: freeze motion ----
+   ui/ticker.js puts class "pt-paused" on <html> while document.hidden is true
+   (minimised, or the app's window is unmapped). Infinite animations such as
+   the loading spinners and the notifications marching border would otherwise
+   keep the compositor repainting a window nobody can see. The 1 Hz ticker
+   stops at the same moment. /*cpu-1hz-v0.3.4*/ */
+html.pt-paused * { animation-play-state: paused !important; }

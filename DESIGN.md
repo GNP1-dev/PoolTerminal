@@ -101,6 +101,22 @@ Bloomberg-flash on every changing cell:
 
 No spinners. No loading shimmer. Stale data shown at 60% opacity, replaced when fresh.
 
+Motion budget (0.3.4). The app must idle at a few percent of one core, so
+nothing may repaint every frame:
+
+- Continuous motion (heartbeat trace, upcoming-block ETAs, relay ECG) runs
+  from the shared 1 Hz ticker in `ui/ticker.js`, never `requestAnimationFrame`.
+  Everything it animates is second-resolution.
+- The few decorative movements that need sub-second steps (the hourglass
+  sand) use the ticker's 8 Hz motion beat. No SMIL `<animate>`, no
+  `infinite` CSS animations on the dashboard.
+- Per-tick DOM writes go through `setTextIf` / `setStyleIf` / `setAttrIf`,
+  which skip the write when the value has not changed.
+- SVG filters (blur, glow) go on a static container, never on an element
+  that moves.
+- Everything pauses while the window is hidden: the ticker stops and
+  `html.pt-paused` freezes CSS animations.
+
 ## 9. Status semantics
 
 - **Cardano blue** - primary accent, informational ("this is a value worth noting")

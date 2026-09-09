@@ -25,6 +25,7 @@ import {
 } from '../data/relay-probe.js';
 import { getCachedGeo, lookupGeoBatch, getOwnLocation } from '../data/geo-query.js';
 import { getMode } from '../data/index.js';   /*demo-world-v99*/
+import { onTick, setAttrIf } from '../ui/ticker.js';   /*cpu-1hz-v0.3.4*/
 
 const LABEL = { relay1: 'Relay 1', relay2: 'Relay 2' };
 const POLL_MS = 2000;
@@ -43,7 +44,7 @@ function st(id) {
   return (S[id] ||= {
     root: null, timer: null, mode: 'ssh', active: false, hidden: false,
     lastBlock: null, lastBlockTs: 0, connectedAt: 0, clockTimer: null,
-    blockTimes: [], ecgRaf: null,
+    blockTimes: [], ecgTick: null,
     peers: [], myLoc: null, geoInFlight: false, ownInFlight: false,
   });
 }
@@ -300,18 +301,21 @@ function renderTrace(id) {
             filter="url(#rl-ecg-glow-${id})" d="M0,${ECG_BL} L${ECG_W},${ECG_BL}"/>
     </svg>`;
 }
+// Redrawn once a second by the shared ticker (paused while the window is
+// hidden). The old requestAnimationFrame version rebuilt and re-blurred this
+// path 60 times a second. The strip moves 2 units/s, so 1 Hz is the real rate.
+// /*cpu-1hz-v0.3.4*/
 function ecgFrame(id) {
   const s = st(id);
   const path = s.root && s.root.querySelector(`#rl-ecg-${id}`);
-  if (!path) { s.ecgRaf = null; return; }
+  if (!path) { stopEcg(id); return; }
   const now = Date.now() / 1000;
   // Do NOT trim s.blockTimes here — the density grid needs up to 1h of history.
   // buildEcg() already filters to the 5-minute window for rendering only.
-  path.setAttribute('d', buildEcg(s.blockTimes, now));
-  s.ecgRaf = requestAnimationFrame(() => ecgFrame(id));
+  setAttrIf(path, 'd', buildEcg(s.blockTimes, now));
 }
-function startEcg(id) { const s = st(id); if (!s.ecgRaf) s.ecgRaf = requestAnimationFrame(() => ecgFrame(id)); }
-function stopEcg(id) { const s = st(id); if (s.ecgRaf) { cancelAnimationFrame(s.ecgRaf); s.ecgRaf = null; } }
+function startEcg(id) { const s = st(id); if (!s.ecgTick) { s.ecgTick = onTick(() => ecgFrame(id)); ecgFrame(id); } }
+function stopEcg(id) { const s = st(id); if (s.ecgTick) { s.ecgTick(); s.ecgTick = null; } }
 
 // ---- density / gaps from observed block times ------------------------------
 function densityPct(times, now, win) {

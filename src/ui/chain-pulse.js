@@ -22,9 +22,16 @@
  *   40-60s  : dark orange
  *   60s+    : red
  * Progress bar fills left→right and maxes out (100%) at 150s.
+ *
+ * Motion is driven by the shared 1 Hz ticker (ui/ticker.js), not
+ * requestAnimationFrame. Everything here is second-resolution, and the old
+ * per-frame loop re-rasterised the glow filter 60 times a second and pinned
+ * a CPU core under WebKitGTK. Every per-tick DOM write goes through the
+ * change-detecting setters so an unchanged value costs nothing. (cpu-1hz-v0.3.4)
  */
 
 import { commas, duration } from './format.js';
+import { onTick, setTextIf, setStyleIf, setAttrIf } from './ticker.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const W = 600;
@@ -57,7 +64,7 @@ let ticks = [];
 let baselineSegments = [];
 let complexGroup = null;
 let activeComplexes = [];
-let rafId = null;
+let tickUnsub = null;
 let lastData = null;
 let currentWindow = 300;
 
@@ -74,12 +81,11 @@ export function densityPctForWindow(w) {
   return (count / w) * 100;
 }
 let optimisticTimes = [];
-let densityFrameCounter = 0;
 
 const TICK_DEDUP_TOLERANCE_S = 10;
 
 function byId(id) { return document.getElementById(id); }
-function setText(id, v) { const el = byId(id); if (el) el.textContent = v; }
+function setText(id, v) { setTextIf(byId(id), v); }
 
 /** Colour for the elapsed-since-last-block timer + its progress bar. */
 function elapsedColor(secs) {
@@ -147,12 +153,12 @@ function renderDensity(d) {
     const el = byId(id);
     if (!el) return;
     const p = frac * 100;
-    el.textContent = p.toFixed(1) + '%';
+    setTextIf(el, p.toFixed(1) + '%');
     const dist = Math.abs(p - 5);
-    el.style.color =
+    setStyleIf(el, 'color',
       dist <= 0.5 ? 'var(--pt-status-good)'
       : dist <= 1.5 ? 'var(--pt-status-warn)'
-      : 'var(--pt-status-bad)';
+      : 'var(--pt-status-bad)');
   });
 }
 
@@ -256,7 +262,9 @@ function buildComplexElement(cw) {
   el.setAttribute('stroke-linecap', 'round');
   el.setAttribute('stroke-linejoin', 'round');
   el.setAttribute('vector-effect', 'non-scaling-stroke');
-  el.setAttribute('filter', 'url(#ecg-glow)');
+  // No per-path filter: the glow lives on the static complexGroup (see
+  // setupECGMode). A blur on each moving path re-rasterised every one of them
+  // on every move. /*cpu-1hz-v0.3.4*/
   return el;
 }
 
@@ -329,6 +337,9 @@ function setupECGMode(svg) {
   baselineSegments.push(seg);
 
   complexGroup = document.createElementNS(SVGNS, 'g');
+  // One glow for the whole trace, applied to the container the complexes
+  // translate inside. Re-rendered once per tick, not once per path per frame.
+  complexGroup.setAttribute('filter', 'url(#ecg-glow)');
   svg.appendChild(complexGroup);
 }
 
@@ -379,12 +390,12 @@ function updateBaseline() {
 
   segs.forEach((s, i) => {
     const ln = baselineSegments[i];
-    ln.setAttribute('x1', s.x1.toFixed(1));
-    ln.setAttribute('x2', s.x2.toFixed(1));
-    ln.style.display = '';
+    setAttrIf(ln, 'x1', s.x1.toFixed(1));
+    setAttrIf(ln, 'x2', s.x2.toFixed(1));
+    setStyleIf(ln, 'display', '');
   });
   for (let i = segs.length; i < baselineSegments.length; i++) {
-    baselineSegments[i].style.display = 'none';
+    setStyleIf(baselineSegments[i], 'display', 'none');
   }
 }
 
@@ -403,7 +414,7 @@ function animateECG() {
       activeComplexes.splice(i, 1);
       continue;
     }
-    c.el.setAttribute('transform', `translate(${x.toFixed(1)}, 0)`);
+    setAttrIf(c.el, 'transform', `translate(${x.toFixed(1)}, 0)`);
   }
   updateBaseline();
 }
@@ -448,9 +459,9 @@ function animateTicks() {
     const age = now - t.time;
     const drawAge = Math.max(0, age);
     const x = (W * (1 - drawAge / currentWindow)).toFixed(1);
-    t.el.setAttribute('x1', x);
-    t.el.setAttribute('x2', x);
-    t.el.style.display = age > currentWindow ? 'none' : '';
+    setAttrIf(t.el, 'x1', x);
+    setAttrIf(t.el, 'x2', x);
+    setStyleIf(t.el, 'display', age > currentWindow ? 'none' : '');
   }
 }
 
@@ -562,7 +573,7 @@ export function initChainPulse() {
   paintActiveTab();
   renderDensity(lastData.density);
   rebuildHeartbeat(lastData.recentBlockTimes);
-  if (!rafId) loop();
+  startTicking();
 }
 
 export function setChainPulseStatus(atTip, tipBlock, slot, slotInEpoch, epochLength) {
@@ -660,11 +671,17 @@ export function renderChainPulse(pulse) {
   rebuildHeartbeat(merged);
   recomputeDensity();
 
-  if (!rafId) loop();
+  startTicking();
 }
 
-function loop() {
-  rafId = requestAnimationFrame(loop);
+function startTicking() {
+  if (tickUnsub) return;
+  tickUnsub = onTick(tick);
+  tick();
+}
+
+// Once a second (shared ticker; paused while the window is hidden).
+function tick() {
   if (!lastData) return;
   const now = Date.now() / 1000;
 
@@ -675,13 +692,12 @@ function loop() {
 
   // Timer + progress bar colour by elapsed seconds; bar max at PROGRESS_MAX_S.
   const color = elapsedColor(elapsed);
-  const timerEl = byId('cp-since');
-  if (timerEl) timerEl.style.color = color;
+  setStyleIf(byId('cp-since'), 'color', color);
   const progressFill = byId('cp-progress-fill');
   if (progressFill) {
     const pct = Math.min(100, (elapsed / PROGRESS_MAX_S) * 100);
-    progressFill.style.width = pct.toFixed(1) + '%';
-    progressFill.style.background = color;
+    setStyleIf(progressFill, 'width', pct.toFixed(1) + '%');
+    setStyleIf(progressFill, 'background', color);
   }
 
   if (currentWindow <= 300) {
@@ -690,18 +706,15 @@ function loop() {
     animateTicks();
   }
 
-  densityFrameCounter++;
-  if (densityFrameCounter >= 60) {
-    densityFrameCounter = 0;
-    recomputeDensity();
-    recomputeStats();
-  }
+  // Was every 60 frames (~1 s) in the rAF loop; now simply every tick.
+  recomputeDensity();
+  recomputeStats();
 }
 
 export function stopChainPulse() {
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
+  if (tickUnsub) {
+    tickUnsub();
+    tickUnsub = null;
   }
   ticks = [];
   baselineSegments = [];

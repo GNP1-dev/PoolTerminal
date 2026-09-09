@@ -9,13 +9,18 @@
  * is open. Next-epoch slots are tagged so they're clearly distinguished.
  *
  * The bar's width conveys how close the block is relative to the furthest
- * one in the list. Every frame (rAF), bars widen and ETAs count down smoothly.
+ * one in the list. Once a second (shared 1 Hz ticker, paused while the window
+ * is hidden) ETAs count down and bars widen. Every write is change-detected:
+ * over a 6.5-day fill horizon a bar moves 0.0002%/s, so its width, colour and
+ * glow are actually rewritten a few times an hour, not 60 times a second as
+ * the old requestAnimationFrame loop did. (cpu-1hz-v0.3.4)
  */
 import { commas, duration } from './format.js';
+import { onTick, setTextIf, setStyleIf } from './ticker.js';
 let blocks = [];
 let polledAt = 0;
 let maxEtaAtPoll = 1;
-let rafId = null;
+let tickUnsub = null;
 // The progress bar fills on a fixed track equal to the furthest a block can ever
 // be: a full epoch (5 days) plus the ~36h before the current epoch ends when the
 // next-epoch leadership schedule becomes visible = 6.5 days. So the left edge is
@@ -182,38 +187,39 @@ export function renderUpcomingBlocks(list, opts = {}) {
         .join('');
     }
   }
-  if (!rafId) loop();
+  if (!tickUnsub) tickUnsub = onTick(tick);
+  tick();
 }
-function loop() {
-  rafId = requestAnimationFrame(loop);
+// Once a second. Element lookups are cached on the block entry; the entries
+// are rebuilt on every renderUpcomingBlocks(), which is also when the DOM is.
+function tick() {
   if (!blocks.length) return;
   const elapsed   = Date.now() / 1000 - polledAt;
   for (const b of blocks) {
     const liveETA = Math.max(0, b.etaAtPoll - elapsed);
-    const etaEl   = byId(`ub-eta-${b.index}`);
-    const barEl   = byId(`ub-bar-${b.index}`);
-    if (etaEl) etaEl.textContent = dhms(liveETA);
+    const etaEl   = b.etaEl || (b.etaEl = byId(`ub-eta-${b.index}`));
+    const barEl   = b.barEl || (b.barEl = byId(`ub-bar-${b.index}`));
+    setTextIf(etaEl, dhms(liveETA));
     if (barEl) {
       // fill on a fixed horizon: ~0% a horizon away, ~100% just before mint.
       const fill = Math.min(100, Math.max(0, (1 - liveETA / FILL_HORIZON_S) * 100));
+      const c = urgencyColour(liveETA);
       if (barEl.classList.contains('pt-ub-bar-v')) {
-        barEl.style.height = fill.toFixed(1) + '%';
-        const c = urgencyColour(liveETA);
-        barEl.style.background = c;
-        barEl.style.boxShadow = '0 0 10px ' + c + '88';
+        setStyleIf(barEl, 'height', fill.toFixed(1) + '%');
+        setStyleIf(barEl, 'background', c);
+        setStyleIf(barEl, 'boxShadow', '0 0 10px ' + c + '88');
       } else {
-        barEl.style.width = fill.toFixed(1) + '%';
-        const c = urgencyColour(liveETA);
-        barEl.style.background = c;
-        barEl.style.boxShadow = '0 0 8px ' + c + '66';
+        setStyleIf(barEl, 'width', fill.toFixed(1) + '%');
+        setStyleIf(barEl, 'background', c);
+        setStyleIf(barEl, 'boxShadow', '0 0 8px ' + c + '66');
       }
     }
   }
 }
 export function stopUpcomingBlocks() {
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
+  if (tickUnsub) {
+    tickUnsub();
+    tickUnsub = null;
   }
   blocks = [];
   polledAt = 0;

@@ -17,6 +17,8 @@
  * trivially testable and impossible to break the data layer with.
  */
 
+import { onMotion, MOTION_MS, setAttrIf } from './ticker.js';   /*cpu-1hz-v0.3.4*/
+
 const D2R = Math.PI / 180;
 const START = 135;   // degrees, bottom-left
 const SWEEP = 270;   // degrees of travel to bottom-right
@@ -158,21 +160,15 @@ export function hourglassHTML(opts) {
       <g clip-path="url(#${id}-clip-bot)">
         <path id="${id}-bot" d="" fill="${col}"/>
       </g>
-      <!-- falling drips in the neck: three staggered dashes, animated in SVG
-           units so they always land on the bottom pile (id-land set per update) -->
+      <!-- falling drips in the neck: three staggered dashes, stepped by the
+           shared 8 Hz motion beat (see driveDrips) so they always land on the
+           bottom pile. These were SMIL <animate> elements: a 60 fps animation
+           that never stopped, could not be paused by CSS, and kept the whole
+           dashboard repainting for as long as the app was open. /*cpu-1hz-v0.3.4*/ -->
       <g id="${id}-stream" fill="${col}">
-        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
-          <animate id="${id}-d1" attributeName="y" values="58;92" dur="0.9s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" repeatCount="indefinite"/>
-        </rect>
-        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
-          <animate id="${id}-d2" attributeName="y" values="58;92" dur="0.9s" begin="0.3s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" begin="0.3s" repeatCount="indefinite"/>
-        </rect>
-        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58">
-          <animate id="${id}-d3" attributeName="y" values="58;92" dur="0.9s" begin="0.6s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0;1;1;0" dur="0.9s" begin="0.6s" repeatCount="indefinite"/>
-        </rect>
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58" opacity="0"/>
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58" opacity="0"/>
+        <rect x="49.2" width="1.6" height="4" rx="0.8" y="58" opacity="0"/>
       </g>
     </svg>
   </div>`;
@@ -217,19 +213,11 @@ export function setHourglass(root, id, frac, color) {
   }
 
   // --- Drips: land on top of the (volume-correct) bottom mound while draining.
-  // setHourglass is called every tick, so only rewrite the animation's values
-  // when the landing point actually moved — re-setting the attribute each tick
-  // would restart the SMIL drip and make it stutter.
   if (stream) {
     const draining = (f > 0.001 && f < 0.999);
     stream.style.display = draining ? '' : 'none';
-    const land = Math.max(64, botSurf - 5).toFixed(1);
-    if (stream.dataset.land !== land) {
-      stream.dataset.land = land;
-      stream.querySelectorAll('animate[attributeName="y"]').forEach((a) => {
-        a.setAttribute('values', `58;${land}`);
-      });
-    }
+    const land = Math.max(64, botSurf - 5);
+    if (draining) driveDrips(id, stream, land); else stopDrips(id);
   }
 
   if (color) {
@@ -240,6 +228,50 @@ export function setHourglass(root, id, frac, color) {
     const svg = glass && glass.closest('svg');
     if (svg) svg.querySelectorAll('rect[rx="2"]').forEach((c) => c.setAttribute('fill', color));
   }
+}
+
+// ---- hourglass drips ---------------------------------------------------
+// One fall takes DRIP_FALL_MS from the neck (y=58) to the landing point; the
+// three dashes are a third of a cycle apart, fading in over the first third
+// and out over the last (the same 0;1;1;0 profile the SMIL version had).
+// Stepped at the ticker's 8 Hz motion beat, which is ~7 positions per fall:
+// a visible trickle for eight small repaints a second, and it stops with the
+// ticker while the window is hidden. /*cpu-1hz-v0.3.4*/
+const DRIP_FALL_MS = 900;
+const DRIP_TOP_Y = 58;
+const drips = new Map();   // id -> { unsub, stream, land, phase }
+
+function dripFrame(id) {
+  const d = drips.get(id);
+  if (!d) return;
+  if (!d.stream.isConnected) { stopDrips(id); return; }
+  d.phase = (d.phase + MOTION_MS / DRIP_FALL_MS) % 1;
+  const rects = d.stream.children;
+  for (let i = 0; i < rects.length; i++) {
+    const p = (d.phase + i / rects.length) % 1;
+    const y = DRIP_TOP_Y + (d.land - DRIP_TOP_Y) * p;
+    const op = p < 1 / 3 ? p * 3 : p < 2 / 3 ? 1 : (1 - p) * 3;
+    setAttrIf(rects[i], 'y', y.toFixed(1));
+    setAttrIf(rects[i], 'opacity', op.toFixed(2));
+  }
+}
+
+function driveDrips(id, stream, land) {
+  let d = drips.get(id);
+  if (!d || d.stream !== stream) {
+    stopDrips(id);
+    d = { unsub: null, stream, land, phase: 0 };
+    d.unsub = onMotion(() => dripFrame(id));
+    drips.set(id, d);
+  }
+  d.land = land;
+}
+
+function stopDrips(id) {
+  const d = drips.get(id);
+  if (!d) return;
+  if (d.unsub) d.unsub();
+  drips.delete(id);
 }
 
 /**

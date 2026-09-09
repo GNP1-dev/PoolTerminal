@@ -37,6 +37,18 @@ function fmtBytes(b) {
   if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
   return Math.round(b) + ' B';
 }
+// "2 of 513,132 (0.00039%)". A rate needs its denominator to be readable: a
+// bare count of late leader checks reads as lost blocks to an operator.
+// /*forge-honesty-v107*/
+function fmtOfTotal(n, total) {
+  if (n == null) return '—';
+  const num = Number(n).toLocaleString('en-US');
+  if (total == null || !(total > 0)) return num;
+  const pct = (n / total) * 100;
+  const p = pct === 0 ? '0%' : pct < 0.01 ? pct.toPrecision(2) + '%' : pct.toFixed(2) + '%';
+  return `${num} of ${Number(total).toLocaleString('en-US')} (${p})`;
+}
+
 function fmtBps(b) {
   if (b == null || !Number.isFinite(b)) return '—';
   if (b >= 1e6) return (b / 1e6).toFixed(2) + ' MB/s';
@@ -115,7 +127,7 @@ const HEALTH_HTML = `
       <div class="pt-hero-card"><div class="pt-hero-label">Disk</div><div class="pt-hero-value" id="hl-disk">—</div><div class="pt-hero-sub" id="hl-disk-sub">—</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Network</div><div class="pt-hero-value" id="hl-net">—</div><div class="pt-hero-sub" id="hl-net-sub">—</div></div>
       <div class="pt-hero-card"><div class="pt-hero-label">Node RSS</div><div class="pt-hero-value" id="hl-rss">—</div><div class="pt-hero-sub" id="hl-rss-sub">—</div></div>
-      <div class="pt-hero-card"><div class="pt-hero-label">Forge</div><div class="pt-hero-value" id="hl-forge">—</div><div class="pt-hero-sub" id="hl-forge-sub">—</div></div>
+      <div class="pt-hero-card" title="Forge health. CHECK means the node reported it could not forge, which is a real fault. Leader is how many times this node process was scheduled to mint; forged is how many blocks it made. Late leader checks are counted separately in Live detail: they are slots the node was too busy to evaluate, not blocks lost."><div class="pt-hero-label">Forge</div><div class="pt-hero-value" id="hl-forge">—</div><div class="pt-hero-sub" id="hl-forge-sub">—</div></div>
     </div>
 
     <div class="pt-health-grid">
@@ -167,12 +179,19 @@ function updateLive(canvas) {
   // Node RSS
   set('hl-rss', fmtBytes(m.rssBytes));
   set('hl-rss-sub', m.gcLiveBytes != null ? `GC live ${fmtBytes(m.gcLiveBytes)}` : '—');
-  // Forge health (BP)
-  const cannot = m.cannotForge, missed = m.slotsMissed, forged = m.blocksForged;
-  const forgeBad = (cannot || 0) > 0 || (missed || 0) > 0;
+  // Forge health (BP). Only nodeCannotForge is a fault: it means the node was
+  // scheduled and could not mint (KES expired, missing op cert, no ledger view).
+  // slotsMissed is NOT a fault and deliberately no longer escalates this card —
+  // it is a late leadership check, routine on any BP, and it flagged CHECK on a
+  // pool that had never been scheduled at all. /*forge-honesty-v107*/
+  const cannot = m.cannotForge, forged = m.blocksForged, leader = m.nodeIsLeader;
+  const forgeBad = (cannot || 0) > 0;
   set('hl-forge', forgeBad ? 'CHECK' : (cannot == null ? '—' : 'OK'),
     forgeBad ? 'v-warn' : (cannot == null ? 'v-muted' : 'v-good'));
-  set('hl-forge-sub', cannot == null ? '—' : `forged ${forged ?? 0} · missed ${missed ?? 0} (since node start)`);
+  // Block counts only. Leader is the honest denominator for forged: without it,
+  // "forged 0" looks alarming when it just means nothing was scheduled yet.
+  set('hl-forge-sub', cannot == null ? '—'
+    : `leader ${leader ?? '—'} · forged ${forged ?? 0} (since node start)`);
 
   // Live detail grid
   const detail = canvas.querySelector('#hl-detail');
@@ -196,7 +215,10 @@ function updateLive(canvas) {
       ['Conns in/out', `${m.incomingConns ?? '—'} / ${m.outgoingConns ?? '—'}`],
       ['Slot', m.slotNum != null ? Number(m.slotNum).toLocaleString('en-US') : '—'],
       ['Block', m.blockNum != null ? Number(m.blockNum).toLocaleString('en-US') : '—'],
+      ['Leader slots (since node start)', m.nodeIsLeader ?? '—'],
       ['Forged (since node start)', m.blocksForged ?? '—'],
+      ['Cannot-forge errors', m.cannotForge ?? '—'],
+      ['Late leader checks', fmtOfTotal(m.slotsMissed, m.aboutToLead)],
     ];
     detail.innerHTML = rows.map(([k, v]) =>
       `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');

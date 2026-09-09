@@ -431,7 +431,13 @@ export function demoNodeMetrics() {
   return {
     rssBytes: 11.9e9 + (r() - 0.5) * 0.3e9,
     gcLiveBytes: 7.1e9 + (r() - 0.5) * 0.4e9,
-    cannotForge: 0, slotsMissed: 0,
+    cannotForge: 0,
+    // A handful of late leader checks against millions of attempts is the
+    // normal state of a healthy BP, so demo shows that rather than a sterile
+    // zero. Leader count stays >= forged. /*forge-honesty-v107*/
+    slotsMissed: 3,
+    aboutToLead: 37 * 86400,
+    nodeIsLeader: Math.round(w.cur.leader * demoClock().progress),
     blocksForged: Math.min(w.cur.adopted, Math.round(w.cur.leader * demoClock().progress)),
     peersHot: 20, peersWarm: 14,
   };

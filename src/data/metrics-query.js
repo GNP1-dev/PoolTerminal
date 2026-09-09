@@ -88,9 +88,17 @@ export async function queryMetrics() {
     blockNum:             readMetric(out, 'cardano_node_metrics_blockNum_int'),
     mempoolBytes:         readMetric(out, 'cardano_node_metrics_mempoolBytes_int'),
     mempoolTxs:           readMetric(out, 'cardano_node_metrics_txsInMempool_int'),
-    blocksForged:         readMetric(out, 'cardano_node_metrics_blocksForged_int'),     // BP: blocks made
-    cannotForge:          readMetric(out, 'cardano_node_metrics_nodeCannotForge_int'),  // BP: forge failures
-    slotsMissed:          readMetric(out, 'cardano_node_metrics_slotsMissed_int'),      // BP: missed leader slots
+    blocksForged:         readMetric(out, 'cardano_node_metrics_blocksForged_int'),     // BP: blocks minted
+    cannotForge:          readMetric(out, 'cardano_node_metrics_nodeCannotForge_int'),  // BP: forge failures (a real fault)
+    nodeIsLeader:         readMetric(out, 'cardano_node_metrics_nodeIsLeader_int'),     // BP: times scheduled to mint
+    // NOT missed blocks. This counts slots where the forge loop did not run its
+    // leadership check in time (busy CPU, IO, GC pause) — the same counter
+    // gLiveView shows as "missed slot leader checks". The node was almost never
+    // leader for those slots. Only meaningful against aboutToLead, below.
+    slotsMissed:          readMetric(out, 'cardano_node_metrics_slotsMissed_int'),      // BP: LATE leader checks
+    // Denominator for slotsMissed: leadership checks the node set out to run.
+    // /*forge-honesty-v107*/
+    aboutToLead:          readMetric(out, 'cardano_node_metrics_Forge_about_to_lead_counter'),
 
     // --- BLOCK PROPAGATION (gLiveView-style) ---
     blockDelayCdfOne:     readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfOne_real'),   // frac <1s

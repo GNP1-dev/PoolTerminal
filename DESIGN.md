@@ -120,6 +120,9 @@ nothing may repaint every frame:
   16% of a core for one needle plus one flash in a 1440x1000 WebKitGTK
   window; 2.4% with `steps(8)`; 0.3% with no transition. Stepped motion
   reads as motion; per-frame motion is what pinned the core.
+- Spinners and shimmers (`infinite` animations) also use `steps()`: a
+  loading ring at 10 frames a second is a loading ring; at 60 it is a
+  fifth of a core for as long as a panel waits for data.
 - Everything pauses while the window is hidden: the ticker stops and
   `html.pt-paused` freezes CSS animations.
 

@@ -39,7 +39,11 @@ behaviour may change between minor versions.
   transition and animation on a live-updating element now uses a stepped
   timing function, so a needle sweep costs eight paints instead of about
   seventy and a flash eight instead of about a hundred. The motion reads
-  the same; the per-frame repaint is gone.
+  the same; the per-frame repaint is gone. The loading spinners were the
+  last per-frame animation: infinite 60 fps rings shown until each panel's
+  first data, which on a live node can be two minutes for the leadership
+  schedule. They now step at 10 frames a second, so the first minutes
+  after connecting no longer run at 15-20%.
 
   Measured on the release build on the same machine. Dashboard in demo
   mode behind the connect modal: WebKit web process from an average of

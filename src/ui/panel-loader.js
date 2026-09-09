@@ -35,7 +35,7 @@ function injectStyleOnce() {
     .pt-pl-ring {
       width: 26px; height: 26px; border: 3px solid rgba(123,176,245,0.22);
       border-top-color: var(--pt-accent-blue-bright, #7BB0F5);
-      border-radius: 50%; animation: pt-pl-spin .8s linear infinite;
+      border-radius: 50%; animation: pt-pl-spin .8s steps(8,end) infinite;   /* stepped: 10 paints/s, not 60 (cpu-1hz-v0.3.4) */
     }
     @keyframes pt-pl-spin { to { transform: rotate(360deg); } }
     .pt-pl-msg {

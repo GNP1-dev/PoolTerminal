@@ -88,7 +88,7 @@ const DELEGATORS_HTML = `
       transition: width 0.45s cubic-bezier(.4,0,.2,1); }
     .d-load-fill::after { content: ''; position: absolute; inset: 0;
       background: linear-gradient(90deg, transparent, rgba(255,255,255,0.28), transparent);
-      animation: d-load-shimmer 1.15s linear infinite; }
+      animation: d-load-shimmer 1.15s steps(10,end) infinite; }
     @keyframes d-load-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
     .d-load-pct { font: 600 10px ui-monospace, monospace; color: var(--pt-text-muted);
       letter-spacing: 0.5px; margin-top: 9px; }

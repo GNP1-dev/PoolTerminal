@@ -116,7 +116,7 @@ const NOW_HTML = `
     .pt-loading-spinner {
       width: 44px; height: 44px; border: 3px solid var(--pt-border);
       border-top-color: var(--pt-accent-blue); border-radius: 50%;
-      animation: pt-spin 0.9s linear infinite;
+      animation: pt-spin 0.9s steps(8,end) infinite;
     }
     @keyframes pt-spin { to { transform: rotate(360deg); } }
     .pt-loading-text { font: 600 15px ui-monospace, monospace; color: #ffffff; letter-spacing: 0.04em; }
@@ -135,7 +135,7 @@ const NOW_HTML = `
     .pt-mini-spin {
       display: inline-block; width: 11px; height: 11px; border: 2px solid var(--pt-border);
       border-top-color: var(--pt-accent-blue); border-radius: 50%;
-      animation: pt-spin 0.8s linear infinite; vertical-align: -1px;
+      animation: pt-spin 0.8s steps(8,end) infinite; vertical-align: -1px;
     }
     @keyframes pt-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
   </style>

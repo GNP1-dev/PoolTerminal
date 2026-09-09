@@ -302,7 +302,7 @@ function ensureStyle() {
       background-image: repeating-linear-gradient(90deg, var(--nf-acc) 0 5px, transparent 5px 10px);
       background-size: 20px 2px; opacity: 0.9; }
     .nf-conn::after { content: '\u25B6'; position: absolute; right: -3px; top: -6px; font-size: 10px; color: var(--nf-acc); }
-    @media (prefers-reduced-motion: no-preference) { .nf-conn { animation: nf-march 0.8s linear infinite; } }
+    @media (prefers-reduced-motion: no-preference) { .nf-conn { animation: nf-march 0.8s steps(8,end) infinite; } }
 
     .nf-amt { flex: 0 0 auto; text-align: right; padding-left: 14px; }
     .nf-amt-main { font-size: 19px; font-weight: 800; color: var(--nf-acc); font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }

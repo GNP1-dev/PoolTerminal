@@ -85,10 +85,16 @@ will say.
 ```bash
 npm run build          # deb + AppImage under src-tauri/target/release/bundle/
 sha256sum PoolTerminal_X.Y.Z_amd64.deb PoolTerminal_X.Y.Z_amd64.AppImage > SHA256SUMS
-gh release create vX.Y.Z --target main ...   # git push is done by the operator, not tooling
+# Release body = the beta / no-warranty header + this version's CHANGELOG entry.
+# The header is mandatory and goes FIRST, above the changelog and asset list.
+cat .github/RELEASE_NOTES_HEADER.md CHANGELOG-entry-X.Y.Z.md > RELEASE_NOTES.md
+gh release create vX.Y.Z --target main --notes-file RELEASE_NOTES.md ...   # git push is done by the operator, not tooling
 ```
 
-Attach both artifacts and SHA256SUMS. Download links on the website point at
+Every release body starts with `.github/RELEASE_NOTES_HEADER.md` verbatim (the
+same notice as the README beta box and the website). Edit the header there if
+the wording changes; all seven existing releases were backfilled with it on
+13 September 2026. Attach both artifacts and SHA256SUMS. Download links on the website point at
 `/releases/latest`, so the release must be published before the site changes
 go live.
 

@@ -1,0 +1,2 @@
+> ⚠️ **Beta software, no warranty.** PoolTerminal is early software and has mainly been exercised on one operator's setup. It is read-only by design and holds no key material, but it does hold SSH access to your block producer, and that limit is not a guarantee. It has had an AI-assisted code review, not an independent security audit. Provided as-is under Apache 2.0 with no warranty of any kind - you use it at your own risk. See [SECURITY.md](https://github.com/GNP1-dev/PoolTerminal/blob/main/SECURITY.md).
+

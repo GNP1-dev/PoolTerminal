@@ -6,20 +6,27 @@ exercises no node control from the GUI. Even so, it connects to your block
 producer over SSH, so its security matters - and the project's trust model is
 simple: **audit the code before you trust it.**
 
-## Independent review
+## Code review
 
-PoolTerminal has been through independent code and security review. The latest
-summary is published here:
+PoolTerminal has had an AI-assisted code review. It has not had an independent
+or human security audit. No third party, security firm, or reviewer outside the
+project has examined this code. A summary of what that review covered, and the
+substantial list of what it did not, is published here:
 
-- [`docs/security/security-review-2026-07-08.md`](docs/security/security-review-2026-07-08.md)
+- [docs/security/security-review-2026-07-08.md](docs/security/security-review-2026-07-08.md)
 
-All security findings from that review have been resolved in the current source.
-The summary is provided for transparency; you are still encouraged to audit the
-code yourself.
+The security findings raised in that review were addressed in the source at the
+time it was written. That is a statement about what the code appeared to do when
+read by an AI model at the author's direction. It is not verification, and it is
+not a certification.
 
-Note that the review predates the **Alerts / Telegram** feature added in v0.2.0,
-which is therefore not covered by it. That feature's security-relevant surface is
-described under "What is stored on disk" below.
+The review predates the Alerts / Telegram feature added in v0.2.0, which is
+therefore not covered by it.
+
+**If you intend to run PoolTerminal against your own block producer, you are
+responsible for reviewing the source yourself, or having someone qualified do it
+on your behalf.** The software is provided as-is under Apache 2.0, with no
+warranty of any kind.
 
 ## What is stored on disk
 

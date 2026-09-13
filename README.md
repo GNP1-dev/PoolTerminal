@@ -199,7 +199,7 @@ PoolTerminal is built with Cardano's regular hard fork cycle in mind. See `HARDF
 - `DESIGN.md` - architecture and design notes.
 - `HARDFORK.md` - fork-sensitive code and upgrade checklist.
 - `SECURITY.md` - security policy, trust model, and how to report a vulnerability.
-- `docs/security/` - published independent security review.
+- `docs/security/` - summary of an AI-assisted code review (not an independent audit).
 
 In-app, the **DATA** tab shows exactly which source answers each feature, and **Settings → About** explains the data model in plain language.
 

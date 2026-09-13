@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
+## [Unreleased]
+
+### Changed
+
+- SECURITY.md and the code review summary have been corrected: the review was
+  AI-assisted, not an independent audit. See docs/security/.
+
 ## [0.3.4] - 2026-09-09
 
 ### Fixed

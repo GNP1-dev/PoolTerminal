@@ -20,7 +20,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 >
 > New in v0.2.0: a **LOGS** workspace (journal queries, minted-block history, propagation history, epoch-transition view), **ALERTS** - Telegram alerting with no agent on your block producer, the **KES hourglass**, and delegator balances reconciled against live account state.
 
-> _Last updated: 28 August 2026_ <!-- readme-beta-v3 -->
+> _Last updated: 13 September 2026_ <!-- readme-beta-v4 -->
 
 > ### ⚠️ This is a beta. I need your help testing it.
 >
@@ -30,7 +30,17 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 >
 > 🐛 **[Report a bug or tell me what broke](https://github.com/GNP1-dev/PoolTerminal/issues)** - include what you were doing, your setup (distro, node, data source), and any error text. Rough reports are fine; I'd rather hear it than not.
 >
-> It is **read-only** - it cannot sign, spend, or change anything on your node - so the worst a bug can do is show you something wrong or fail to load. Your pool is never at risk from it.
+> It is read-only by design: it does not sign, spend, or change anything on your
+> node, and it holds no key material. That limits what a bug can do, but it is not
+> a guarantee. The app holds SSH access to your block producer, so treat it as you
+> would any tool with that access: give it a dedicated SSH user with the narrowest
+> permissions that work, and read the code before you run it.
+>
+> **No warranty.** This software is provided as-is under Apache 2.0, with no
+> warranty or guarantee of any kind, express or implied. It has had an
+> AI-assisted code review, not an independent or human security audit - see
+> [SECURITY.md](SECURITY.md). You use it at your own risk, and you are
+> responsible for satisfying yourself that it is safe to run in your environment.
 
 ![PoolTerminal dashboard](docs/screenshot.png)
 

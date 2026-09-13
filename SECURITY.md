@@ -23,6 +23,11 @@ not a certification.
 The review predates the Alerts / Telegram feature added in v0.2.0, which is
 therefore not covered by it.
 
+PoolTerminal is also beta software that has only been exercised on one
+operator's setup. The beta notice at the top of [README.md](README.md) says what
+that means in practice and carries the no-warranty statement; read it together
+with this section before connecting the app to a block producer.
+
 **If you intend to run PoolTerminal against your own block producer, you are
 responsible for reviewing the source yourself, or having someone qualified do it
 on your behalf.** The software is provided as-is under Apache 2.0, with no

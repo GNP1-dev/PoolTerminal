@@ -22,7 +22,7 @@ import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import { renderPeersPanel, resetPeersPanel } from './ui/peers-panel.js';
-import { confirmDialog } from './ui/dialog.js';   /*disconnect-danger-v84*/
+import { confirmDialog, alertDialog } from './ui/dialog.js';   /*disconnect-danger-v84*/
 import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
@@ -383,6 +383,24 @@ async function paintNodeVersion() {
   } catch { el.style.display = 'none'; }
 }
 
+// A block producer whose env yielded no POOL_ID connects, but Ideal, the leader
+// schedule and every pool-scoped source silently come up empty. Say so, once per
+// session. (Relays legitimately have no POOL_ID.) /*env-gate-visible-v1*/
+let _bpPoolIdWarned = false;
+function warnBpWithoutPoolId(role) {
+  if (role !== 'BP' || _bpPoolIdWarned) return;
+  if ((getSession().envVars || {}).POOL_ID) return;
+  _bpPoolIdWarned = true;
+  console.warn('[probe] BP node but the env gave no POOL_ID');
+  alertDialog({
+    title: 'Pool ID missing',
+    message: 'This node is a block producer, but its Guild env did not set POOL_ID.\n\n' +
+      'Ideal blocks, the leader schedule and pool history cannot load without it. ' +
+      'Set POOL_NAME (and the pool files) in the env, or check the env did not stop ' +
+      'early, then reconnect.',
+  });
+}
+
 async function runProbeAndPaintRole() {
   if (getMode() !== 'live') {
     setRoleBadge(null);
@@ -393,6 +411,7 @@ async function runProbeAndPaintRole() {
     const probe = await probeNode();
     setNodeProbe(probe);
     setRoleBadge(probe.role);
+    warnBpWithoutPoolId(probe.role);
   } catch (e) {
     console.warn('[probe] FAIL:', e.message);
     setRoleBadge('UNKNOWN');

@@ -806,16 +806,19 @@ async function getAccountNow(esc) {
        LEFT JOIN tx_in ti ON ti.tx_out_id = txo.tx_id AND ti.tx_out_index = txo.index
       WHERE txo.stake_address_id = (SELECT id FROM a)
         AND txo.consumed_by_tx_id IS NULL AND ti.tx_in_id IS NULL)::text AS utxo`;
+  // Current epoch from the newest block, not MAX(no) FROM epoch: db-sync 13.7.2.1
+  // made `epoch` a view (epoch_finalized + epoch_current) costing ~0.8 s per
+  // read, and epoch_finalized alone stops one epoch short. /*dbsync-epoch-view-v1*/
   const base = `
     (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a))::text AS rewards,
     (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a)
-       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rewards_spendable,
+       AND spendable_epoch <= (SELECT epoch_no FROM block ORDER BY id DESC LIMIT 1))::text AS rewards_spendable,
     (SELECT COALESCE(SUM(amount),0) FROM withdrawal WHERE addr_id = (SELECT id FROM a))::text AS withdrawals,
     (SELECT MIN(epoch_no) FROM epoch_stake WHERE addr_id = (SELECT id FROM a))::text AS since`;
   const rest = `
     (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a))::text AS rest,
     (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a)
-       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rest_spendable`;
+       AND spendable_epoch <= (SELECT epoch_no FROM block ORDER BY id DESC LIMIT 1))::text AS rest_spendable`;
 
   // reward_rest / consumed_by_tx_id are schema-version dependent — degrade to the
   // narrower query rather than losing the whole account panel on older db-sync.
@@ -1078,11 +1081,10 @@ async function getDelegatorStakeHistory(stake, currentEpoch) {
       SELECT 'reward' AS kind, r.earned_epoch::text AS epoch, r.amount::text AS amount, NULL AS txhash
       FROM reward r WHERE r.addr_id = (SELECT id FROM a)${withRest ? restSql : ''}
       UNION ALL
-      SELECT 'withdrawal' AS kind, e.no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
+      SELECT 'withdrawal' AS kind, b.epoch_no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
       FROM withdrawal w
       JOIN tx ON tx.id = w.tx_id
       JOIN block b ON b.id = tx.block_id
-      JOIN epoch e ON e.no = b.epoch_no
       WHERE w.addr_id = (SELECT id FROM a)
       ) ev ORDER BY epoch::bigint ASC`;
   let rw = null;

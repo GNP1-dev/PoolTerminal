@@ -61,17 +61,18 @@ async function runCmd(command) {
   return r?.stdout ?? '';
 }
 
-// Build a bounded, read-only journalctl command for a unit. lines caps output;
-// sinceHrs optionally limits the time window. No shell metacharacters are ever
-// interpolated from user input here — unit is validated, lines is a number.
+// Build a read-only journalctl command for a unit over a time window. No shell
+// metacharacters are ever interpolated from user input here — unit is
+// validated, sinceHrs is a number.
 function journalCmd(unit, opts = {}) {
   const safeUnit = sanitizeUnit(unit);
-  // Default to a TIME window, not a line count: the node log is flooded with
-  // benign Net.Mux CleanExit notices, so the last N lines cover only seconds.
-  // A --since window plus an on-node grep is what surfaces rare, real events.
+  // A TIME window, not a line count: a BP logs ~2,300 lines per 10 min (the
+  // 1 Hz Forge.Loop / Forge.StateInfo lines alone are 3/s), so any line cap
+  // applied here covers only minutes. No -n: the line cap belongs AFTER the
+  // on-node grep (see buildQueryCommand), otherwise a 14-day preset silently
+  // searched only the newest ~21 minutes. /*logs-filter-first-v1*/
   const hrs = Math.max(1, Math.min(24 * 30, Number(opts.sinceHrs) || 24));
-  const capN = Math.max(1, Math.min(20000, Number(opts.maxLines) || 5000));
-  return `${NICE} journalctl -u ${safeUnit} --no-pager --merge --since "${hrs} hours ago" -n ${capN}`;
+  return `${NICE} journalctl -u ${safeUnit} --no-pager --merge --since "${hrs} hours ago"`;
 }
 
 // A systemd unit name is a tight character set — anything outside it is dropped,
@@ -199,13 +200,17 @@ function cncliUnit(role) {
 }
 
 function buildQueryCommand(q) {
-  const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24, maxLines: q.maxLines || 5000 });
+  const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24 });
   // q.grep is a constant from QUERIES, not user input -> safe to embed. The grep
-  // runs on the node so only matching lines cross the connection.
-  const g = q.grep ? ` | grep -E ${shTrick(q.grep)}` : '';
-  const gv = q.grepOut ? ` | grep -vE ${shTrick(q.grepOut)}` : '';
-  const tail = q.tail ? ` | tail -n ${Math.max(1, Math.min(2000, Number(q.tail)))}` : '';
-  return `${base}${g}${gv}${tail} || true`;
+  // runs on the node so only matching lines cross the connection. Filter FIRST,
+  // then cap: the newest N *matching* lines over the whole window. Every stage
+  // is niced so the pipeline can never compete with block production.
+  const g = q.grep ? ` | ${NICE} grep -E ${shTrick(q.grep)}` : '';
+  const gv = q.grepOut ? ` | ${NICE} grep -vE ${shTrick(q.grepOut)}` : '';
+  const capN = q.tail
+    ? Math.max(1, Math.min(2000, Number(q.tail)))
+    : Math.max(1, Math.min(20000, Number(q.maxLines) || 5000));
+  return `${base}${g}${gv} | ${NICE} tail -n ${capN} || true`;
 }
 
 // single-quote a constant safely for the shell

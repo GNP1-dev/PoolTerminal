@@ -22,7 +22,7 @@
  * @typedef {Object} PoolPulse
  * @property {number} score       0..100 composite (see DESIGN.md §11)
  * @property {number} delta       change vs previous reading
- * @property {Object} components  keyed component scores
+ * @property {Object} components  keyed component scores (kesFailed: true when a BP's KES query failed)
  *
  * @typedef {Object} NowSnapshot
  * @property {string}  poolTicker
@@ -37,6 +37,7 @@
  * @property {number|null} opCertDisk    on-disk op cert counter, null = unknown (live only, opcert-live-v93)
  * @property {number|null} opCertChain   on-chain (node state) counter, null = unknown
  * @property {number|null} opCertAsOfMs  wall-clock ms when the pair was read
+ * @property {string|null} kesQueryError last kes-period-info failure, null when OK (live only)
  * @property {number}  peersIn
  * @property {number}  peersOut
  * @property {boolean} forging

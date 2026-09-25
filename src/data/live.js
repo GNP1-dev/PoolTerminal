@@ -98,8 +98,14 @@ function computePulse(snap) {
     else if (snap.kesDaysRemaining > 14) components.kes = 20;
     else if (snap.kesDaysRemaining > 7)  components.kes = 10;
     else                                  components.kes = 0;
+  } else if (getNodeProbe()?.role === 'BP' && snap.kesQueryError) {
+    // A BP whose KES check is FAILING must not score like a healthy relay: the
+    // one thing Pulse exists to catch is a BP that can't prove its key is
+    // valid. 0, flagged so the hero can say why. /*pulse-kes-bp-v1*/
+    components.kes = 0;
+    components.kesFailed = true;
   } else {
-    // No op.cert (relay) — neutral 25 so Pulse isn't penalised
+    // No op.cert (relay), or a BP's first KES read still pending — neutral 25
     components.kes = 25;
   }
   total += components.kes;
@@ -134,6 +140,7 @@ export class LiveDataSource {
     this._kesPeriods = null;
     this._kesExpiryMs = null;
     this._kesAt = 0;
+    this._kesError = null;     // last kes-period-info failure message, null when OK /*pulse-kes-bp-v1*/
     this._opCertDisk = null;   /*opcert-live-v93*/
     this._opCertChain = null;
     this._opCertAtMs = null;
@@ -243,6 +250,7 @@ export class LiveDataSource {
       this._opCertDisk = null;   /*opcert-live-v93*/
       this._opCertChain = null;
       this._opCertAtMs = null;
+      this._kesError   = null;
       this._kesAt      = now;
       return;
     }
@@ -305,9 +313,11 @@ export class LiveDataSource {
       this._kesDays = (expiryMs != null)
         ? Math.max(0, Math.floor((expiryMs - Date.now()) / 86400000))
         : null;
+      this._kesError = null;
       console.log(`[live.kes] periods=${this._kesPeriods} days=${this._kesDays} expiry=${expiryMs ? new Date(expiryMs).toISOString() : 'n/a'}`);
     } catch (err) {
       console.warn('[live.kes] query failed:', err.message);
+      this._kesError    = err.message || String(err);
       this._kesDays     = null;
       this._kesPeriods  = null;
       this._kesExpiryMs = null;
@@ -371,6 +381,7 @@ export class LiveDataSource {
       opCertDisk:          this._opCertDisk,    /*opcert-live-v93*/
       opCertChain:         this._opCertChain,
       opCertAsOfMs:        this._opCertAtMs,
+      kesQueryError:       this._kesError,   /*pulse-kes-bp-v1*/
       peersIn:  null,
       peersOut: null,
       blockProduction: readModel.currentBlockProduction() || { ...ZERO_BP, ideal: this._ideal ?? 0 },

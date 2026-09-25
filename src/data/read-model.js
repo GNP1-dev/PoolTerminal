@@ -570,7 +570,7 @@ async function leadershipSchedule(which) {
   const vrf = probe?.vrfSkeyPath;
   const config = probe?.configPath;
   if (!vrf || !config) {
-    console.warn('[read-model] leadership-schedule: probe missing vrf/config', { vrf, config });
+    console.warn('[read-model] leadership-schedule: probe missing vrf/config', { vrf: !!vrf, config: !!config });   /*no-key-paths-v1*/
     return null;
   }
   const flag = which === 'next' ? '--next' : '--current';

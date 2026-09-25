@@ -108,12 +108,13 @@ export async function probeNode() {
   // the view via the snapshot. Only opCertPath (static per node process) stays
   // probe-owned. /*opcert-live-v93*/
 
+  // Key and cert paths are never logged, only whether each was found. /*no-key-paths-v1*/
   console.log(
     `[node-probe] pid=${result.pid} role=${result.role} ` +
     `port=${result.port} prom=${result.prometheusPort || 'off'} ` +
     `topology=${result.topologyPath} ` +
-    `opcert=${result.opCertPath || 'none'} ` +
-    `vrf=${result.vrfSkeyPath || 'none'} ` +
+    `opcert=${result.opCertPath ? 'found' : 'none'} ` +
+    `vrf=${result.vrfSkeyPath ? 'found' : 'none'} ` +
     `config=${result.configPath || 'none'}`
   );
 

@@ -50,6 +50,29 @@ export function cliCmd(args, timeoutS) {
     `${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
 }
 
+// Flags whose value is a key or cert file. Their paths never reach a log line or
+// an error message: cardano-cli's stderr names the file when it can't read it,
+// and runCli's errors are logged and shown in the UI. /*no-key-paths-v1*/
+const KEY_FLAGS = ['--op-cert-file', '--vrf-signing-key-file'];
+const KEY_FILE_RE = /(?:\/|~\/|\.\/)?[\w.\-\/]*\.(?:skey|vkey|cert|counter)\b/g;
+
+/**
+ * Replace key and cert file paths in `text` with <key file>: first the exact
+ * paths passed to KEY_FLAGS in `args`, then anything shaped like a key file
+ * (*.skey, *.vkey, *.cert, *.counter).
+ */
+export function redactKeyPaths(text, args = '') {
+  let out = String(text ?? '');
+  for (const flag of KEY_FLAGS) {
+    const re = new RegExp(`${flag}\\s+(?:'([^']*)'|"([^"]*)"|(\\S+))`, 'g');
+    for (const m of String(args).matchAll(re)) {
+      const p = m[1] ?? m[2] ?? m[3];
+      if (p) out = out.split(p).join('<key file>');
+    }
+  }
+  return out.replace(KEY_FILE_RE, '<key file>');
+}
+
 /**
  * Run one cli query and return its stdout. `label` is the query as an operator
  * would name it ("query tip"); it goes into the timeout message. Throws
@@ -61,7 +84,7 @@ export async function runCli(label, args, timeoutS) {
   if (r && typeof r === 'object') {
     if (r.exit_code === TIMEOUT_EXIT) throw new CliTimeoutError(label, timeoutS);
     if (typeof r.exit_code === 'number' && r.exit_code !== 0) {
-      throw new Error(`ssh_run exit ${r.exit_code}: ${(r.stderr || r.stdout || '').slice(0, 400)}`);
+      throw new Error(`ssh_run exit ${r.exit_code}: ${redactKeyPaths(r.stderr || r.stdout || '', args).slice(0, 400)}`);
     }
     return r.stdout ?? '';
   }

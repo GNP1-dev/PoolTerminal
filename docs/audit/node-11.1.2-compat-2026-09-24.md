@@ -363,6 +363,13 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 14. **Ideal and Luck from the Set snapshot** (D3). New `src/data/stake-snapshot.js` computes σ from `pools[<id>].stakeSet` / `total.stakeSet`, falling back to cardano-cli 1.35.x's flat `poolStakeSet` / `activeStakeSet` keys (confirmed in that version's `Cardano/CLI/Types.hs`). `live.js` uses it, and every comment that called Go the current epoch's snapshot is corrected.
     - **14b, cached History rows:** a one-time pass (meta key `ideal_set_fix_v1`) rewrites every row still marked `source: 'live'`. The current epoch takes the corrected cli Ideal. Closed epochs are recomputed from the row's own Set `activeStakeLovelace` via `computeIdeal`, or reset to null for the fillers if that fails. Luck is recomputed with Ideal. New rows are correct at write time because the Ideal passed in is now Set-based.
 
+15. **No key or cert paths in logs or errors** (manual test). Changes:
+    - `node-probe.js` logs only whether the op-cert and VRF key were found, not their paths.
+    - The `leadership-schedule` "probe missing" warning logs booleans instead of paths.
+    - `runCli` errors pass cardano-cli's stderr through `redactKeyPaths`, which replaces the exact `--op-cert-file` / `--vrf-signing-key-file` values and any `*.skey|vkey|cert|counter` path with `<key file>`. These errors reach the console and the UI.
+
+    Swept with no other hits: the connect env dump has no key paths, the probe's full node args are never logged, and the Rust side logs no commands. Not changed: the Logs tab shows the node's own journal as it is.
+
 ## Appendix: build and static checks (Phase 5)
 
 - `cargo check`: clean.

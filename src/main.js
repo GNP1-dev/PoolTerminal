@@ -357,7 +357,7 @@ async function fetchNodeVersion() {
   const candidates = [];
   // 1) The exact probed PID - the node that owns OUR socket. Must come first: on
   //    a host running a BP and a relay, a process match below can return the
-  //    other node (the .62 capture picked the relay), which during a staged
+  //    other node (the BP-host capture picked the relay), which during a staged
   //    upgrade would badge the wrong version. /*nodever-probed-pid-v1*/
   if (probe && probe.pid) candidates.push(`"$(readlink -f /proc/${probe.pid}/exe)" --version`);
   // 2) Any running node binary, located by process match - independent of PATH

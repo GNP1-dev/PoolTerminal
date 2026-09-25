@@ -370,12 +370,22 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 
     Swept with no other hits: the connect env dump has no key paths, the probe's full node args are never logged, and the Rust side logs no commands. Not changed: the Logs tab shows the node's own journal as it is.
 
+16. **VM relay warm/cold peers show 0** (manual test). Investigated; no code change.
+    - A missing series already shows "—" on every path: `readMetric` returns null, `relayHealth` passes it through, and `ppBar` and Node Health render null as "—". Checked in Node on the BP capture: with the `peerSelection_Warm_int` / `_Cold_int` lines present the panel shows 0, and with them removed it shows "—".
+    - So the VM relay's scrape contains both series with value 0. The BP reports the same (warm 0, cold 0, hot 2; local roots only).
+    - Why the VM has no warm or cold peers needs its own metrics and topology, which the audit host can't reach (RELAY 2 uses password SSH).
+
 17. **Untested db-sync schema flagged in the UI** (manual test, checklist item 11). Why the note was missing:
     - `de9b5a5` rebuilt the HISTORY table header and dropped its `meta.stale` line. `getHistoryMeta()` was still called, but its result was not used.
     - The DATA tab's db-sync chip never had the note.
     - That left only the console line.
 
     The comparison was sound: any schema other than the tested one is flagged, older or newer. The fix: `schemaWarning()` in `dbsync-query.js` is the one rule, and its text now shows on the DATA chip ("Active - schema X (tested Y — verify)"), in the HISTORY header ("⚠ tested Y — verify") and in the console line. Checked in Node with fake schemas 15.44.6, 15.52.0 and 15.50.6 through `initDbsync`, `getHistoryMeta` and the rendered DATA chip: 17/17 pass.
+
+18. **Mempool panel labelling** (manual test). Investigated, not changed yet; findings are in the session report. In short:
+    - **NOW panel:** every %, including MAX % and the chart's "100% FULL", is bytes / 176 KB (2 × maxBlockBodySize, a default node's capacity). It is not the node's real `capacityInBytes`, which is 64 MB on the BP; that value is fetched but only logged.
+    - **"all" = 185%:** a stored all-time peak from local storage (184.6% on 2026-09-07), not a current reading.
+    - **Relay tabs:** they use one block (88 KB) as 100%.
 
 ## Appendix: build and static checks (Phase 5)
 

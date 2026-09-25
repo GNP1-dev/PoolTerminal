@@ -6,19 +6,32 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-25
+
+**BREAKING: requires cardano-node 11.1.2 or later, cardano-cli 11.2.3.0 or
+later, and (optional) cncli 6.8.0 or later.** Older versions are not
+supported. When updated Guild scripts refuse an older node, PoolTerminal now
+shows their message at connect instead of connecting with no pool ID.
 
 ### Compatibility
 
-- **Supported versions are now declared:** cardano-node 11.1.2 or later with
-  cardano-cli 11.2.3.0 or later (a matched pair from the same node release),
-  and cncli 6.8.0 or later, in the Guild Operators layout. Shown on the About
-  page and in the README. Checked against a block producer and relay on node
-  11.1.2 after the September 2026 upgrade; see
+- **Supported versions are declared** on the About page and in the README:
+  cardano-node and cardano-cli as a matched pair from the same node release,
+  in the Guild Operators layout. Checked against a block producer and relay on
+  node 11.1.2 after the September 2026 upgrade; see
   docs/audit/node-11.1.2-compat-2026-09-24.md.
+- **db-sync 13.7.2.1 (schema 15.50.6) is now the tested schema.** Any other
+  schema, older or newer, is flagged "tested 15.50.6 - verify" on the Data tab
+  and the History table.
 
 ### Fixed
 
+- **Ideal and Luck use the right stake snapshot.** Ideal was calculated from
+  the snapshot used for rewards, not the one that decides this epoch's leader
+  slots, so Ideal and Luck were off by however much the pool's stake had
+  changed between the two (for example 0.82 instead of 0.98). They now match
+  cncli's leaderlog and gLiveView. History rows saved with the old value are
+  corrected automatically.
 - **Logs: presets searched only the last ~20 minutes on a block producer.** A
   line cap ran before the filter, so "Restarts & startup" could not see a
   restart an hour old. The filter now runs first; "Restarts & startup" reads
@@ -27,12 +40,19 @@ behaviour may change between minor versions.
   Everything runs at the lowest CPU and IO priority.
 - **Logs: presets now work on nodes that log JSON.** "Errors & warnings" could
   never match a JSON log, and startup lines picked up unrelated fork switches.
-- **cardano-cli queries now time out** (tip and mempool 10 s, KES 20 s,
-  stake snapshot 30 s, leader schedule 300 s) instead of freezing the
-  dashboard on a mismatched cli/node pair; the message names the query.
-- **Connecting reports a Guild env that failed** (for example its node/cli
-  version check) instead of connecting with no pool ID; a block producer with
-  no POOL_ID is flagged.
+- **Delegator deep-dive about 2 s faster on db-sync** 13.7.2.1, which made
+  `epoch` a slow view.
+- **Guild env errors are shown at connect** (for example its node/cli version
+  check) instead of connecting with no pool ID; a block producer with no
+  POOL_ID is flagged.
+- **cardano-cli queries time out** (tip and mempool 10 s, KES 20 s, stake
+  snapshot 30 s, leader schedule 300 s) instead of freezing the dashboard on a
+  mismatched cli/node pair; the message names the query.
+- **Key and certificate file paths are no longer logged.** The console and
+  error messages say only whether the op-cert and VRF key were found; paths in
+  cardano-cli errors are replaced with `<key file>`.
+- **The db-sync "verify" note for an untested schema is shown again** on the
+  Data tab and the History table, not only in the console.
 - **The mempool panel shows "unavailable" when its query fails**, rather than
   an empty mempool, and no longer feeds zeros to alerts or history.
 - **Pulse no longer scores a block producer's failed KES check as neutral.**
@@ -40,13 +60,20 @@ behaviour may change between minor versions.
   whichever node on the host was found first.
 - **Metrics:** the Prometheus port is confirmed by its content, and a custom
   metrics prefix is detected, so panels no longer go silently empty.
-- **db-sync delegator deep-dive ~2 s faster** on db-sync 13.7.2.1, which made
-  `epoch` a slow view.
 - The Logs blocklog path follows the Guild env's BLOCKLOG_DB, and cncli.db is
   opened read-only.
 
 ### Changed
 
+- **The mempool is shown in blocks** (one block = 88 KB) on the Dashboard,
+  its chart, the MAX column and the Relay tanks, instead of percentages that
+  meant 2 blocks in one place and 1 block in another. The 2-block line is
+  the one that matters network-wide: most pools run the default 2-block
+  mempool, so from 2 blocks queued new transactions may be rejected across
+  the network. Queue figures turn amber approaching 2 blocks and red at 2+,
+  and the alert says so. Your own node's capacity fill (for example "0.6% of
+  64 MB") is a small secondary line. The MAX column shows the all-time peak's
+  date, and saved peaks are converted to blocks automatically.
 - SECURITY.md and the code review summary have been corrected: the review was
   AI-assisted, not an independent audit. See docs/security/.
 
@@ -293,6 +320,7 @@ behaviour may change between minor versions.
 
 - Initial release.
 
+[0.4.0]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.4.0
 [0.3.4]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.4
 [0.3.3]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.3
 [0.3.2]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.2

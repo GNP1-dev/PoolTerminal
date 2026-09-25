@@ -18,7 +18,7 @@
  *                                 also snapshotted to epoch_snapshots.
  *
  * Authoritative-source rules (MANUAL §4.3):
- *   - Ideal / Leader  → cardano-cli (stakeGo / leadership-schedule). Current epoch.
+ *   - Ideal / Leader  → cardano-cli (stakeSet / leadership-schedule). Current epoch.
  *   - Adopt / Confirm → Koios canonical block count (cncli chain table later).
  *   - History         → Koios pool_history.
  */
@@ -703,7 +703,7 @@ export async function refreshBlockProduction(epoch, ideal) {
         lost,   // already null when unknown per the rule above
         luck: luckPercent,
         delegators:          info ? info.liveDelegators : null,
-        activeStake:         info ? info.activeStake : null,            // Set snapshot ≈ live epoch
+        activeStake:         info ? info.activeStake : null,            // Set snapshot = this epoch's
         activeStakeLovelace: info && info.raw ? info.raw.active_stake : null,
         ros: null,
         source: 'live',

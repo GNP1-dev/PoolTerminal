@@ -3,7 +3,7 @@
  *
  * Koios (https://api.koios.rest) is the PORTABLE historical/enrichment source:
  * every SPO can reach it, no install, no db-sync required. It is NOT used for
- * current-epoch leader election — that stays on cardano-cli `stakeGo` (see the
+ * current-epoch leader election — that stays on cardano-cli `stakeSet` (see the
  * data-source map in MANUAL.md §4). Koios feeds live stake, delegator counts,
  * saturation, and per-epoch history (the HISTORY / DELEGATORS views).
  *
@@ -102,11 +102,13 @@ export function lovelaceToAda(lovelace) {
  * Live pool state. Returns a normalised object or null.
  *
  * NOTE on snapshots (validated against stake-snapshot):
- *   - activeStake  = Koios "active_stake"  = the SET snapshot (NEXT epoch)
- *   - votingPower  = Koios "voting_power"  = the MARK snapshot (newest)
+ *   - activeStake  = Koios "active_stake"  = the SET snapshot (CURRENT epoch's
+ *                                            leader election)
+ *   - votingPower  = Koios "voting_power"  = the MARK snapshot (newest, next
+ *                                            epoch's leader election)
  *   - sigma        = Koios "sigma"         = computed off active_stake (Set)
- * For CURRENT-epoch leader math use cli stakeGo, NOT these. These are correct
- * for "what's coming" displays and for live_* fields below.
+ * The app's current-epoch Ideal uses cli stakeSet, the same snapshot as
+ * activeStake here (finding D3; see stake-snapshot.js).
  *
  *   - opCertCounter reflects the ON-CHAIN counter — it only advances when the
  *     pool next forges with a new cert, so it can lag the running node's value.
@@ -140,7 +142,7 @@ export async function getPoolInfo(poolBech32) {
     pledge:         lovelaceToAda(p.pledge),
     livePledge:     lovelaceToAda(p.live_pledge),
     liveStake:      lovelaceToAda(p.live_stake),
-    activeStake:    lovelaceToAda(p.active_stake),   // SET snapshot — not stakeGo
+    activeStake:    lovelaceToAda(p.active_stake),   // SET snapshot = this epoch's leader stake
     votingPower:    lovelaceToAda(p.voting_power),   // MARK snapshot
     sigma:          p.sigma,                          // off active_stake (Set)
     liveSaturation: p.live_saturation,                // percent, e.g. 1.23

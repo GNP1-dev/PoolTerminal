@@ -18,13 +18,14 @@ Supporting files, all in `docs/audit/`:
 
 **PoolTerminal is safe to use against 11.1.2 today. Nothing is BROKEN.** The upgrade breaks no interface the app depends on:
 
-- **cardano-cli 11.2.3.0:** `query tip`, `query tx-mempool info`, `query stake-snapshot` and `query kes-period-info` give JSON identical in shape to 11.0.0.0, with no warnings on stdout. I ran the app's own parsing expressions over the captured output and got correct values: Ideal and Leader matched cncli's leaderlog figures, and KES periods, op-cert counters and key expiry all read correctly.
+- **cardano-cli 11.2.3.0:** `query tip`, `query tx-mempool info`, `query stake-snapshot` and `query kes-period-info` give JSON identical in shape to 11.0.0.0, with no warnings on stdout. I ran the app's own parsing expressions over the captured output and they parsed cleanly: KES periods, op-cert counters and key expiry all read correctly. The Ideal value they produced was wrong, but not because of 11.1.2: the app reads the wrong stake snapshot (D3, found in the manual test).
 - **Prometheus:** every metric name the app reads is present on the BP (<bp-metrics-port>) and the relay (<relay-metrics-port>).
 - **CNCLI 6.8.0 and Guild:** the `chain` and `blocklog` schemas, the leaderlog/validate journal lines and the Guild env layout are unchanged.
 
 The real findings fall into four groups:
 - **One DEGRADED Logs-tab problem,** made visible by today's restart: a line cap before the filter means the Logs tab can't see a BP restart more than about 20 minutes old.
 - **One DEGRADED db-sync performance problem:** `epoch` is now a view, adding about 2.4 s to each delegator deep-dive.
+- **One DEGRADED Ideal/Luck problem** (D3, pre-existing, found in the manual test): Ideal is computed from the Go stake snapshot instead of Set, so it showed 0.82 instead of 0.98 for epoch 657.
 - **Several AT RISK items** that don't affect your setup today but will hit public users or the later db-sync host upgrade. The main ones:
   - the new Guild env version gate is swallowed silently;
   - CLI calls have no timeout;
@@ -66,6 +67,31 @@ Severity: **BROKEN** = feature fails; **DEGRADED** = works but wrong, incomplete
   - In `:812` and `:818`, replace `MAX(no) FROM epoch` with `(SELECT epoch_no FROM block ORDER BY id DESC LIMIT 1)`. Don't use `epoch_finalized`: it stops at 656, one short of the current epoch, so the spendable test would be off by one.
   - In `:1085`, drop the join and use `b.epoch_no`.
   - `getNetBlocks` (`:145`) runs once per session; leave it.
+
+#### D3. Ideal and Luck use the Go stake snapshot instead of Set
+
+- **Where:** `src/data/live.js:203-210` (before the fix), and `src/data/read-model.js:698-710`, which caches that Ideal and its Luck in the current epoch's History row.
+- **Problem:** Ideal was σ × 21600 with σ = `stakeGo` pool / `stakeGo` total. The code comment claimed Go was the current epoch's leader stake, with Set being the next epoch's. That is backwards. Set drives leader election in the current epoch, Mark in the next, and Go is the older snapshot used for the reward calculation. Luck on the NOW card (adopted / Ideal) and the current epoch's History row inherited the error. This is a pre-existing bug, not an 11.1.2 change. The size and sign of the error depend on how much the pool's stake moved between the two snapshots.
+- **Evidence:**
+  - **Manual test, item 4:** the app showed Ideal 0.82 for epoch 657, and gLiveView and cncli showed 0.98.
+  - **Captured `query stake-snapshot`, epoch 657:**
+
+    | snapshot | Ideal (σ × 21600) |
+    |---|---|
+    | Set | **0.98** |
+    | Mark | 0.97 |
+    | Go (what the app used) | 0.82 |
+
+    The pool's Set/Go stake ratio is 1.198, while the network totals differ by less than 0.1%. So 0.98 / 0.82 is almost entirely this pool's own stake change.
+  - **cncli leaderlog on the BP:** `Ideal slots for epoch based on active stake: 0.98` for 657 and `0.97` for 658. The 658 value is today's Mark, which becomes Set at the boundary.
+  - **gLiveView:** its Ideal is "based on active stake (sigma)", and the active stake it reads is Koios `pool_info.active_stake`. That value equals `stakeSet` in the capture, and differs from both Go and Mark.
+  - **cardano-ledger source (Shelley rules):** `Rules/Snap.hs` rotates the snapshots at the boundary (`_pstakeMark = istakeSnap`, `_pstakeSet = _pstakeMark s`, `_pstakeGo = _pstakeSet s`). `Rules/NewEpoch.hs` then sets the leader-election distribution `nesPd` from `pd' = calculatePoolDistr (_pstakeSet ss)`.
+  - **Unaffected:**
+    - History rows for closed epochs from Koios `pool_history`, db-sync `epoch_stake` and Blockfrost, all of which are keyed by the epoch in which the stake is active;
+    - the Delegators "Active stake" card (Koios `active_stake`, already labelled "set snapshot");
+    - Leader (`leadership-schedule --current` picks the snapshot inside cardano-cli);
+    - Pulse, which uses no stake snapshot.
+- **Proposed fix:** read `stakeSet` (item 14), and correct the History rows already cached with the Go-based value (item 14b).
 
 ### AT RISK
 
@@ -171,7 +197,7 @@ Severity: **BROKEN** = feature fails; **DEGRADED** = works but wrong, incomplete
 - **Evidence:**
   - Tip: `{"block": 13982885, "epoch": 657, "era": "Conway", ..., "slotInEpoch": 239315, "slotsToEpochEnd": 192685, "syncProgress": "100.00"}`, with the same keys as 11.0.1.
   - Mempool: `"capacityInBytes": 67172352, "numberOfTxs": 5, "sizeInBytes": 3591`.
-  - Stake-snapshot: `"pools": {"<pool-id>": {"stakeGo": <pool stake>, …}}, "total": {"stakeGo": …}`.
+  - Stake-snapshot: `"pools": {"<pool-id>": {"stakeGo": …, "stakeMark": …, "stakeSet": …}}, "total": {` the same three keys `}`. The shape is compatible, but the app read the wrong one of the three (D3).
   - KES: two `✓` lines then JSON with every `qKes*` field the app reads.
   - Nothing on stderr; exit 0 throughout.
 - **Proposed fix:** none.
@@ -276,6 +302,7 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 4. **Ideal and block production card.** Working looks like:
    - console `[live.ideal] epoch 657: ... ideal=<value>`;
    - the card's Ideal and Leader (from `leadership-schedule`) match cncli's leaderlog figures; Luck and Adopted come from Koios.
+   - *After 14/D3:* Ideal is 0.98 for epoch 657, matching cncli's "Ideal slots for epoch based on active stake" and gLiveView. The 0.82 seen in the first run was D3.
 5. **Upcoming blocks panel.** Working looks like: your assigned slots for the current epoch, matching cncli's leaderlog. If it shows "Leadership schedule unavailable", copy the console `[read-model] leadership-schedule failed:` line; that is the one uncaptured CLI output.
 6. **Mempool panel.** Working looks like:
    - a tx count and bytes against about 67 MB capacity;
@@ -327,6 +354,8 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
     - Remove the stale "prunableConns" comment at `metrics-query.js:14`.
     - Fix the `txsProcessedNum_int` reference in `mempool.js:17`; the code reads `_counter`.
     - Fix the `cache.rs:10` doc-indent clippy warning.
+14. **Ideal and Luck from the Set snapshot** (D3). New `src/data/stake-snapshot.js` computes σ from `pools[<id>].stakeSet` / `total.stakeSet`, falling back to cardano-cli 1.35.x's flat `poolStakeSet` / `activeStakeSet` keys (confirmed in that version's `Cardano/CLI/Types.hs`). `live.js` uses it, and every comment that called Go the current epoch's snapshot is corrected.
+    - **14b, cached History rows:** a one-time pass (meta key `ideal_set_fix_v1`) rewrites every row still marked `source: 'live'`. The current epoch takes the corrected cli Ideal. Closed epochs are recomputed from the row's own Set `activeStakeLovelace` via `computeIdeal`, or reset to null for the fillers if that fails. Luck is recomputed with Ideal. New rows are correct at write time because the Ideal passed in is now Set-based.
 
 ## Appendix: build and static checks (Phase 5)
 
@@ -334,4 +363,4 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 - `cargo clippy`: one warning, `doc list item overindented` at `src/cache.rs:10`. It's cosmetic and not relevant to this audit.
 - `cargo test`: 0 tests in the crate (there is no test suite, as CLAUDE.md says).
 
-There is no JS test suite. In its place, the app's own parsing expressions (`JSON.parse` offsets, stake-snapshot key paths, `qKes*` fields, the `readMetric` regex) were run over both capture files with Node. All produced correct values on 11.1.2 and 11.0.1.
+There is no JS test suite. In its place, the app's own parsing expressions (`JSON.parse` offsets, stake-snapshot key paths, `qKes*` fields, the `readMetric` regex) were run over both capture files with Node. All parsed identically on 11.1.2 and 11.0.1. The stake-snapshot key path parsed correctly but read the wrong snapshot: it gives 0.82 on the 11.1.2 capture where Set gives 0.98 (D3). After 14/D3, `stake-snapshot.js` was run over the 11.1.2 capture with Node: Ideal is 0.98 with both the nested keys and cardano-cli 1.35.x's flat keys.

@@ -25,6 +25,7 @@ import { getNodeProbe } from './session.js';
 import { getLastMetrics } from './metrics-query.js';
 import { queryHost, getLastHost } from './host-query.js';
 import * as readModel from './read-model.js';
+import { idealFromStakeSnapshot } from './stake-snapshot.js';
 import {
   runCli, CLI_TIMEOUT_TIP_S, CLI_TIMEOUT_MEMPOOL_S, CLI_TIMEOUT_KES_S, CLI_TIMEOUT_STAKE_SNAPSHOT_S,
 } from './cli.js';   /*cli-timeouts-v1*/
@@ -71,11 +72,6 @@ async function runCmd(command) {
 
 
 const ZERO_BP = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
-
-// Expected blocks minted network-wide per epoch, at full decentralisation:
-//   epoch_length (432000 slots) × active_slot_coeff (0.05) = 21600  (mainnet)
-// A pool's Ideal = σ × this, where σ = poolStakeGo / totalStakeGo.
-const EXPECTED_BLOCKS_PER_EPOCH = 21600;
 
 function emptyChainPulse(tipBlock = 0) {
   return {
@@ -147,7 +143,7 @@ export class LiveDataSource {
     this._lastPulseScore = null;
 
     // Ideal blocks — computed once per epoch from cardano-cli stake-snapshot.
-    // stakeGo is frozen for the epoch, so this only changes on epoch rollover.
+    // stakeSet is frozen for the epoch, so this only changes on epoch rollover.
     this._ideal = null;
     this._idealEpoch = null;
     this._idealInFlight = false;
@@ -169,16 +165,12 @@ export class LiveDataSource {
 
   /**
    * Ideal blocks for the current epoch — computed entirely from cardano-cli,
-   * no cncli. Ideal = σ × EXPECTED_BLOCKS_PER_EPOCH, σ = poolStakeGo / totalStakeGo.
+   * no cncli. Ideal = σ × 21600, σ = poolStakeSet / totalStakeSet.
    *
-   * "Go" is the snapshot frozen at the start of THIS epoch — the stake that
-   * governs block production right now (stakeSet = next epoch, stakeMark = two
-   * epochs out). It is constant within an epoch, so we compute once and cache
-   * in memory, recomputing only when the epoch changes.
-   *
-   * Note: totalStakeGo (~2.17e16) exceeds JS's safe-integer range (2^53 ≈
-   * 9.0e15), so JSON.parse rounds it by ~1 lovelace. That's a relative error
-   * of ~5e-17 — utterly irrelevant to a value we display to 2 decimal places.
+   * "Set" is the snapshot that governs leader election in THIS epoch (Mark =
+   * next epoch, Go = the older one used for rewards); see stake-snapshot.js and
+   * finding D3. It is constant within an epoch, so we compute once and cache in
+   * memory, recomputing only when the epoch changes.
    */
   async _maybeRefreshIdeal(epoch) {
     if (this._idealInFlight) return;
@@ -198,16 +190,8 @@ export class LiveDataSource {
       const jsonStart = out.indexOf('{');
       if (jsonStart < 0) throw new Error('no JSON in stake-snapshot output');
       const json = JSON.parse(out.slice(jsonStart));
-
-      // cardano-node 11.0.1 nested format first; fall back to legacy flat keys.
-      const poolGo  = json.pools?.[e.POOL_ID]?.stakeGo ?? json.poolStakeGo;
-      const totalGo = json.total?.stakeGo              ?? json.activeStakeGo;
-      if (poolGo == null || totalGo == null || totalGo === 0) {
-        throw new Error(`missing stakeGo (pool=${poolGo} total=${totalGo})`);
-      }
-
-      const sigma = poolGo / totalGo;
-      this._ideal = Math.round(sigma * EXPECTED_BLOCKS_PER_EPOCH * 100) / 100;
+      const { sigma, ideal } = idealFromStakeSnapshot(json, e.POOL_ID);
+      this._ideal = ideal;
       this._idealEpoch = epoch;
       console.log(`[live.ideal] epoch ${epoch}: σ=${sigma.toExponential(3)} ideal=${this._ideal}`);
     } catch (err) {

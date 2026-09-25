@@ -7,7 +7,8 @@
  *
  * Universal by construction: zero GNP1/box-specific constants. The pool is
  * resolved at runtime from the node's POOL_ID hex; the connection comes from
- * user config. Validated against db-sync schema 15.44.6.
+ * user config. Validated against db-sync schema 15.50.6 (db-sync 13.7.2.1; the
+ * node 11.1.2 audit's manual checklist items 11-13, 25 Sept 2026).
  *
  * CONTRACT: every selected column is cast ::text (transport requirement — big
  * numeric domains exceed i64/f64). Values arrive as strings; we cast here.
@@ -21,7 +22,7 @@
 import { DataKind, registry } from './capabilities.js';
 import { pgQuery, pgReachable } from './pg-transport.js';
 
-export const DBSYNC_TESTED_SCHEMA = '15.44.6';
+export const DBSYNC_TESTED_SCHEMA = '15.50.6';
 
 const lovelaceToAda = (v) => (v == null ? null : Number(v) / 1e6);
 const numOrNull = (v) => (v == null ? null : Number(v));
@@ -77,7 +78,7 @@ function safeEpoch(n) {
 let _cfg = null;          // { database, host?, port?, user?, password? }
 let _poolHex = null;
 let _poolId = null;       // resolved pool_hash.id
-let _version = null;      // schema version string, e.g. "15.44.6"
+let _version = null;      // schema version string, e.g. "15.50.6"
 let _ready = false;       // reachability + resolved pool, for registry.reachable()
 
 // ---- queries (all columns ::text) ------------------------------------------

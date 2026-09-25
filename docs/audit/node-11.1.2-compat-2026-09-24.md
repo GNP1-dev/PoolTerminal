@@ -271,7 +271,7 @@ Right now nothing in the repo declares which versions are supported:
 | cardano-cli | 11.2.3.x with node 11.1.x; 11.0.0.0 with node 11.0.1 | don't pair cli 11.1.0.0-11.2.2.0 with node 11.0.x (hangs) |
 | cncli | 6.8.0; 6.7.0 | Guild cncli.sh layout (`guild-db/cncli/cncli.db`, `guild-db/blocklog/blocklog.db`) |
 | Guild scripts | env with the 11.0.1 gate (tested); alpha bbaa6b0d (11.1.2 gate) | alpha not yet exercised by a test run |
-| db-sync | 13.7.2.1, schema 15.50.6, after the checklist passes | currently the code says 15.44.6 |
+| db-sync | 13.7.2.1, schema 15.50.6 | `DBSYNC_TESTED_SCHEMA` bumped from 15.44.6 after checklist items 11-13 passed |
 | Ogmios | not used | - |
 
 **Where it needs changing:**

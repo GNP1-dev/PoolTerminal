@@ -103,6 +103,7 @@ const QUERIES = [
     hint: 'Warning / Error / Critical severity lines from the block producer (last 24h)',
     unit: () => _cfg.bpUnit,
     grep: '\\((Warning|Error|Critical)',
+    grepJson: '"sev":"(Warning|Error|Critical)"',   /*logs-json-format-v1*/
     sinceHrs: 24,
     okEmpty: 'No warnings or errors in the last 24 hours \u2713',
   },
@@ -121,6 +122,7 @@ const QUERIES = [
     hint: 'KES key period / expiry warnings - catch expiry before it costs blocks',
     unit: () => _cfg.bpUnit,
     grep: 'KES info|OperationalCertificate|ExpiryLog',
+    grepJson: '"ns":"Forge\\.StateInfo|OperationalCertificate|ExpiryLog',   // not yet seen on a JSON-format BP
     sinceHrs: 6,
     tail: 1,
     okEmpty: 'No KES status lines found. If your node logs at Notice level or above, routine KES-info lines may not be present.',
@@ -130,7 +132,7 @@ const QUERIES = [
     label: 'Restarts & startup',
     hint: 'Starts, stops and failures of the node unit (systemd, last 14 days), plus the node\'s startup lines from its most recent start',
     unit: () => _cfg.bpUnit,
-    build: () => restartsCmd(),
+    build: (fmt) => restartsCmd(fmt),
     okEmpty: 'No starts or stops of this unit in the last 14 days.',
   },
   {
@@ -211,7 +213,10 @@ function cncliUnit(role) {
 // Everything is niced; the unit is sanitised and the grep is a constant.
 const RESTART_WINDOW_HRS = 24 * 14;
 const STARTUP_GREP = 'Node version|cardano-node [0-9]|Started opening|Chain DB|Byron|Shelley|Conway|Started blockchain';
-function restartsCmd() {
+// JSON logs: match the namespace, not free text - "Conway" etc. appear in the
+// data of ordinary lines (fork switches), which flooded the old pattern.
+const STARTUP_GREP_JSON = '"ns":"(Startup\\.|ChainDB\\.(OpenEvent|InitChainSelEvent|LedgerEvent\\.Replay|ReplayBlock)\\.)';
+function restartsCmd(fmt) {
   const u = sanitizeUnit(_cfg.bpUnit);
   const sys = `${NICE} journalctl -u ${u} -t systemd --no-pager --merge --since "${RESTART_WINDOW_HRS} hours ago"`;
   return `${sys} | ${NICE} tail -n 200; ` +
@@ -219,17 +224,35 @@ function restartsCmd() {
     `case "$T" in ''|*[!0-9]*) ;; *) ` +
     `echo; echo "-- node startup lines, first 5 minutes after the most recent start --"; ` +
     `${NICE} journalctl -u ${u} --no-pager --merge --since "@$T" --until "@$((T+300))" ` +
-    `| ${NICE} grep -E ${shTrick(STARTUP_GREP)} | ${NICE} tail -n 40;; esac; true`;
+    `| ${NICE} grep -E ${shTrick(fmt === 'json' ? STARTUP_GREP_JSON : STARTUP_GREP)} | ${NICE} tail -n 40;; esac; true`;
 }
 
-function buildQueryCommand(q) {
-  if (q.build) return q.build();
+// The node logs either the human format ("[ts][host:NS](Severity,n) text") or
+// JSON ({"at":..,"ns":..,"sev":..}), set by the node config. Severity and
+// startup patterns differ between them, so presets carry a grepJson variant.
+// Detected once per unit from its newest line (cheap: reads the journal tail).
+const _fmtCache = new Map();   /*logs-json-format-v1*/
+async function logFormat(unit) {
+  const u = sanitizeUnit(unit);
+  if (_fmtCache.has(u)) return _fmtCache.get(u);
+  let fmt = 'human';
+  try {
+    const line = await runCmd(`${NICE} journalctl -u ${u} --no-pager -n 1 -o cat`);
+    if (/^\s*\{"at":/.test(line || '')) fmt = 'json';
+    _fmtCache.set(u, fmt);   // cache only a real answer; a failed read retries next time
+  } catch { /* keep 'human' */ }
+  return fmt;
+}
+
+function buildQueryCommand(q, fmt = 'human') {
+  if (q.build) return q.build(fmt);
   const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24 });
   // q.grep is a constant from QUERIES, not user input -> safe to embed. The grep
   // runs on the node so only matching lines cross the connection. Filter FIRST,
   // then cap: the newest N *matching* lines over the whole window. Every stage
   // is niced so the pipeline can never compete with block production.
-  const g = q.grep ? ` | ${NICE} grep -E ${shTrick(q.grep)}` : '';
+  const pat = (fmt === 'json' && q.grepJson) ? q.grepJson : q.grep;
+  const g = pat ? ` | ${NICE} grep -E ${shTrick(pat)}` : '';
   const gv = q.grepOut ? ` | ${NICE} grep -vE ${shTrick(q.grepOut)}` : '';
   const capN = q.tail
     ? Math.max(1, Math.min(2000, Number(q.tail)))
@@ -784,7 +807,8 @@ async function runQuery(canvas, q, demo) {
   }
 
   try {
-    const cmd = buildQueryCommand(q);
+    const fmt = (q.grepJson || q.build) ? await logFormat(q.unit()) : 'human';
+    const cmd = buildQueryCommand(q, fmt);
     const text = await runCmd(cmd);
     _lastOutput = text || '';
     if (!text || !text.trim()) {

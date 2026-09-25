@@ -12,6 +12,8 @@ import { registry, DataKind } from '../data/capabilities.js';
 import { getMode } from '../data/index.js';
 import { getTransport, getSession, isConnected } from '../data/session.js';
 import { getAppVersion } from '../data/tauri.js';   /*app-version-v94*/
+import { MIN_CARDANO_NODE, MIN_CARDANO_CLI, MIN_CNCLI } from '../data/compat.js';   /*declared-versions-v1*/
+import { DBSYNC_TESTED_SCHEMA } from '../data/dbsync-query.js';
 
 function safeReach(s) { try { return s.reachable(); } catch { return false; } }
 
@@ -113,6 +115,10 @@ const SECTIONS = `
     <p>PoolTerminal depends on your node and (optionally) db-sync. When a Cardano <strong>hard fork</strong>
     happens, you'll need to upgrade your node and db-sync, and sometimes PoolTerminal itself. If numbers
     look wrong after a fork, check those are all up to date.</p>
+    <p><strong>Supported versions:</strong> cardano-node ${MIN_CARDANO_NODE} or later with cardano-cli
+    ${MIN_CARDANO_CLI} or later, as a matched pair from the same node release, and (optional) cncli
+    ${MIN_CNCLI} or later, in the Guild Operators layout. db-sync was last verified at schema
+    ${DBSYNC_TESTED_SCHEMA}.</p>
   </div>
 `;
 

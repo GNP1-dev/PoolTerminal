@@ -117,9 +117,12 @@ Relays have their own dedicated **Relay 1 / Relay 2** tabs (see Features) - purp
 
 - Linux desktop (Ubuntu 22.04+, Debian 12+, Fedora 40+, or any modern distro with WebKitGTK 4.1)
 - Access to your Cardano node - SSH to a remote node, or PoolTerminal running on the node
-- A running Cardano node with the standard Guild Operators tooling layout
+- A running Cardano node with the standard Guild Operators tooling layout:
+  **cardano-node 11.1.2 or later** with **cardano-cli 11.2.3.0 or later**, as a
+  matched pair from the same node release (a cli from 11.1.0.0 to 11.2.2.0
+  against node 11.0.x hangs; PoolTerminal now times such queries out)
 - An internet connection (for Koios, the built-in baseline source)
-- (Optional) `cncli` on the node - some features unlock with cncli data
+- (Optional) `cncli` **6.8.0 or later** on the node - some features unlock with cncli data
 - (Optional) **db-sync** for the loyalty leaderboard and gap-free instant history
 - (Optional) a **Blockfrost** project key as an alternative delegator-data source
 - (Optional) a **Telegram bot** (created by you, in two minutes) if you want push alerts - nothing is installed on your block producer for this

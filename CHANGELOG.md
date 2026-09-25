@@ -8,6 +8,43 @@ behaviour may change between minor versions.
 
 ## [Unreleased]
 
+### Compatibility
+
+- **Supported versions are now declared:** cardano-node 11.1.2 or later with
+  cardano-cli 11.2.3.0 or later (a matched pair from the same node release),
+  and cncli 6.8.0 or later, in the Guild Operators layout. Shown on the About
+  page and in the README. Checked against a block producer and relay on node
+  11.1.2 after the September 2026 upgrade; see
+  docs/audit/node-11.1.2-compat-2026-09-24.md.
+
+### Fixed
+
+- **Logs: presets searched only the last ~20 minutes on a block producer.** A
+  line cap ran before the filter, so "Restarts & startup" could not see a
+  restart an hour old. The filter now runs first; "Restarts & startup" reads
+  systemd's own start/stop messages over 14 days (sub-second) plus the node's
+  startup lines for its latest start; full-log presets are capped at 7 days.
+  Everything runs at the lowest CPU and IO priority.
+- **Logs: presets now work on nodes that log JSON.** "Errors & warnings" could
+  never match a JSON log, and startup lines picked up unrelated fork switches.
+- **cardano-cli queries now time out** (tip and mempool 10 s, KES 20 s,
+  stake snapshot 30 s, leader schedule 300 s) instead of freezing the
+  dashboard on a mismatched cli/node pair; the message names the query.
+- **Connecting reports a Guild env that failed** (for example its node/cli
+  version check) instead of connecting with no pool ID; a block producer with
+  no POOL_ID is flagged.
+- **The mempool panel shows "unavailable" when its query fails**, rather than
+  an empty mempool, and no longer feeds zeros to alerts or history.
+- **Pulse no longer scores a block producer's failed KES check as neutral.**
+- **The node version badge reads the node PoolTerminal is connected to**, not
+  whichever node on the host was found first.
+- **Metrics:** the Prometheus port is confirmed by its content, and a custom
+  metrics prefix is detected, so panels no longer go silently empty.
+- **db-sync delegator deep-dive ~2 s faster** on db-sync 13.7.2.1, which made
+  `epoch` a slow view.
+- The Logs blocklog path follows the Guild env's BLOCKLOG_DB, and cncli.db is
+  opened read-only.
+
 ### Changed
 
 - SECURITY.md and the code review summary have been corrected: the review was

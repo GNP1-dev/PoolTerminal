@@ -54,6 +54,7 @@ let _cfg = null;
 // Run everything at low CPU + IO priority so a query can never compete with
 // block production for resources on the BP.
 const NICE = 'nice -n 19 ionice -c3';
+const MAX_SCAN_HRS = 24 * 7;   // ceiling for any preset that scans the node's full log /*logs-systemd-restarts-v1*/
 
 async function runCmd(command) {
   const r = await invoke('ssh_run', { command });
@@ -71,7 +72,9 @@ function journalCmd(unit, opts = {}) {
   // applied here covers only minutes. No -n: the line cap belongs AFTER the
   // on-node grep (see buildQueryCommand), otherwise a 14-day preset silently
   // searched only the newest ~21 minutes. /*logs-filter-first-v1*/
-  const hrs = Math.max(1, Math.min(24 * 30, Number(opts.sinceHrs) || 24));
+  // A full-log scan is capped at 7 days: ~2.3M lines on a BP, ~15 s of niced
+  // CPU. Longer histories use a cheaper source (see restartsCmd).
+  const hrs = Math.max(1, Math.min(MAX_SCAN_HRS, Number(opts.sinceHrs) || 24));
   return `${NICE} journalctl -u ${safeUnit} --no-pager --merge --since "${hrs} hours ago"`;
 }
 
@@ -125,10 +128,10 @@ const QUERIES = [
   {
     id: 'restart',
     label: 'Restarts & startup',
-    hint: 'Node version banner and startup lines - when and why it last restarted',
+    hint: 'Starts, stops and failures of the node unit (systemd, last 14 days), plus the node\'s startup lines from its most recent start',
     unit: () => _cfg.bpUnit,
-    grep: 'Node version|cardano-node [0-9]|Started opening|Chain DB|Byron|Shelley|Conway|Started blockchain',
-    sinceHrs: 24 * 14,
+    build: () => restartsCmd(),
+    okEmpty: 'No starts or stops of this unit in the last 14 days.',
   },
   {
     id: 'rollback',
@@ -199,7 +202,28 @@ function cncliUnit(role) {
   return `${stem}-cncli-${role}.service`;
 }
 
+// Restarts & startup. Scanning the node's own log for startup lines meant
+// reading every line in the window (~4.6M lines over 14 days on a BP). systemd's
+// own messages about the unit (identifier "systemd": Started / Stopping /
+// Stopped / Failed / Scheduled restart / Consumed CPU) are a handful of lines and
+// come from the journal's index, so 14 days costs ~0.1 s. The node's startup
+// lines are then read only for the 5 minutes after the most recent start.
+// Everything is niced; the unit is sanitised and the grep is a constant.
+const RESTART_WINDOW_HRS = 24 * 14;
+const STARTUP_GREP = 'Node version|cardano-node [0-9]|Started opening|Chain DB|Byron|Shelley|Conway|Started blockchain';
+function restartsCmd() {
+  const u = sanitizeUnit(_cfg.bpUnit);
+  const sys = `${NICE} journalctl -u ${u} -t systemd --no-pager --merge --since "${RESTART_WINDOW_HRS} hours ago"`;
+  return `${sys} | ${NICE} tail -n 200; ` +
+    `T=$(${sys} -o short-unix | ${NICE} grep -E ' Started ' | ${NICE} tail -n 1 | ${NICE} cut -d. -f1); ` +
+    `case "$T" in ''|*[!0-9]*) ;; *) ` +
+    `echo; echo "-- node startup lines, first 5 minutes after the most recent start --"; ` +
+    `${NICE} journalctl -u ${u} --no-pager --merge --since "@$T" --until "@$((T+300))" ` +
+    `| ${NICE} grep -E ${shTrick(STARTUP_GREP)} | ${NICE} tail -n 40;; esac; true`;
+}
+
 function buildQueryCommand(q) {
+  if (q.build) return q.build();
   const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24 });
   // q.grep is a constant from QUERIES, not user input -> safe to embed. The grep
   // runs on the node so only matching lines cross the connection. Filter FIRST,

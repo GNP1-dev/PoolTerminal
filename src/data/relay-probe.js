@@ -96,7 +96,9 @@ export async function relayProbe(id, mode) {
     `for PID in $(pgrep -x cardano-node 2>/dev/null); do ` +
     `ARGS=$(ps -p "$PID" -o args= 2>/dev/null); ` +
     `NP=$(echo "$ARGS" | grep -oP -- '--port[= ]+\\K[0-9]+'); ` +
-    `PP=$(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NP$" | head -1); ` +
+    // Prometheus port verified by content, as in node-probe.js. /*prom-port-verify-v1*/
+    `PP=; for C in $(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NP$"); do ` +
+    `if curl -sf --max-time 2 "http://127.0.0.1:$C/metrics" 2>/dev/null | grep -q 'blockNum'; then PP=$C; break; fi; done; ` +
     `ET=$(ps -o etimes= -p "$PID" 2>/dev/null | tr -d ' '); ` +
     `KES=$(echo "$ARGS" | grep -c -- '--shelley-kes-key'); ` +
     `BIN=$(echo "$ARGS" | awk '{print $1}'); ` +

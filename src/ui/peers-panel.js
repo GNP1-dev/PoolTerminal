@@ -100,7 +100,7 @@ function paintHeader(peerData) {
     setText('pp-bidir',  fmt(m.duplexConns));
     setText('pp-duplex', fmt(m.prunableConns));
   } else {
-    // Fallback when Prometheus is disabled on this node
+    // Fallback when no metrics endpoint was found on this node
     const total = peerData ? peerData.total : null;
     setText('pp-out',    '—');
     setText('pp-in',     '—');

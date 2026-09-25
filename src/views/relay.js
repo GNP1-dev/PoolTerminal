@@ -679,7 +679,9 @@ function paint(id, snap) {
   if (ageEl) {
     if (noMatch) ageEl.textContent = probe.detail || 'no node matched the selector';
     else if (healthy) ageEl.textContent = tipAge == null ? 'just connected' : `last block ${tipAge}s ago`;
-    else ageEl.textContent = h.reason === 'no-node' ? 'no cardano-node found on host' : (h.reason ? `unreachable (${h.reason})` : 'unreachable');
+    else ageEl.textContent = h.reason === 'no-node' ? 'no cardano-node found on host'
+      : h.reason === 'no-prometheus' ? 'no metrics endpoint found on this node'   /*prom-port-verify-v1*/
+      : (h.reason ? `unreachable (${h.reason})` : 'unreachable');
   }
   set(`#rl-ver-${id}`, probe.version ? `v${probe.version}` : '—');
 

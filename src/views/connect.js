@@ -208,6 +208,7 @@ function buildEnvProbeCmd(envFile) {   /*env-gate-visible-v1*/
     `echo "CNODE_HOME=$CNODE_HOME"; ` +
     `echo "CNCLI=$CNCLI"; ` +
     `echo "CNCLI_DB=$CNCLI_DB"; ` +
+    `echo "BLOCKLOG_DB=$BLOCKLOG_DB"; ` +   /*blocklog-env-v1*/
     `echo "NETWORK_NAME=$NETWORK_NAME"; ` +
     `echo "NETWORK_IDENTIFIER=$NETWORK_IDENTIFIER"; ` +
     `echo "POOL_TICKER=$POOL_TICKER"; ` +

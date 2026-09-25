@@ -424,7 +424,7 @@ export class LiveDataSource {
       if (!e.CNCLI_DB) throw new Error('No CNCLI_DB path');
       const slotCutoff = nowSlot() - 3700;
       const cmd =
-        `sqlite3 ${e.CNCLI_DB} ` +
+        `sqlite3 -readonly ${e.CNCLI_DB} ` +   /*blocklog-env-v1*/
         `"SELECT slot_number FROM chain ` +
         `WHERE orphaned = 0 AND slot_number > ${slotCutoff} ORDER BY slot_number ASC"`;
       const out = await runCmd(cmd);

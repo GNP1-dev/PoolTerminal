@@ -337,9 +337,13 @@ let _lastOutput = '';
 // /*logs-derived-defaults-v106*/
 function derivedDefaults() {
   try {
-    const home = String((getSession().envVars || {}).CNODE_HOME || '').replace(/\/+$/, '');
+    const ev = getSession().envVars || {};
+    const home = String(ev.CNODE_HOME || '').replace(/\/+$/, '');
     const base = home.split('/').pop();
-    if (home && base) return { unit: `${base}.service`, db: `${home}/guild-db/blocklog/blocklog.db` };
+    // The Guild env exports BLOCKLOG_DB (honouring a BLOCKLOG_DIR override);
+    // prefer it over rebuilding the stock path. /*blocklog-env-v1*/
+    const db = ev.BLOCKLOG_DB ? sanitizePath(ev.BLOCKLOG_DB) : (home ? `${home}/guild-db/blocklog/blocklog.db` : null);
+    if (home && base) return { unit: `${base}.service`, db: db || DEFAULT_BLOCKLOG_DB };
   } catch { /* fall through */ }
   return { unit: DEFAULT_BP_UNIT, db: DEFAULT_BLOCKLOG_DB };
 }
@@ -359,7 +363,7 @@ export function mountLogs(canvas) {
       <div class="lg-config">
         <label for="lg-unit">BP journal unit</label>
         <input id="lg-unit" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BP_UNIT : _cfg.bpUnit)}"${demo ? ' disabled' : ''}>
-        <label for="lg-db">Blocklog DB</label>
+        <label for="lg-db" title="Defaults to the Guild env's BLOCKLOG_DB. The dashboard's one-off heartbeat backfill reads cncli.db at $CNODE_HOME/guild-db/cncli/cncli.db: a CNCLI_DIR override set in cncli.sh is not detected.">Blocklog DB</label>
         <input id="lg-db" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BLOCKLOG_DB : _cfg.blocklogDb)}" style="min-width:320px"${demo ? ' disabled' : ''}>
         <button class="lg-save" id="lg-save" type="button"${demo ? ' disabled' : ''}>Save</button>
         <span class="lg-status" id="lg-cfg-status"></span>

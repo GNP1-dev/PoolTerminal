@@ -41,6 +41,7 @@ import { getNotifPollMs, getNotifThresholdLovelace, getNotifSource } from './not
 // demo world never writes into that cache. getMode is a function declaration,
 // so the import cycle through index.js is hoisting-safe. /*demo-world-v99*/
 import { getMode } from './index.js';
+import { runCli, CliTimeoutError, CLI_TIMEOUT_LEADERSHIP_SCHEDULE_S } from './cli.js';   /*cli-timeouts-v1*/
 import { demoEpochHistory, demoHistoryMeta, demoSamples, demoNotifications, demoWorld, demoSource } from './demo-world.js';
 const _demoMode = () => { try { return getMode() === 'demo'; } catch { return false; } };
 
@@ -152,22 +153,6 @@ export function poolHexToBech32(hex) {
 function env() { return getSession().envVars || {}; }
 function poolHex() { return (env().POOL_ID || '').toLowerCase(); }
 
-async function runCmd(command) {
-  const r = await invoke('ssh_run', { command });
-  if (typeof r === 'string') return r;
-  if (r && typeof r === 'object') {
-    if (typeof r.exit_code === 'number' && r.exit_code !== 0) {
-      throw new Error(`ssh_run exit ${r.exit_code}: ${(r.stderr || r.stdout || '').slice(0, 400)}`);
-    }
-    return r.stdout ?? '';
-  }
-  return String(r);
-}
-
-function cliCmd(args) {
-  const e = env();
-  return `CARDANO_NODE_SOCKET_PATH=${e.CARDANO_NODE_SOCKET_PATH} ${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
-}
 
 // ============================================================
 // cache wrappers (defensive; never throw into the loop)
@@ -590,16 +575,18 @@ async function leadershipSchedule(which) {
   }
   const flag = which === 'next' ? '--next' : '--current';
   const genesis = config.replace(/\/[^/]*$/, '') + '/shelley-genesis.json';
-  const cmd = cliCmd(
-    `query leadership-schedule --genesis '${genesis}' ` +
-    `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' ${flag}`
-  );
   let out;
   try {
-    out = await runCmd(cmd);
+    out = await runCli(`query leadership-schedule ${flag}`,
+      `query leadership-schedule --genesis '${genesis}' ` +
+      `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' ${flag}`,
+      CLI_TIMEOUT_LEADERSHIP_SCHEDULE_S);
   } catch (err) {
     // For --next, an error usually means the window isn't open yet — expected.
-    if (which !== 'next') console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    // A timeout is never expected, so it is always reported. /*cli-timeouts-v1*/
+    if (which !== 'next' || err instanceof CliTimeoutError) {
+      console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    }
     return null;
   }
   // The node prints a friendly error to stdout when --next isn't available yet.

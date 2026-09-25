@@ -25,6 +25,9 @@ import { getNodeProbe } from './session.js';
 import { getLastMetrics } from './metrics-query.js';
 import { queryHost, getLastHost } from './host-query.js';
 import * as readModel from './read-model.js';
+import {
+  runCli, CLI_TIMEOUT_TIP_S, CLI_TIMEOUT_MEMPOOL_S, CLI_TIMEOUT_KES_S, CLI_TIMEOUT_STAKE_SNAPSHOT_S,
+} from './cli.js';   /*cli-timeouts-v1*/
 
 const BYRON_SLOT_LEN_S = 20;
 const KES_REFRESH_S    = 60;
@@ -66,10 +69,6 @@ async function runCmd(command) {
   return String(r);
 }
 
-function cliCmd(args) {
-  const e = envOf();
-  return `CARDANO_NODE_SOCKET_PATH=${e.CARDANO_NODE_SOCKET_PATH} ${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
-}
 
 const ZERO_BP = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
 
@@ -191,7 +190,8 @@ export class LiveDataSource {
 
     this._idealInFlight = true;
     try {
-      const out = await runCmd(cliCmd(`query stake-snapshot --stake-pool-id ${e.POOL_ID}`));
+      const out = await runCli('query stake-snapshot',
+        `query stake-snapshot --stake-pool-id ${e.POOL_ID}`, CLI_TIMEOUT_STAKE_SNAPSHOT_S);
       const jsonStart = out.indexOf('{');
       if (jsonStart < 0) throw new Error('no JSON in stake-snapshot output');
       const json = JSON.parse(out.slice(jsonStart));
@@ -251,9 +251,9 @@ export class LiveDataSource {
       return;
     }
 
-    const cmd = cliCmd(`query kes-period-info --op-cert-file '${probe.opCertPath}'`);
     try {
-      const out  = await runCmd(cmd);
+      const out  = await runCli('query kes-period-info',
+        `query kes-period-info --op-cert-file '${probe.opCertPath}'`, CLI_TIMEOUT_KES_S);
       // cardano-cli emits checkmark validation lines BEFORE the JSON; skip
       // everything up to the first '{' before parsing.
       const jsonStart = out.indexOf('{');
@@ -323,7 +323,7 @@ export class LiveDataSource {
   }
 
   async getNowSnapshot() {
-    const out = await runCmd(cliCmd('query tip'));
+    const out = await runCli('query tip', 'query tip', CLI_TIMEOUT_TIP_S);
     const tip = JSON.parse(out);
     const epochLen = (tip.slotInEpoch || 0) + (tip.slotsToEpochEnd || 0);
     const progress = epochLen > 0 ? (tip.slotInEpoch || 0) / epochLen : 0;
@@ -465,7 +465,7 @@ export class LiveDataSource {
   async getMempool() {
     const t0 = performance.now();
     try {
-      const out = await runCmd(cliCmd('query tx-mempool info'));
+      const out = await runCli('query tx-mempool info', 'query tx-mempool info', CLI_TIMEOUT_MEMPOOL_S);
       const info = JSON.parse(out);
       const totalBytes = info.sizeInBytes ?? info.bytes ?? 0;
       // The node reports its real mempool capacity here. It depends on this

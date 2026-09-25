@@ -53,6 +53,7 @@ import { registry } from './data/capabilities.js';
 import { demoSource } from './data/demo-world.js';
 import { setInvokeModeGate } from './data/tauri.js';
 import { probeNode } from './data/node-probe.js';
+import { CliTimeoutError } from './data/cli.js';   /*cli-timeouts-v1*/
 import { queryPeers } from './data/peers-query.js';
 import { initToasts } from './ui/toast.js';
 import { initNotifications, mountNotifications, unmountNotifications } from './views/notifications.js';
@@ -301,7 +302,8 @@ async function fastPollTick() {
       console.warn(`${ctx} FAIL:`, e.message);
       lastFastError = e.message;
     }
-    markTickertapeStale(true);
+    markTickertapeStale(true, e.message);
+    warnCliTimeout(e);
   } finally {
     fastPolling = false;
   }
@@ -399,6 +401,15 @@ function warnBpWithoutPoolId(role) {
       'Set POOL_NAME (and the pool files) in the env, or check the env did not stop ' +
       'early, then reconnect.',
   });
+}
+
+// A timed-out tip query means the dashboard has stopped. Say so once per session
+// (the stale tickertape keeps the reason on hover after that). /*cli-timeouts-v1*/
+let _cliTimeoutWarned = false;
+function warnCliTimeout(e) {
+  if (!(e instanceof CliTimeoutError) || _cliTimeoutWarned) return;
+  _cliTimeoutWarned = true;
+  alertDialog({ title: 'cardano-cli timed out', message: e.message, danger: true });
 }
 
 async function runProbeAndPaintRole() {

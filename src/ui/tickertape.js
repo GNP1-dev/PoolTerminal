@@ -73,9 +73,13 @@ export function renderTickertape(snap) {
 }
 
 /** Dim the whole strip when data is stale (DESIGN.md §8: 60% opacity). */
-export function markTickertapeStale(isStale) {
+export function markTickertapeStale(isStale, reason) {
   const el = byId('pt-tickertape');
-  if (el) el.classList.toggle('pt-stale', isStale);
+  if (!el) return;
+  el.classList.toggle('pt-stale', isStale);
+  // Say WHY it is stale on hover, rather than just greying out. /*cli-timeouts-v1*/
+  if (isStale && reason) el.title = `Live data stalled: ${reason}`;
+  else el.removeAttribute('title');
 }
 
 /**

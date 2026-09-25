@@ -335,6 +335,12 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 13. **NOTIFICATIONS.** Working looks like: the feed loads and there are no console errors from `getDelegationEvents`.
 14. **Reload the webview** (resume without 2FA). Working looks like: console `[resume] reused existing session, env re-probed OK`.
 
+**Result (25 Sept 2026): all 14 items pass** on the BP, and item 9 also on the VM relay. Item 4 passed after 14/D3, with Ideal 0.98 for epoch 657; the first run showed 0.82, which is how D3 was found. Items 11 to 13 passing cleared the `DBSYNC_TESTED_SCHEMA` bump to 15.50.6. The run turned up four follow-ups, items 15 to 18 in section 6:
+- key and op-cert paths in the console;
+- VM relay warm/cold peers shown as 0;
+- no untested-schema note on the DATA tab, which is why item 11's expected "verify" note did not appear;
+- mempool percentage labels.
+
 ## 6. Proposed fix plan (one commit each, in order; not implemented)
 
 1. **Logs: filter before capping** (D1). In `logs.js` `journalCmd` / `:202-208`, use `journalctl -g` (or `| grep | tail -n cap`) so the 24-hour and 14-day windows really cover 24 hours and 14 days.

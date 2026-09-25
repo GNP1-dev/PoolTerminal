@@ -151,6 +151,17 @@ Severity: **BROKEN** = feature fails; **DEGRADED** = works but wrong, incomplete
 - **Problem:** cli 11.2.2.0 and later first queries the genesis to validate the network id, adding a round trip to every query. It wasn't timed in the capture.
 - **Evidence:** upstream only (cardano-cli 11.2.2.0 changelog).
 - **Proposed fix:** measure it (checklist item 2). If it's material, pass `--socket-path` and consider a longer tip interval. No code change until it's measured.
+- **Measured (added 25 September 2026):** `docs/audit/timing-bp.sh` ran each query the app uses 3 times on the block producer (node 11.1.2 / cli 11.2.3.0), niced, 2 s apart. All exits were 0.
+
+  | query | run 1 | run 2 | run 3 |
+  |---|---|---|---|
+  | `query tip` | 14 ms | 14 ms | 14 ms |
+  | `query tx-mempool info` | 14 ms | 15 ms | 15 ms |
+  | `query kes-period-info` | 25 ms | 25 ms | 25 ms |
+  | `query stake-snapshot` (one pool) | 15 ms | 15 ms | 15 ms |
+
+  The same script on the 11.0.1 baseline node (cli 11.0.0.0) gave 14-15 ms for tip, mempool and stake-snapshot (kes-period-info not applicable, no op cert).
+- **Conclusion: OK, no change needed.** Tip takes 14 ms on cli 11.2.3.0, the same as 14-15 ms on cli 11.0.0.0, so the network-id check added in 11.2.2.0 costs nothing measurable and the 1 Hz tip loop keeps ample headroom.
 
 ### OK
 
@@ -303,6 +314,7 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 2. **db-sync: stop reading the `epoch` view in the deep-dive** (D2). `dbsync-query.js:812` and `:818` read the current epoch from `block`; `:1085` drops the join.
 3. **Connect: make a failed Guild env visible** (A1). The probe echoes the env return code and last lines; connect and resume fail with that text on a non-zero code, or on an empty `POOL_ID` for a BP.
 4. **CLI timeouts** (A2). `cliCmd` in `live.js` and `read-model.js` wraps with `timeout 10`, or 150 for leadership-schedule; exit 124 gives a clear message.
+   - *As implemented (commit 4/A2):* per-command timeouts, set after the A10 timing run, defined once in `src/data/cli.js`: tip 10 s, mempool 10 s, kes-period-info 20 s, stake-snapshot 30 s, leadership-schedule 300 s. The slowest measured runs were tip 14 ms, mempool 15 ms, kes-period-info 25 ms and stake-snapshot 15 ms, so 3x the slowest run is under 0.1 s and every value is a floor, not a measurement: the stake-snapshot and leadership-schedule values are the agreed minimums, and leadership-schedule cannot be timed without the VRF signing key.
 5. **Mempool: show "unavailable", not zeros** (A3). `live.js:486-489`.
 6. **Pulse: no neutral KES score on a BP** (A4). `live.js:101-109`.
 7. **Version badge: probed PID first** (A5). `main.js:358-363`.

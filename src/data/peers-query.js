@@ -126,7 +126,7 @@ export async function queryPeers() {
     `${lastResult.total} sockets · ` +
     (metrics
       ? `metrics OUT ${metrics.outgoingConns} / IN ${metrics.incomingConns}`
-      : `no metrics (Prometheus disabled)`)
+      : `no metrics endpoint found`)
   );
 
   return lastResult;

@@ -1,23 +1,30 @@
 /**
  * PoolTerminal — Mempool panel.
  *
- * Header   : current count · current bytes / capacity · 0..100% fill gauge.
- *            Fill % is measured against the node's real reported mempool
- *            capacity (capacityInBytes), so it is a true 0..100% and can never
- *            exceed a full mempool.
- * Body     : 5-minute trend sparkline (y-axis = mempool capacity, gradient
- *            fill, one-block reference line, block-boundary markers, pulsing
- *            current-value dot) + a 4-cell stats grid (NET, THROUGHPUT, AVG,
- *            PEAK). THROUGHPUT is the tx-processed rate averaged over the whole
- *            window (txs clear only when blocks land, so a single sample is
- *            mostly zero).
+ * Units (item 18): the queue is measured in BLOCKS, bytes / maxBlockBodySize
+ * (one block = 88 KB). The key level is 2 blocks. A default mempool is 2 × max
+ * block body, and most pools run the default, so from 2 blocks queued most of
+ * the network starts rejecting new transactions, whatever this node's own
+ * capacity is. Blocks-queued figures are coloured by that level (format.js
+ * blkLevel: normal / approaching 2 / 2+). % is used only for fill of THIS
+ * node's real capacity (capacityInBytes, e.g. a 64 MB override), shown as a
+ * small secondary line ("0.5% of 64 MB", "—" when the node didn't report it).
+ *
+ * Bar     : MEMPOOL bar in now2.js, 0..2 blocks, fed by the data attributes
+ *           renderMempool() writes on #mp-count.
+ * Chart   : 5-minute sparkline. Y-axis is 0..2 blocks (extends while the
+ *           queue is currently over 2), with the 1-block line and the
+ *           prominent "2 blocks: default mempools full" line; block-boundary
+ *           markers; cyan data-flow trace on its own KB/min axis.
+ * Stats   : NET, TX RATE 1m/5m, AVG tx size, PEAK 5m (blocks), and the
+ *           MAX (blocks) column: persisted peaks for 5m / 1h / 24h / all, with
+ *           the all-time peak's date shown inline.
  *
  * One sample per refresh (every 5s); rolling 60-sample buffer = 5 min.
  *
- * Throughput pulls cardano_node_metrics_txsProcessedNum_int from the
- * latest Prometheus scrape (cumulative counter — we keep the previous
- * value and divide the delta by elapsed time). Falls back to "—" if
- * Prometheus isn't enabled on this node.
+ * Throughput pulls txsProcessedNum_counter from the latest Prometheus scrape
+ * (cumulative counter — we keep the previous value and divide the delta by
+ * elapsed time). Falls back to "—" if no metrics endpoint was found.
  *
  * Block-boundary markers are detected by watching for tip changes
  * between successive samples — a block landing typically yanks the
@@ -25,27 +32,24 @@
  * obvious as a step-down on the sparkline aligned with the marker.
  */
 
-import { commas } from './format.js';
+import { commas, fmtBlk, blkLevel, fmtCapFill, MAX_BLOCK_BODY, DEFAULT_MEMPOOL_BLOCKS } from './format.js';
 import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
 
-const MAX_BLOCK_BODY   = 90112;   // bytes = one block body (mainnet maxBlockBodySize)
-// Congestion is measured the way the NETWORK treats the mempool. A stock node
-// runs a 2-block mempool (~176 KB) and rejects transactions once full, so
-// 2 blocks = 100% "network full". We measure backlog against this, not against
-// a node's local mempoolCapacityOverride (which can be many MB and means
-// nothing to the network - a raised override just lets THIS node hold what a
-// default node would already be rejecting). /*mp-network-scale*/
-const PRACTICAL_FULL   = 2 * MAX_BLOCK_BODY;   // 176 KB = 100% (default network mempool full)
+// The queue is measured the way the NETWORK treats it: a default node's mempool
+// is 2 blocks (~176 KB) and it rejects transactions once full. A raised local
+// override (many MB) only lets THIS node hold what default nodes are already
+// rejecting, so the 2-block level stays the headline. /*mp-network-scale*/
+const PRACTICAL_FULL   = DEFAULT_MEMPOOL_BLOCKS * MAX_BLOCK_BODY;   // 176 KB = 2 blocks
 const MAX_SAMPLES      = 60;      // 5 min @ 5s
 const SPARK_W          = 600;
 const SPARK_H          = 240;   // taller viewBox (2.5:1) so preserveAspectRatio=none stretches text far less /*mp-tallbox*/
 
-// The node's real mempool capacity (capacityInBytes), kept for context/display
-// only - NOT used as the gauge denominator (see above). /*mp-realcap*/
+// The node's real mempool capacity (capacityInBytes) is shown only as the
+// secondary "x% of N MB" fill line, never as the queue scale. /*mp-realcap*/
 
 let history       = [];   // [{ ts, count, bytes, tip }]
-let _lastMpState  = null; // { congestionPct, blocks } for the alerts engine
+let _lastMpState  = null; // { congestionPct, blocks, capFillPct } for the alerts engine
 
 // Latest mempool congestion snapshot, for the alerts engine. /*mp-alert-state*/
 export function getMempoolState() { return _lastMpState; }
@@ -59,17 +63,8 @@ function fmtBytes(b) {
   return Math.round(b) + ' B';
 }
 
-function colorsFor(pct) {
-  if (pct < 50)   return { fill: 'var(--pt-status-good)', txt: 'var(--pt-text-primary)' };
-  if (pct < 85)   return { fill: 'var(--pt-status-warn)', txt: 'var(--pt-status-warn)' };
-  return            { fill: 'var(--pt-status-bad)',  txt: 'var(--pt-status-bad)'  };
-}
-
 function colorTokenForBytes(b) {
-  const pct = (b / PRACTICAL_FULL) * 100;
-  if (pct < 50) return 'good';
-  if (pct < 85) return 'warn';
-  return 'bad';
+  return blkLevel(b / MAX_BLOCK_BODY);   // normal / approaching 2 / 2+ blocks
 }
 
 function buildSparkPaths(values, maxVal) {
@@ -107,15 +102,14 @@ function buildBlockMarkers() {
 }
 
 function getMaxBytes() {
-  // Y-axis is a FIXED 0..100% of network-full (2 blocks / 176 KB). 100% = the
-  // point a default node rejects, and the coloured strip fills the whole left
-  // edge. The axis only extends above 100% while the mempool is CURRENTLY in
-  // overflow (the latest sample past 2 blocks) - a past overflow spike must not
-  // keep the axis zoomed out. /*mp-scale-networkfull*/
+  // Y-axis is a FIXED 0..2 blocks (176 KB), the point default mempools are
+  // full, and the coloured strip fills the whole left edge. The axis only
+  // extends above 2 blocks while the queue is CURRENTLY over it (the latest
+  // sample) - a past spike must not keep the axis zoomed out. /*mp-scale-networkfull*/
   const cur = history.length ? history[history.length - 1].bytes : 0;
-  if (cur <= PRACTICAL_FULL) return PRACTICAL_FULL;           // normal: axis = exactly 0-100%
-  const overPct = cur / PRACTICAL_FULL;                       // >1 = currently overflowing
-  const capped = Math.ceil(overPct / 0.25) * 0.25;            // next 25% step
+  if (cur <= PRACTICAL_FULL) return PRACTICAL_FULL;           // normal: axis = exactly 0-2 blocks
+  const overPct = cur / PRACTICAL_FULL;                       // >1 = currently over 2 blocks
+  const capped = Math.ceil(overPct / 0.25) * 0.25;            // next half-block step
   return PRACTICAL_FULL * capped;
 }
 
@@ -194,48 +188,50 @@ function renderSparkline(currentBytes) {
         `<stop offset="0%"  stop-color="${stroke}" stop-opacity="0.55"/>` +
         `<stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>` +
       `</linearGradient>` +
-      // Axis colour strip: green 0-50%, orange 50-75%, light-red 75-90%, red 90-100%.
-      // (y=0 is top=100%, y=SPARK_H is bottom=0%, so stops are reversed.)
+      // Axis colour strip, same levels as blkLevel(): green below 1.5 blocks,
+      // amber approaching 2, red at the 2-block line.
+      // (y=0 is top = 2 blocks, y=SPARK_H is bottom = 0, so stops are reversed.)
       `<linearGradient id="mp-axis" x1="0" x2="0" y1="0" y2="1">` +
-        `<stop offset="0%"   stop-color="#ef4444"/>` +   /* 100% */
-        `<stop offset="10%"  stop-color="#ef4444"/>` +   /* 90%  */
-        `<stop offset="25%"  stop-color="#f87171"/>` +   /* 75%  light red */
-        `<stop offset="50%"  stop-color="#f59e0b"/>` +   /* 50%  orange */
-        `<stop offset="100%" stop-color="#10b981"/>` +   /* 0%   green */
+        `<stop offset="0%"   stop-color="#ef4444"/>` +   /* 2 blocks   */
+        `<stop offset="8%"   stop-color="#f59e0b"/>` +   /*            */
+        `<stop offset="25%"  stop-color="#f59e0b"/>` +   /* 1.5 blocks */
+        `<stop offset="32%"  stop-color="#10b981"/>` +   /*            */
+        `<stop offset="100%" stop-color="#10b981"/>` +   /* 0          */
       `</linearGradient>` +
     `</defs>`
   );
 
-  // How much of the visible axis is the 0-100% network band vs overflow above.
-  const networkFullY = SPARK_H - (PRACTICAL_FULL / maxVal) * SPARK_H;   // y of the 100% line
+  // How much of the visible axis is the 0-2 block band vs the part above it.
+  const networkFullY = SPARK_H - (PRACTICAL_FULL / maxVal) * SPARK_H;   // y of the 2-block line
   const inOverflow = maxVal > PRACTICAL_FULL;
 
-  // Overflow zone shading (above the 100% line) when this node holds past 2 blocks.
+  // Shading above the 2-block line while this node holds more than 2 blocks.
   if (inOverflow && networkFullY > 1) {
     parts.push(`<rect x="0" y="0" width="${SPARK_W}" height="${networkFullY.toFixed(1)}" fill="#7f1d1d" opacity="0.18"/>`);
   }
 
-  // Coloured axis strip down the left edge (0-100% band only).
+  // Coloured axis strip down the left edge (0-2 block band only).
   const STRIP_W = 8;
   parts.push(`<rect x="0" y="${networkFullY.toFixed(1)}" width="${STRIP_W}" height="${(SPARK_H - networkFullY).toFixed(1)}" fill="url(#mp-axis)" rx="1"/>`);
 
-  // Percentage guidelines within the 0-100% band. Drawn with explicit visible
-  // strokes (the CSS grid class is near-invisible) and consistent label offsets
-  // so 25/50/75/100 read evenly. The 50% = 1-block line is drawn later, on top
-  // of the fill. /*mp-grid-visible*/
+  // Half-block guidelines within the 0-2 block band. Drawn with explicit
+  // visible strokes (the CSS grid class is near-invisible) and consistent label
+  // offsets. The 1-block line is drawn later, on top of the fill. /*mp-grid-visible*/
   const gridStroke = 'rgba(160,180,210,0.28)';
   for (const f of [0.25, 0.75]) {
     const y = SPARK_H - f * (PRACTICAL_FULL / maxVal) * SPARK_H;
     parts.push(`<line x1="${STRIP_W + 2}" y1="${y.toFixed(1)}" x2="${SPARK_W}" y2="${y.toFixed(1)}" stroke="${gridStroke}" stroke-width="1" stroke-dasharray="5 5"/>`);
-    parts.push(`<text x="${STRIP_W + 5}" y="${(y - 5).toFixed(1)}" style="fill:#9db0cc;font-size:13px;font-weight:600;font-family:ui-monospace,monospace;opacity:.85">${Math.round(f * 100)}%</text>`);
+    parts.push(`<text x="${STRIP_W + 5}" y="${(y - 5).toFixed(1)}" style="fill:#9db0cc;font-size:13px;font-weight:600;font-family:ui-monospace,monospace;opacity:.85">${fmtBlk(f * DEFAULT_MEMPOOL_BLOCKS)}</text>`);
   }
-  // The 100% network-full line (solid red) + label.
+  // The 2-block line (solid red), the network-wide threshold, kept prominent.
   parts.push(`<line x1="${STRIP_W + 2}" y1="${Math.max(1, networkFullY).toFixed(1)}" x2="${SPARK_W}" y2="${Math.max(1, networkFullY).toFixed(1)}" stroke="#ef4444" stroke-width="1.5" opacity="0.85"/>`);
-  parts.push(`<text x="${STRIP_W + 5}" y="${Math.max(16, networkFullY + 16).toFixed(1)}" style="fill:#ef4444;font-size:15px;font-weight:800;font-family:ui-monospace,monospace;opacity:.95">100% FULL</text>`);
-  // Overflow label at the very top when applicable.
+  // Label below the line when it's at the top of the axis; above it while the
+  // axis is extended, so it clears the compressed 1.5-block label.
+  const fullLblY = inOverflow && networkFullY - 5 >= 34 ? networkFullY - 5 : Math.max(16, networkFullY + 16);
+  parts.push(`<text x="${STRIP_W + 5}" y="${fullLblY.toFixed(1)}" style="fill:#ef4444;font-size:15px;font-weight:800;font-family:ui-monospace,monospace;opacity:.95">2 blocks: default mempools full</text>`);
+  // Top-of-axis label while the axis is extended above 2 blocks.
   if (inOverflow) {
-    const overPct = Math.round((maxVal / PRACTICAL_FULL) * 100);
-    parts.push(`<text x="${STRIP_W + 5}" y="16" style="fill:#fca5a5;font-size:13px;font-weight:600;font-family:ui-monospace,monospace;opacity:.9">overflow ${overPct}%</text>`);
+    parts.push(`<text x="${STRIP_W + 5}" y="16" style="fill:#fca5a5;font-size:13px;font-weight:600;font-family:ui-monospace,monospace;opacity:.9">${fmtBlk(maxVal / MAX_BLOCK_BODY)}</text>`);
   }
 
   // Block-boundary markers
@@ -248,7 +244,7 @@ function renderSparkline(currentBytes) {
   // Sharp line on top
   if (line) parts.push(`<path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`);
 
-  // The 50% line = exactly one block (100% = 2 blocks). Drawn ON TOP of the fill
+  // The 1-block line (half of the 0-2 block axis). Drawn ON TOP of the fill
   // so it stays visible, as a bright amber dashed line. /*mp-1block-line*/
   {
     const y = SPARK_H - 0.5 * (PRACTICAL_FULL / maxVal) * SPARK_H;
@@ -275,25 +271,53 @@ function renderSparkline(currentBytes) {
 }
 
 // --- persistent mempool high-water marks (5m / 1h / 24h / all-time) ---
-// v2: peaks are now stored as true fill-% of the node's real capacity (bounded
-// 0..100). v1 stored values scaled against a hardcoded 176 KB cap, which could
-// exceed 100% - discard those by versioning the key. /*mp-peaks-v2*/
+// Stored in BLOCKS queued: { unit: 'blocks', allTime: { blk, t }, mins: { <minute>: blk } }.
+// Before item 18 this key held % of 2 blocks ({ allTime: { pct, t }, mins }),
+// despite an old comment calling it fill-% of real capacity. peaksToBlocks()
+// converts that once (value × 2 / 100); `unit: 'blocks'` is the done-marker,
+// written in the same localStorage value as the converted peaks so a failed
+// write can never convert twice. /*mp-peaks-blocks-v1*/
 const PEAKS_KEY = 'pt.mempool.peaks.v2';
+const MAX_PEAK_BLK = 20;   // clamp: a transient spike can't store an absurd value
 let peaks = null;
 let peaksLoaded = false;
 let lastPeakSave = 0;
 
+/**
+ * Normalise a stored peaks object to blocks. Returns { peaks, converted }.
+ * Already-converted input (unit 'blocks') passes through unchanged.
+ */
+export function peaksToBlocks(p) {
+  const out = { unit: 'blocks', allTime: { blk: 0, t: 0 }, mins: {} };
+  if (!p || typeof p !== 'object') return { peaks: out, converted: false };
+  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+  if (p.unit === 'blocks') {
+    if (p.allTime && num(p.allTime.blk) != null) out.allTime = { blk: p.allTime.blk, t: p.allTime.t || 0 };
+    if (p.mins && typeof p.mins === 'object') {
+      for (const [k, v] of Object.entries(p.mins)) if (num(v) != null) out.mins[k] = v;
+    }
+    return { peaks: out, converted: false };
+  }
+  const toBlk = (pct) => Math.min(MAX_PEAK_BLK, (pct * DEFAULT_MEMPOOL_BLOCKS) / 100);
+  if (p.allTime && num(p.allTime.pct) != null) out.allTime = { blk: toBlk(p.allTime.pct), t: p.allTime.t || 0 };
+  if (p.mins && typeof p.mins === 'object') {
+    for (const [k, v] of Object.entries(p.mins)) if (num(v) != null) out.mins[k] = toBlk(v);
+  }
+  return { peaks: out, converted: true };
+}
+
 function loadPeaks() {
   if (peaksLoaded) return;
   peaksLoaded = true;
-  peaks = { allTime: { pct: 0, t: 0 }, mins: {} };
+  peaks = peaksToBlocks(null).peaks;
   try {
     const raw = localStorage.getItem(PEAKS_KEY);
     if (raw) {
-      const p = JSON.parse(raw);
-      if (p && typeof p === 'object') {
-        if (p.allTime && typeof p.allTime.pct === 'number') peaks.allTime = p.allTime;
-        if (p.mins && typeof p.mins === 'object') peaks.mins = p.mins;
+      const r = peaksToBlocks(JSON.parse(raw));
+      peaks = r.peaks;
+      if (r.converted) {
+        localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks));
+        console.log(`[mempool] stored peaks converted from % of 2 blocks to blocks (all-time ${fmtBlk(peaks.allTime.blk)})`);
       }
     }
   } catch (e) { /* ignore corrupt/absent */ }
@@ -314,21 +338,20 @@ function savePeaks() {
   try { localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks)); } catch (e) { /* ignore */ }
 }
 
-function recordPeak(pct) {
+function recordPeak(blk) {
   // Never let demo-mode's synthetic mempool pollute the persisted peaks
   // that carry into real connections. /*demo-peak-guard*/
   if (getMode() === 'demo') return;
   loadPeaks();
-  if (!isFinite(pct) || pct <= 0) return;
-  // Backlog beyond the 2-block practical full (>100%) is real, useful info
-  // (the mempool is holding more than two blocks can clear). Keep it, but cap
-  // at a sane ceiling so a transient spike can't store an absurd value.
-  if (pct > 999) pct = 999;   /*mp-peak-clamp*/
+  if (!isFinite(blk) || blk <= 0) return;
+  // A queue beyond 2 blocks is real, useful info (more than default mempools
+  // hold). Keep it, but clamp so a transient spike can't store an absurd value.
+  if (blk > MAX_PEAK_BLK) blk = MAX_PEAK_BLK;   /*mp-peak-clamp*/
   const now = Date.now();
   let changed = false;
-  if (pct > (peaks.allTime.pct || 0)) { peaks.allTime = { pct, t: now }; changed = true; }
+  if (blk > (peaks.allTime.blk || 0)) { peaks.allTime = { blk, t: now }; changed = true; }
   const m = Math.floor(now / 60000);
-  if (pct > (peaks.mins[m] || 0)) { peaks.mins[m] = pct; changed = true; }
+  if (blk > (peaks.mins[m] || 0)) { peaks.mins[m] = blk; changed = true; }
   prunePeaks();
   if (changed) savePeaks();
 }
@@ -349,13 +372,26 @@ function renderStats() {
   byId('mp-stat-throughput').textContent = fmtThroughput(throughput);
   const t1 = byId('mp-stat-throughput1m'); if (t1) t1.textContent = fmtThroughput(throughput1m);
   byId('mp-stat-avg').textContent        = avg ? fmtBytes(avg) : '—';
-  byId('mp-stat-peak').textContent       = fmtBytes(peak);
-  const fmtP = v => v > 0 ? Math.round(v) + '%' : '\u2014';
+  byId('mp-stat-peak').textContent       = history.length ? fmtBlk(peak / MAX_BLOCK_BODY) : '—';
+  const fmtP = v => v > 0 ? fmtBlk(v) : '\u2014';
   const e5 = byId('mp-peak-5m'); if (e5) e5.textContent = fmtP(maxOverMins(5 * 60000));
   const e1 = byId('mp-peak-1h'); if (e1) e1.textContent = fmtP(maxOverMins(60 * 60000));
   const e24 = byId('mp-peak-24h'); if (e24) e24.textContent = fmtP(maxOverMins(24 * 3600 * 1000));
   const ea = byId('mp-peak-all');
-  if (ea) { const ath = peaks ? (peaks.allTime.pct || 0) : 0; ea.textContent = fmtP(ath); if (peaks && peaks.allTime.t) ea.title = 'reached ' + new Date(peaks.allTime.t).toLocaleString(); }
+  const ath = peaks ? (peaks.allTime.blk || 0) : 0;
+  const athT = peaks && ath > 0 ? peaks.allTime.t : 0;
+  if (ea) { ea.textContent = fmtP(ath); ea.title = athT ? 'reached ' + new Date(athT).toLocaleString() : ''; }
+  // The all-time peak's date, shown inline under it (not only on hover).
+  const ed = byId('mp-peak-all-date');
+  if (ed) ed.textContent = athT ? fmtPeakDate(athT) : '';
+}
+
+/** "7 Sep 13:27" (this year) or "7 Sep 2025". */
+function fmtPeakDate(t) {
+  const d = new Date(t);
+  const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  if (d.getFullYear() !== new Date().getFullYear()) return `${day} ${d.getFullYear()}`;
+  return `${day} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 function ensureBody() {
@@ -363,7 +399,7 @@ function ensureBody() {
   if (!body) return;
   if (body.dataset.spark === '1') return;
   body.dataset.spark = '1';
-  // Only the chart lives here now. The NET/THROUGHPUT/AVG/PEAK and MAX% stats
+  // Only the chart lives here now. The NET/THROUGHPUT/AVG/PEAK and MAX (blocks) stats
   // are rendered in the panel's right-hand stat column (now2.js) using the same
   // element IDs, which renderStats()/renderPeaksInline() populate. /*mp-statcol*/
   body.innerHTML =
@@ -378,35 +414,43 @@ function ensureBody() {
  * Accuracy model (confirmed against IOHK docs):
  *  - The mempool is a fixed-size buffer. Its real ceiling is the node's
  *    capacityInBytes (default = 2x max block body ~176 KB, but configurable via
- *    MempoolCapacityBytesOverride). Txs are only rejected at THAT ceiling.
- *  - What matters operationally is the BACKLOG relative to block-clearing
- *    capacity: how many blocks' worth of tx are queued. 1 block = ~88 KB.
- *  - So the gauge shows blocks-queued (congestion), and we also show true fill
- *    vs the node's real capacity (how close to actually rejecting txs).
+ *    MempoolCapacityBytesOverride). THIS node rejects txs only at that ceiling.
+ *  - Most pools run the default, so at 2 blocks queued most of the network is
+ *    full and may reject new txs. That is the headline: blocks queued,
+ *    coloured by blkLevel().
+ *  - This node's own fill (bytes / capacityInBytes) is the secondary line;
+ *    "—" when the node didn't report its capacity (never a default).
  */
 export function renderMempool(mp, opts = {}) {
   const countEl = byId('mp-count');
   if (!countEl) return;
 
-  // Congestion is measured the way the NETWORK treats it: backlog vs
-  // block-clearing capacity. One block body (~88 KB, the protocol
-  // maxBlockBodySize) is what a single block clears. The default network
-  // mempool is 2 blocks (~176 KB) - the point at which a stock node stops
-  // accepting and starts rejecting transactions. So:
-  //   blocks queued = bytes / maxBlockBodySize
-  //   congestion %  = fill vs the 2-block network default (100% = a default
-  //                   node is full and rejecting).
-  const blocks = mp.totalBytes / MAX_BLOCK_BODY;
-  const congestionPct = (mp.totalBytes / PRACTICAL_FULL) * 100;   // vs 2-block network default
-  _lastMpState = { congestionPct, blocks };   // expose for alerts engine /*mp-alert-state*/
+  // Query failed (null): say so, and touch nothing that would record a reading -
+  // no history sample, no sparkline point, no congestion state for the alerts
+  // engine. /*mp-unavailable-v1*/
+  if (!mp) {
+    _lastMpState = null;
+    countEl.innerHTML = '<span class="pt-mp-stats" data-unavailable="1">unavailable</span>';
+    return;
+  }
 
-  // MAX% row tracks congestion peaks (meaningful, network-relative).
-  recordPeak(congestionPct);
+  //   blocks queued = bytes / maxBlockBodySize (one block clears ~88 KB)
+  //   congestionPct = blocks vs the 2-block default, in %. Kept ONLY for the
+  //                   alerts engine, whose stored threshold is in these units.
+  //   capFillPct    = fill of this node's real capacity; null if unknown.
+  const blocks = mp.totalBytes / MAX_BLOCK_BODY;
+  const congestionPct = (mp.totalBytes / PRACTICAL_FULL) * 100;
+  const cap = mp.capacityBytes > 0 ? mp.capacityBytes : null;
+  const capFillPct = cap ? (mp.totalBytes / cap) * 100 : null;
+  _lastMpState = { congestionPct, blocks, capFillPct };   // expose for alerts engine /*mp-alert-state*/
+
+  // The MAX (blocks) column tracks blocks-queued peaks.
+  recordPeak(blocks);
 
   // Emit stats as data attributes; the visible stat line is rendered on the
   // MEMPOOL bar header (now2.js) to avoid a redundant top row. /*mp-inline-stats*/
   countEl.innerHTML = `
-    <span class="pt-mp-stats" data-txs="${mp.txCount}" data-bytes="${mp.totalBytes}" data-blocks="${blocks.toFixed(2)}" data-congestion="${congestionPct.toFixed(1)}"></span>`;
+    <span class="pt-mp-stats" data-txs="${mp.txCount}" data-bytes="${mp.totalBytes}" data-blocks="${blocks.toFixed(2)}" data-capfill="${fmtCapFill(mp.totalBytes, cap)}"></span>`;
 
   // Append to rolling history. Capture the cumulative txsProcessed counter so
   // throughput can be averaged over the whole window. /*mp-throughput-window*/

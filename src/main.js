@@ -22,7 +22,7 @@ import { dataSource, setMode, getMode } from './data/index.js';
 import { renderTickertape, markTickertapeStale, setRoleBadge, setPeerCounts } from './ui/tickertape.js';
 import { appendTick as appendChainPulseTick } from './ui/chain-pulse.js';
 import { renderPeersPanel, resetPeersPanel } from './ui/peers-panel.js';
-import { confirmDialog } from './ui/dialog.js';   /*disconnect-danger-v84*/
+import { confirmDialog, alertDialog } from './ui/dialog.js';   /*disconnect-danger-v84*/
 import { renderRelayMap, resetRelayMap } from './ui/relay-map.js';
 import {
   mountNow, updateNowFast, bootstrapNow, refreshMempool, refreshUpcomingBlocks, unmountNow,
@@ -53,6 +53,7 @@ import { registry } from './data/capabilities.js';
 import { demoSource } from './data/demo-world.js';
 import { setInvokeModeGate } from './data/tauri.js';
 import { probeNode } from './data/node-probe.js';
+import { CliTimeoutError } from './data/cli.js';   /*cli-timeouts-v1*/
 import { queryPeers } from './data/peers-query.js';
 import { initToasts } from './ui/toast.js';
 import { initNotifications, mountNotifications, unmountNotifications } from './views/notifications.js';
@@ -301,7 +302,8 @@ async function fastPollTick() {
       console.warn(`${ctx} FAIL:`, e.message);
       lastFastError = e.message;
     }
-    markTickertapeStale(true);
+    markTickertapeStale(true, e.message);
+    warnCliTimeout(e);
   } finally {
     fastPolling = false;
   }
@@ -353,11 +355,15 @@ async function fetchNodeVersion() {
   const ccli = s.envVars && s.envVars.CCLI;
 
   const candidates = [];
-  // 1) The running node binary, located by process match — proven to work and
-  //    independent of PATH (binary isn't on PATH in non-interactive SSH).
-  candidates.push(`"$(readlink -f /proc/$(pgrep -f 'cardano-node run' | head -1)/exe)" --version`);
-  // 2) The exact probed PID, if available.
+  // 1) The exact probed PID - the node that owns OUR socket. Must come first: on
+  //    a host running a BP and a relay, a process match below can return the
+  //    other node (the BP-host capture picked the relay), which during a staged
+  //    upgrade would badge the wrong version. /*nodever-probed-pid-v1*/
   if (probe && probe.pid) candidates.push(`"$(readlink -f /proc/${probe.pid}/exe)" --version`);
+  // 2) Any running node binary, located by process match - independent of PATH
+  //    (binary isn't on PATH in non-interactive SSH). Note it misses a node
+  //    started as `cardano-node +RTS ... -RTS run`.
+  candidates.push(`"$(readlink -f /proc/$(pgrep -f 'cardano-node run' | head -1)/exe)" --version`);
   // 3) Derive from the Guild env CCLI path; 4) bare PATH.
   if (ccli) candidates.push(`"${ccli.replace(/\/[^/]+$/, '')}/cardano-node" --version`);
   candidates.push('cardano-node --version');
@@ -383,6 +389,33 @@ async function paintNodeVersion() {
   } catch { el.style.display = 'none'; }
 }
 
+// A block producer whose env yielded no POOL_ID connects, but Ideal, the leader
+// schedule and every pool-scoped source silently come up empty. Say so, once per
+// session. (Relays legitimately have no POOL_ID.) /*env-gate-visible-v1*/
+let _bpPoolIdWarned = false;
+function warnBpWithoutPoolId(role) {
+  if (role !== 'BP' || _bpPoolIdWarned) return;
+  if ((getSession().envVars || {}).POOL_ID) return;
+  _bpPoolIdWarned = true;
+  console.warn('[probe] BP node but the env gave no POOL_ID');
+  alertDialog({
+    title: 'Pool ID missing',
+    message: 'This node is a block producer, but its Guild env did not set POOL_ID.\n\n' +
+      'Ideal blocks, the leader schedule and pool history cannot load without it. ' +
+      'Set POOL_NAME (and the pool files) in the env, or check the env did not stop ' +
+      'early, then reconnect.',
+  });
+}
+
+// A timed-out tip query means the dashboard has stopped. Say so once per session
+// (the stale tickertape keeps the reason on hover after that). /*cli-timeouts-v1*/
+let _cliTimeoutWarned = false;
+function warnCliTimeout(e) {
+  if (!(e instanceof CliTimeoutError) || _cliTimeoutWarned) return;
+  _cliTimeoutWarned = true;
+  alertDialog({ title: 'cardano-cli timed out', message: e.message, danger: true });
+}
+
 async function runProbeAndPaintRole() {
   if (getMode() !== 'live') {
     setRoleBadge(null);
@@ -393,6 +426,7 @@ async function runProbeAndPaintRole() {
     const probe = await probeNode();
     setNodeProbe(probe);
     setRoleBadge(probe.role);
+    warnBpWithoutPoolId(probe.role);
   } catch (e) {
     console.warn('[probe] FAIL:', e.message);
     setRoleBadge('UNKNOWN');

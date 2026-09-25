@@ -7,7 +7,8 @@
  *
  * Universal by construction: zero GNP1/box-specific constants. The pool is
  * resolved at runtime from the node's POOL_ID hex; the connection comes from
- * user config. Validated against db-sync schema 15.44.6.
+ * user config. Validated against db-sync schema 15.50.6 (db-sync 13.7.2.1; the
+ * node 11.1.2 audit's manual checklist items 11-13, 25 Sept 2026).
  *
  * CONTRACT: every selected column is cast ::text (transport requirement — big
  * numeric domains exceed i64/f64). Values arrive as strings; we cast here.
@@ -21,7 +22,19 @@
 import { DataKind, registry } from './capabilities.js';
 import { pgQuery, pgReachable } from './pg-transport.js';
 
-export const DBSYNC_TESTED_SCHEMA = '15.44.6';
+export const DBSYNC_TESTED_SCHEMA = '15.50.6';
+
+/**
+ * The untested-schema note ("tested 15.50.6 — verify"), or null when `current`
+ * is unknown or is the tested schema. Any other schema is flagged, older or
+ * newer: the queries are verified against exactly one. Shown on the DATA tab's
+ * db-sync chip, the HISTORY table header and the init console line.
+ */
+export function schemaWarning(current, tested = DBSYNC_TESTED_SCHEMA) {   /*schema-warn-v1*/
+  const cur = current == null ? '' : String(current).trim();
+  if (!cur) return null;
+  return cur === tested ? null : `tested ${tested} — verify`;
+}
 
 const lovelaceToAda = (v) => (v == null ? null : Number(v) / 1e6);
 const numOrNull = (v) => (v == null ? null : Number(v));
@@ -77,7 +90,7 @@ function safeEpoch(n) {
 let _cfg = null;          // { database, host?, port?, user?, password? }
 let _poolHex = null;
 let _poolId = null;       // resolved pool_hash.id
-let _version = null;      // schema version string, e.g. "15.44.6"
+let _version = null;      // schema version string, e.g. "15.50.6"
 let _ready = false;       // reachability + resolved pool, for registry.reachable()
 
 // ---- queries (all columns ::text) ------------------------------------------
@@ -806,16 +819,19 @@ async function getAccountNow(esc) {
        LEFT JOIN tx_in ti ON ti.tx_out_id = txo.tx_id AND ti.tx_out_index = txo.index
       WHERE txo.stake_address_id = (SELECT id FROM a)
         AND txo.consumed_by_tx_id IS NULL AND ti.tx_in_id IS NULL)::text AS utxo`;
+  // Current epoch from the newest block, not MAX(no) FROM epoch: db-sync 13.7.2.1
+  // made `epoch` a view (epoch_finalized + epoch_current) costing ~0.8 s per
+  // read, and epoch_finalized alone stops one epoch short. /*dbsync-epoch-view-v1*/
   const base = `
     (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a))::text AS rewards,
     (SELECT COALESCE(SUM(amount),0) FROM reward WHERE addr_id = (SELECT id FROM a)
-       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rewards_spendable,
+       AND spendable_epoch <= (SELECT epoch_no FROM block ORDER BY id DESC LIMIT 1))::text AS rewards_spendable,
     (SELECT COALESCE(SUM(amount),0) FROM withdrawal WHERE addr_id = (SELECT id FROM a))::text AS withdrawals,
     (SELECT MIN(epoch_no) FROM epoch_stake WHERE addr_id = (SELECT id FROM a))::text AS since`;
   const rest = `
     (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a))::text AS rest,
     (SELECT COALESCE(SUM(amount),0) FROM reward_rest WHERE addr_id = (SELECT id FROM a)
-       AND spendable_epoch <= (SELECT MAX(no) FROM epoch))::text AS rest_spendable`;
+       AND spendable_epoch <= (SELECT epoch_no FROM block ORDER BY id DESC LIMIT 1))::text AS rest_spendable`;
 
   // reward_rest / consumed_by_tx_id are schema-version dependent — degrade to the
   // narrower query rather than losing the whole account panel on older db-sync.
@@ -1078,11 +1094,10 @@ async function getDelegatorStakeHistory(stake, currentEpoch) {
       SELECT 'reward' AS kind, r.earned_epoch::text AS epoch, r.amount::text AS amount, NULL AS txhash
       FROM reward r WHERE r.addr_id = (SELECT id FROM a)${withRest ? restSql : ''}
       UNION ALL
-      SELECT 'withdrawal' AS kind, e.no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
+      SELECT 'withdrawal' AS kind, b.epoch_no::text AS epoch, w.amount::text AS amount, encode(tx.hash,'hex') AS txhash
       FROM withdrawal w
       JOIN tx ON tx.id = w.tx_id
       JOIN block b ON b.id = tx.block_id
-      JOIN epoch e ON e.no = b.epoch_no
       WHERE w.addr_id = (SELECT id FROM a)
       ) ev ORDER BY epoch::bigint ASC`;
   let rw = null;
@@ -1156,7 +1171,8 @@ export const dbsyncSource = {
   // Schema-drift signal for the HISTORY header.
   schemaTested: DBSYNC_TESTED_SCHEMA,
   schemaCurrent: () => _version,
-  schemaStale: () => _version != null && _version !== DBSYNC_TESTED_SCHEMA,
+  schemaStale: () => schemaWarning(_version) != null,
+  schemaWarning: () => schemaWarning(_version),
 };
 
 /**
@@ -1176,7 +1192,7 @@ export async function initDbsync(config, poolHex) {
     _ready = true;
     if (!registry.all().some((s) => s.id === 'dbsync')) registry.register(dbsyncSource);
     console.log(`[dbsync] ready — pool id ${_poolId}, schema ${_version}` +
-      (dbsyncSource.schemaStale() ? ` (tested ${DBSYNC_TESTED_SCHEMA} — verify)` : ''));
+      (dbsyncSource.schemaWarning() ? ` (${dbsyncSource.schemaWarning()})` : ''));
     return true;
   } catch (err) {
     console.warn('[dbsync] init failed:', err.message ?? err);

@@ -16,6 +16,7 @@
  */
 
 import { invoke } from './tauri.js';
+import { metricReader } from './metrics-query.js';   /*metrics-prefix-v1*/
 
 // ---- transport -------------------------------------------------------------
 
@@ -96,7 +97,9 @@ export async function relayProbe(id, mode) {
     `for PID in $(pgrep -x cardano-node 2>/dev/null); do ` +
     `ARGS=$(ps -p "$PID" -o args= 2>/dev/null); ` +
     `NP=$(echo "$ARGS" | grep -oP -- '--port[= ]+\\K[0-9]+'); ` +
-    `PP=$(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NP$" | head -1); ` +
+    // Prometheus port verified by content, as in node-probe.js. /*prom-port-verify-v1*/
+    `PP=; for C in $(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NP$"); do ` +
+    `if curl -sf --max-time 2 "http://127.0.0.1:$C/metrics" 2>/dev/null | grep -q 'blockNum'; then PP=$C; break; fi; done; ` +
     `ET=$(ps -o etimes= -p "$PID" 2>/dev/null | tr -d ' '); ` +
     `KES=$(echo "$ARGS" | grep -c -- '--shelley-kes-key'); ` +
     `BIN=$(echo "$ARGS" | awk '{print $1}'); ` +
@@ -183,11 +186,6 @@ export async function relayProbe(id, mode) {
 
 // ---- metrics ---------------------------------------------------------------
 
-function readMetric(text, name) {
-  const re = new RegExp(`^${name}\\s+([\\d.eE+\\-]+)`, 'm');
-  const m = text.match(re);
-  return m ? parseFloat(m[1]) : null;
-}
 
 /**
  * Scrape the relay's Prometheus endpoint and return the health subset a relay
@@ -211,30 +209,31 @@ export async function relayHealth(id, mode, probe) {
   }
   if (!out || !out.trim()) return { ok: false, reason: 'scrape-empty' };
 
-  const inbound  = readMetric(out, 'cardano_node_metrics_connectionManager_inboundConns_int');
-  const outbound = readMetric(out, 'cardano_node_metrics_connectionManager_outboundConns_int');
-  const duplex   = readMetric(out, 'cardano_node_metrics_connectionManager_duplexConns_int');
+  const rm = metricReader(out);   // prefix detected per scrape /*metrics-prefix-v1*/
+  const inbound  = rm('connectionManager_inboundConns_int');
+  const outbound = rm('connectionManager_outboundConns_int');
+  const duplex   = rm('connectionManager_duplexConns_int');
 
   return {
     ok: true,
-    blockNum:    readMetric(out, 'cardano_node_metrics_blockNum_int'),
-    slotNum:     readMetric(out, 'cardano_node_metrics_slotNum_int'),
-    epoch:       readMetric(out, 'cardano_node_metrics_epoch_int'),
-    slotInEpoch: readMetric(out, 'cardano_node_metrics_slotInEpoch_int'),
-    density:     readMetric(out, 'cardano_node_metrics_density_real'),
+    blockNum:    rm('blockNum_int'),
+    slotNum:     rm('slotNum_int'),
+    epoch:       rm('epoch_int'),
+    slotInEpoch: rm('slotInEpoch_int'),
+    density:     rm('density_real'),
     inbound,
     outbound,
     duplex,
-    peersCold:   readMetric(out, 'cardano_node_metrics_peerSelection_Cold_int'),
-    peersWarm:   readMetric(out, 'cardano_node_metrics_peerSelection_Warm_int'),
-    peersHot:    readMetric(out, 'cardano_node_metrics_peerSelection_Hot_int'),
-    mempoolTxs:  readMetric(out, 'cardano_node_metrics_txsInMempool_int'),
-    mempoolBytes:readMetric(out, 'cardano_node_metrics_mempoolBytes_int'),
-    rssBytes:    readMetric(out, 'cardano_node_metrics_Mem_resident_int'),
-    blockDelayCdf1: readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfOne_real'),
-    blockDelayCdf3: readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfThree_real'),
-    blockDelayCdf5: readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_cdfFive_real'),
-    blockDelayLast: readMetric(out, 'cardano_node_metrics_blockfetchclient_blockdelay_real'),
+    peersCold:   rm('peerSelection_Cold_int'),
+    peersWarm:   rm('peerSelection_Warm_int'),
+    peersHot:    rm('peerSelection_Hot_int'),
+    mempoolTxs:  rm('txsInMempool_int'),
+    mempoolBytes:rm('mempoolBytes_int'),
+    rssBytes:    rm('Mem_resident_int'),
+    blockDelayCdf1: rm('blockfetchclient_blockdelay_cdfOne_real'),
+    blockDelayCdf3: rm('blockfetchclient_blockdelay_cdfThree_real'),
+    blockDelayCdf5: rm('blockfetchclient_blockdelay_cdfFive_real'),
+    blockDelayLast: rm('blockfetchclient_blockdelay_real'),
     ts: Date.now(),
   };
 }

@@ -203,7 +203,7 @@ function updateLive(canvas) {
       ['Host uptime', fmtDur(host?.uptimeSec)],
       ['Node uptime', fmtDur(probe.nodeStartUnix ? (Date.now() / 1000 - probe.nodeStartUnix) : null)],
       ['Node port', probe.port ?? '—'],
-      ['Metrics port', probe.prometheusPort ?? '—'],
+      ['Metrics port', probe.prometheusPort ?? 'none found'],
       ['Swap used', host ? `${fmtPct(host.swapUsedPct, 1)} (${fmtBytes(host.swapUsed)})` : '—'],
       ['GC live', fmtBytes(m.gcLiveBytes)],
       ['GC heap', fmtBytes(m.gcHeapBytes)],

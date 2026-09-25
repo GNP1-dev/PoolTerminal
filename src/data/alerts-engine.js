@@ -17,6 +17,7 @@
 
 import { invoke } from './tauri.js';
 import { getAlertConfig, recordRecentAlert, ALERT_DEFS } from './alerts-config.js';
+import { fmtBlk, DEFAULT_MEMPOOL_BLOCKS, MEMPOOL_2BLK_ALERT } from '../ui/format.js';   /*mp-units-v1*/
 
 // --- module state (persists across cycles while app is open) ---------------
 const lastFired = {};        // { [alertId]: epochMs }  cooldown tracking
@@ -79,7 +80,7 @@ function thr(cfg, id, fallback) { return cfg.alerts?.[id]?.threshold ?? fallback
  * @param ctx {
  *   snap:         latest NOW snapshot (tipBlock, poolTicker, kes..., adopted...),
  *   kesDays:      number | null  KES days remaining (if known),
- *   mempool:      { congestionPct, blocks } | null,
+ *   mempool:      { congestionPct, blocks, capFillPct } | null,
  *   peers:        number | null  connected peer count,
  *   slowBlock:    { delay } | null  a just-captured slow block this cycle,
  * }
@@ -148,14 +149,15 @@ export function runAlertChecks(ctx) {
     }
   }
 
-  // === MEMPOOL FULL === (network congestion >= threshold) ==================
+  // === MEMPOOL FULL === (blocks queued >= threshold, in % of 2 blocks) ======
   if (isOn(cfg, 'mempool_full') && ctx.mempool && ctx.mempool.congestionPct != null) {
     const at = thr(cfg, 'mempool_full', 100);
     if (ctx.mempool.congestionPct >= at) {
       if (!armed.mempool_full && mayFire(cfg, 'mempool_full')) {
         armed.mempool_full = true;
-        fire(cfg, 'mempool_full',
-          `Mempool at ${Math.round(ctx.mempool.congestionPct)}% of the network's 2-block limit.`);
+        fire(cfg, 'mempool_full', ctx.mempool.blocks >= DEFAULT_MEMPOOL_BLOCKS
+          ? `${MEMPOOL_2BLK_ALERT} (${fmtBlk(ctx.mempool.blocks)} queued).`
+          : `${fmtBlk(ctx.mempool.blocks)} queued (alert set below 2 blocks).`);   /*mp-units-v1*/
       }
     } else if (ctx.mempool.congestionPct < at * 0.8) {
       armed.mempool_full = false;  // re-arm with hysteresis (drop below 80% of threshold)

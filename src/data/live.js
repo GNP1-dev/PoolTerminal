@@ -25,6 +25,10 @@ import { getNodeProbe } from './session.js';
 import { getLastMetrics } from './metrics-query.js';
 import { queryHost, getLastHost } from './host-query.js';
 import * as readModel from './read-model.js';
+import { idealFromStakeSnapshot } from './stake-snapshot.js';
+import {
+  runCli, CLI_TIMEOUT_TIP_S, CLI_TIMEOUT_MEMPOOL_S, CLI_TIMEOUT_KES_S, CLI_TIMEOUT_STAKE_SNAPSHOT_S,
+} from './cli.js';   /*cli-timeouts-v1*/
 
 const BYRON_SLOT_LEN_S = 20;
 const KES_REFRESH_S    = 60;
@@ -66,17 +70,8 @@ async function runCmd(command) {
   return String(r);
 }
 
-function cliCmd(args) {
-  const e = envOf();
-  return `CARDANO_NODE_SOCKET_PATH=${e.CARDANO_NODE_SOCKET_PATH} ${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
-}
 
 const ZERO_BP = { leader: 0, ideal: 0, luckPercent: 100, adopted: 0, confirmed: 0, lost: 0 };
-
-// Expected blocks minted network-wide per epoch, at full decentralisation:
-//   epoch_length (432000 slots) × active_slot_coeff (0.05) = 21600  (mainnet)
-// A pool's Ideal = σ × this, where σ = poolStakeGo / totalStakeGo.
-const EXPECTED_BLOCKS_PER_EPOCH = 21600;
 
 function emptyChainPulse(tipBlock = 0) {
   return {
@@ -89,10 +84,6 @@ function emptyChainPulse(tipBlock = 0) {
   };
 }
 
-function emptyMempool() {
-  return { txCount: 0, totalBytes: 0, capacityBytes: null, recent: [] };
-}
-
 function computePulse(snap) {
   let total = 0;
   const components = {};
@@ -103,8 +94,14 @@ function computePulse(snap) {
     else if (snap.kesDaysRemaining > 14) components.kes = 20;
     else if (snap.kesDaysRemaining > 7)  components.kes = 10;
     else                                  components.kes = 0;
+  } else if (getNodeProbe()?.role === 'BP' && snap.kesQueryError) {
+    // A BP whose KES check is FAILING must not score like a healthy relay: the
+    // one thing Pulse exists to catch is a BP that can't prove its key is
+    // valid. 0, flagged so the hero can say why. /*pulse-kes-bp-v1*/
+    components.kes = 0;
+    components.kesFailed = true;
   } else {
-    // No op.cert (relay) — neutral 25 so Pulse isn't penalised
+    // No op.cert (relay), or a BP's first KES read still pending — neutral 25
     components.kes = 25;
   }
   total += components.kes;
@@ -139,13 +136,14 @@ export class LiveDataSource {
     this._kesPeriods = null;
     this._kesExpiryMs = null;
     this._kesAt = 0;
+    this._kesError = null;     // last kes-period-info failure message, null when OK /*pulse-kes-bp-v1*/
     this._opCertDisk = null;   /*opcert-live-v93*/
     this._opCertChain = null;
     this._opCertAtMs = null;
     this._lastPulseScore = null;
 
     // Ideal blocks — computed once per epoch from cardano-cli stake-snapshot.
-    // stakeGo is frozen for the epoch, so this only changes on epoch rollover.
+    // stakeSet is frozen for the epoch, so this only changes on epoch rollover.
     this._ideal = null;
     this._idealEpoch = null;
     this._idealInFlight = false;
@@ -167,16 +165,12 @@ export class LiveDataSource {
 
   /**
    * Ideal blocks for the current epoch — computed entirely from cardano-cli,
-   * no cncli. Ideal = σ × EXPECTED_BLOCKS_PER_EPOCH, σ = poolStakeGo / totalStakeGo.
+   * no cncli. Ideal = σ × 21600, σ = poolStakeSet / totalStakeSet.
    *
-   * "Go" is the snapshot frozen at the start of THIS epoch — the stake that
-   * governs block production right now (stakeSet = next epoch, stakeMark = two
-   * epochs out). It is constant within an epoch, so we compute once and cache
-   * in memory, recomputing only when the epoch changes.
-   *
-   * Note: totalStakeGo (~2.17e16) exceeds JS's safe-integer range (2^53 ≈
-   * 9.0e15), so JSON.parse rounds it by ~1 lovelace. That's a relative error
-   * of ~5e-17 — utterly irrelevant to a value we display to 2 decimal places.
+   * "Set" is the snapshot that governs leader election in THIS epoch (Mark =
+   * next epoch, Go = the older one used for rewards); see stake-snapshot.js and
+   * finding D3. It is constant within an epoch, so we compute once and cache in
+   * memory, recomputing only when the epoch changes.
    */
   async _maybeRefreshIdeal(epoch) {
     if (this._idealInFlight) return;
@@ -191,20 +185,13 @@ export class LiveDataSource {
 
     this._idealInFlight = true;
     try {
-      const out = await runCmd(cliCmd(`query stake-snapshot --stake-pool-id ${e.POOL_ID}`));
+      const out = await runCli('query stake-snapshot',
+        `query stake-snapshot --stake-pool-id ${e.POOL_ID}`, CLI_TIMEOUT_STAKE_SNAPSHOT_S);
       const jsonStart = out.indexOf('{');
       if (jsonStart < 0) throw new Error('no JSON in stake-snapshot output');
       const json = JSON.parse(out.slice(jsonStart));
-
-      // cardano-node 11.0.1 nested format first; fall back to legacy flat keys.
-      const poolGo  = json.pools?.[e.POOL_ID]?.stakeGo ?? json.poolStakeGo;
-      const totalGo = json.total?.stakeGo              ?? json.activeStakeGo;
-      if (poolGo == null || totalGo == null || totalGo === 0) {
-        throw new Error(`missing stakeGo (pool=${poolGo} total=${totalGo})`);
-      }
-
-      const sigma = poolGo / totalGo;
-      this._ideal = Math.round(sigma * EXPECTED_BLOCKS_PER_EPOCH * 100) / 100;
+      const { sigma, ideal } = idealFromStakeSnapshot(json, e.POOL_ID);
+      this._ideal = ideal;
       this._idealEpoch = epoch;
       console.log(`[live.ideal] epoch ${epoch}: σ=${sigma.toExponential(3)} ideal=${this._ideal}`);
     } catch (err) {
@@ -247,13 +234,14 @@ export class LiveDataSource {
       this._opCertDisk = null;   /*opcert-live-v93*/
       this._opCertChain = null;
       this._opCertAtMs = null;
+      this._kesError   = null;
       this._kesAt      = now;
       return;
     }
 
-    const cmd = cliCmd(`query kes-period-info --op-cert-file '${probe.opCertPath}'`);
     try {
-      const out  = await runCmd(cmd);
+      const out  = await runCli('query kes-period-info',
+        `query kes-period-info --op-cert-file '${probe.opCertPath}'`, CLI_TIMEOUT_KES_S);
       // cardano-cli emits checkmark validation lines BEFORE the JSON; skip
       // everything up to the first '{' before parsing.
       const jsonStart = out.indexOf('{');
@@ -309,9 +297,11 @@ export class LiveDataSource {
       this._kesDays = (expiryMs != null)
         ? Math.max(0, Math.floor((expiryMs - Date.now()) / 86400000))
         : null;
+      this._kesError = null;
       console.log(`[live.kes] periods=${this._kesPeriods} days=${this._kesDays} expiry=${expiryMs ? new Date(expiryMs).toISOString() : 'n/a'}`);
     } catch (err) {
       console.warn('[live.kes] query failed:', err.message);
+      this._kesError    = err.message || String(err);
       this._kesDays     = null;
       this._kesPeriods  = null;
       this._kesExpiryMs = null;
@@ -323,7 +313,7 @@ export class LiveDataSource {
   }
 
   async getNowSnapshot() {
-    const out = await runCmd(cliCmd('query tip'));
+    const out = await runCli('query tip', 'query tip', CLI_TIMEOUT_TIP_S);
     const tip = JSON.parse(out);
     const epochLen = (tip.slotInEpoch || 0) + (tip.slotsToEpochEnd || 0);
     const progress = epochLen > 0 ? (tip.slotInEpoch || 0) / epochLen : 0;
@@ -375,6 +365,7 @@ export class LiveDataSource {
       opCertDisk:          this._opCertDisk,    /*opcert-live-v93*/
       opCertChain:         this._opCertChain,
       opCertAsOfMs:        this._opCertAtMs,
+      kesQueryError:       this._kesError,   /*pulse-kes-bp-v1*/
       peersIn:  null,
       peersOut: null,
       blockProduction: readModel.currentBlockProduction() || { ...ZERO_BP, ideal: this._ideal ?? 0 },
@@ -417,7 +408,7 @@ export class LiveDataSource {
       if (!e.CNCLI_DB) throw new Error('No CNCLI_DB path');
       const slotCutoff = nowSlot() - 3700;
       const cmd =
-        `sqlite3 ${e.CNCLI_DB} ` +
+        `sqlite3 -readonly ${e.CNCLI_DB} ` +   /*blocklog-env-v1*/
         `"SELECT slot_number FROM chain ` +
         `WHERE orphaned = 0 AND slot_number > ${slotCutoff} ORDER BY slot_number ASC"`;
       const out = await runCmd(cmd);
@@ -465,7 +456,7 @@ export class LiveDataSource {
   async getMempool() {
     const t0 = performance.now();
     try {
-      const out = await runCmd(cliCmd('query tx-mempool info'));
+      const out = await runCli('query tx-mempool info', 'query tx-mempool info', CLI_TIMEOUT_MEMPOOL_S);
       const info = JSON.parse(out);
       const totalBytes = info.sizeInBytes ?? info.bytes ?? 0;
       // The node reports its real mempool capacity here. It depends on this
@@ -485,7 +476,9 @@ export class LiveDataSource {
       };
     } catch (err) {
       console.warn(`[live.getMempool] FAIL in ${Math.round(performance.now() - t0)}ms:`, err.message);
-      return emptyMempool();
+      // null, never zeros: an empty mempool is a real reading, a failed query
+      // is not. renderMempool shows "unavailable". /*mp-unavailable-v1*/
+      return null;
     }
   }
 }

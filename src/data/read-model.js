@@ -18,7 +18,7 @@
  *                                 also snapshotted to epoch_snapshots.
  *
  * Authoritative-source rules (MANUAL §4.3):
- *   - Ideal / Leader  → cardano-cli (stakeGo / leadership-schedule). Current epoch.
+ *   - Ideal / Leader  → cardano-cli (stakeSet / leadership-schedule). Current epoch.
  *   - Adopt / Confirm → Koios canonical block count (cncli chain table later).
  *   - History         → Koios pool_history.
  */
@@ -41,6 +41,7 @@ import { getNotifPollMs, getNotifThresholdLovelace, getNotifSource } from './not
 // demo world never writes into that cache. getMode is a function declaration,
 // so the import cycle through index.js is hoisting-safe. /*demo-world-v99*/
 import { getMode } from './index.js';
+import { runCli, CliTimeoutError, CLI_TIMEOUT_LEADERSHIP_SCHEDULE_S } from './cli.js';   /*cli-timeouts-v1*/
 import { demoEpochHistory, demoHistoryMeta, demoSamples, demoNotifications, demoWorld, demoSource } from './demo-world.js';
 const _demoMode = () => { try { return getMode() === 'demo'; } catch { return false; } };
 
@@ -152,22 +153,6 @@ export function poolHexToBech32(hex) {
 function env() { return getSession().envVars || {}; }
 function poolHex() { return (env().POOL_ID || '').toLowerCase(); }
 
-async function runCmd(command) {
-  const r = await invoke('ssh_run', { command });
-  if (typeof r === 'string') return r;
-  if (r && typeof r === 'object') {
-    if (typeof r.exit_code === 'number' && r.exit_code !== 0) {
-      throw new Error(`ssh_run exit ${r.exit_code}: ${(r.stderr || r.stdout || '').slice(0, 400)}`);
-    }
-    return r.stdout ?? '';
-  }
-  return String(r);
-}
-
-function cliCmd(args) {
-  const e = env();
-  return `CARDANO_NODE_SOCKET_PATH=${e.CARDANO_NODE_SOCKET_PATH} ${e.CCLI} ${args} ${e.NETWORK_IDENTIFIER || '--mainnet'}`;
-}
 
 // ============================================================
 // cache wrappers (defensive; never throw into the loop)
@@ -585,21 +570,23 @@ async function leadershipSchedule(which) {
   const vrf = probe?.vrfSkeyPath;
   const config = probe?.configPath;
   if (!vrf || !config) {
-    console.warn('[read-model] leadership-schedule: probe missing vrf/config', { vrf, config });
+    console.warn('[read-model] leadership-schedule: probe missing vrf/config', { vrf: !!vrf, config: !!config });   /*no-key-paths-v1*/
     return null;
   }
   const flag = which === 'next' ? '--next' : '--current';
   const genesis = config.replace(/\/[^/]*$/, '') + '/shelley-genesis.json';
-  const cmd = cliCmd(
-    `query leadership-schedule --genesis '${genesis}' ` +
-    `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' ${flag}`
-  );
   let out;
   try {
-    out = await runCmd(cmd);
+    out = await runCli(`query leadership-schedule ${flag}`,
+      `query leadership-schedule --genesis '${genesis}' ` +
+      `--stake-pool-id ${poolHex()} --vrf-signing-key-file '${vrf}' ${flag}`,
+      CLI_TIMEOUT_LEADERSHIP_SCHEDULE_S);
   } catch (err) {
     // For --next, an error usually means the window isn't open yet — expected.
-    if (which !== 'next') console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    // A timeout is never expected, so it is always reported. /*cli-timeouts-v1*/
+    if (which !== 'next' || err instanceof CliTimeoutError) {
+      console.warn('[read-model] leadership-schedule failed:', err.message ?? err);
+    }
     return null;
   }
   // The node prints a friendly error to stdout when --next isn't available yet.
@@ -716,18 +703,57 @@ export async function refreshBlockProduction(epoch, ideal) {
         lost,   // already null when unknown per the rule above
         luck: luckPercent,
         delegators:          info ? info.liveDelegators : null,
-        activeStake:         info ? info.activeStake : null,            // Set snapshot ≈ live epoch
+        activeStake:         info ? info.activeStake : null,            // Set snapshot = this epoch's
         activeStakeLovelace: info && info.raw ? info.raw.active_stake : null,
         ros: null,
         source: 'live',
       });
       if (info) _bpInfoWritten = true;
     }
+    await correctGoIdealRowsOnce(epoch, ideal);   /*ideal-set-fix-v1*/
   } catch (err) {
     console.warn('[read-model] block-production refresh failed:', err.message ?? err);
   } finally {
     _bpInFlight = false;
   }
+}
+
+// ---- One-time correction of Go-based Ideal in cached rows (finding D3) -----
+// Before 14/D3 the live Ideal came from the stakeGo snapshot instead of
+// stakeSet, and the block above cached it (and the Luck derived from it) in the
+// epoch's row. Rows still marked source 'live' carry that value; the recent
+// refreshes replace only the last two closed epochs. Rewrite them once:
+//   - current epoch: the corrected cli Ideal passed in (Set, the same snapshot
+//     as the row's activeStake), so NOW and History agree;
+//   - closed epochs: recompute from the row's own Set activeStakeLovelace via
+//     computeIdeal, the same rule as every other closed History row. If that
+//     fails, Ideal goes back to null and the enrich filler retries it.
+// The meta table is global and epoch rows are per pool, so the key is too.
+let _idealSetFixDone = false;
+async function correctGoIdealRowsOnce(currentEpoch, currentIdeal) {
+  if (_idealSetFixDone || _demoMode() || currentIdeal == null) return;
+  const key = `ideal_set_fix_v1:${poolHex()}`;
+  if ((await cacheMetaGet(key)) === '1') { _idealSetFixDone = true; return; }
+  const rows = await cacheGetEpochsRaw(0, 9_999_999);
+  let fixed = 0, blanked = 0;
+  for (const r of rows) {
+    if (_demoMode()) return;   // quiesce; resumes on return to live /*collector-quiesce-v105*/
+    const d = r.data;
+    if (!d || d.source !== 'live' || d.ideal == null) continue;
+    let ideal;
+    if (r.epoch === currentEpoch) ideal = currentIdeal;
+    else {
+      try { ideal = await computeIdeal({ ...d, epoch: r.epoch }); } catch { ideal = null; }
+    }
+    const luck = ideal == null ? null : ideal > 0 ? Math.round(((d.adopted || 0) / ideal) * 100) : 0;
+    await cachePutEpoch(r.epoch, { ...d, ideal, luck });
+    if (ideal == null) blanked++; else fixed++;
+  }
+  if (blanked) _idealFillDone = false;   // let the enrich filler pick the blanked rows up
+  await cacheMetaSet(key, '1');
+  _idealSetFixDone = true;
+  console.log(`[read-model] D3 Ideal correction: ${fixed} cached row(s) recomputed from Set` +
+    (blanked ? `, ${blanked} reset to null for the filler` : ''));
 }
 
 /** Last computed block-production card values, or null until first refresh. */
@@ -1242,6 +1268,7 @@ export async function getHistoryMeta() {
     schema: await cacheMetaGet('dbsync_schema'),
     tested: dbsync.DBSYNC_TESTED_SCHEMA,
     stale: dbsync.dbsyncSource.schemaStale ? dbsync.dbsyncSource.schemaStale() : false,
+    warning: dbsync.dbsyncSource.schemaWarning ? dbsync.dbsyncSource.schemaWarning() : null,   /*schema-warn-v1*/
   };
 }
 
@@ -2076,6 +2103,7 @@ export function resetReadModel() {
   _rewardAddr = null;
   _backfillInFlight = false; _backfillDone = false;
   _idealFillAt = 0; _idealFillInFlight = false; _idealFillDone = false;
+  _idealSetFixDone = false;
   _recentAt = 0; _recentInFlight = false;
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;

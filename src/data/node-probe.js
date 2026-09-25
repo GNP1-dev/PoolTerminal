@@ -6,8 +6,9 @@
  *   port         — --port arg from cmdline
  *   role         — BP if --shelley-kes-key is present, else RELAY
  *   topology     — --topology arg
- *   prometheus   — if the same PID has a second listen socket, that's the
- *                  Prometheus port (typically 127.0.0.1:12800). null if not.
+ *   prometheus   — the PID's listen socket (other than the node port) whose
+ *                  /metrics serves node metrics (typically 127.0.0.1:12798).
+ *                  null if none does.
  */
 
 import { invoke } from './tauri.js';
@@ -50,8 +51,12 @@ export async function probeNode() {
     `echo "ARGS=$ARGS"; ` +
     // Node listen port from cmdline
     `NODE_PORT=$(echo "$ARGS" | grep -oP -- '--port[= ]+\\K[0-9]+'); ` +
-    // Any TCP listener owned by this PID that isn't the node port = Prometheus
-    `PROM_PORT=$(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NODE_PORT$" | head -1); ` +
+    // Prometheus = the first TCP listener of this PID, other than the node port,
+    // whose /metrics actually serves node metrics. Listener ORDER alone is not
+    // enough: a node with no --port excludes nothing, and any extra listener
+    // (e.g. an rpc endpoint) would be scraped and fail silently. /*prom-port-verify-v1*/
+    `PROM_PORT=; for PP in $(ss -tlnp 2>/dev/null | grep "pid=$PID," | awk '{print $4}' | awk -F: '{print $NF}' | grep -v "^$NODE_PORT$"); do ` +
+    `if curl -sf --max-time 2 "http://127.0.0.1:$PP/metrics" 2>/dev/null | grep -q 'blockNum'; then PROM_PORT=$PP; break; fi; done; ` +
     `echo "PROM_PORT=$PROM_PORT"; ` +
     `ETIMES=$(ps -o etimes= -p "$PID" 2>/dev/null | tr -d ' '); echo "ETIMES=$ETIMES"`;
 
@@ -103,12 +108,13 @@ export async function probeNode() {
   // the view via the snapshot. Only opCertPath (static per node process) stays
   // probe-owned. /*opcert-live-v93*/
 
+  // Key and cert paths are never logged, only whether each was found. /*no-key-paths-v1*/
   console.log(
     `[node-probe] pid=${result.pid} role=${result.role} ` +
     `port=${result.port} prom=${result.prometheusPort || 'off'} ` +
     `topology=${result.topologyPath} ` +
-    `opcert=${result.opCertPath || 'none'} ` +
-    `vrf=${result.vrfSkeyPath || 'none'} ` +
+    `opcert=${result.opCertPath ? 'found' : 'none'} ` +
+    `vrf=${result.vrfSkeyPath ? 'found' : 'none'} ` +
     `config=${result.configPath || 'none'}`
   );
 

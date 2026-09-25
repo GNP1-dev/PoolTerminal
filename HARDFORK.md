@@ -10,16 +10,18 @@ If you're forking PoolTerminal or auditing it ahead of a hard fork, this is the 
 
 **Van Rossem** (upcoming, date TBC by IOG)
 
-Status: PoolTerminal not yet released. Will support Van Rossem from v1.0.
-
 Known impacts:
 - Cost model adjustments expected - Plutus serialisation unchanged
-- Node version target: 10.7.x (current mainnet: 10.5.4)
+- Supported node versions (September 2026): cardano-node 11.1.2 or later with
+  cardano-cli 11.2.3.0 or later, cncli 6.8.0 or later. The minimums live in
+  `src/data/compat.js` (shown on the About page) and README "Requirements";
+  update both when a fork raises them. Basis:
+  `docs/audit/node-11.1.2-compat-2026-09-24.md`.
 - Watch [IOG SPO Announcements Telegram](https://t.me/CardanoStakePoolWorkgroup) for go signal
 
 ## Past forks supported
 
-_None yet - PoolTerminal is pre-release._
+_None recorded yet._
 
 ## Code areas marked for fork attention
 

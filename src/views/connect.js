@@ -188,6 +188,71 @@ function parseEnvProbe(out) {
   return vars;
 }
 
+/**
+ * The env probe, shared by the connect handler and resumeLive so the two can't
+ * drift. Source the env, then print markers + variables UNCONDITIONALLY (`;` not
+ * `&&`): a Guild env can return non-zero on a harmless warning after every
+ * variable is set, so success is judged by the variables, not by `$?`. The
+ * return code is still reported (ENV_RC), and on non-zero the env's own last
+ * lines are echoed (re-sourced in a subshell, prefixed so parseEnvProbe never
+ * mistakes them for variables) so a real failure can be shown to the operator.
+ * `cd` failing is the only hard blocker, so it stays `&&`.
+ */
+function buildEnvProbeCmd(envFile) {   /*env-gate-visible-v1*/
+  const { dir: envDir, name: envName } = splitEnvPath(envFile);
+  return `cd ${envDir} && { source ./${envName} offline >/dev/null 2>&1; __ENV_RC=$?; ` +
+    `echo "__PROBE_OK__"; ` +
+    `echo "ENV_RC=$__ENV_RC"; ` +
+    `echo "CCLI=$CCLI"; ` +
+    `echo "CARDANO_NODE_SOCKET_PATH=$CARDANO_NODE_SOCKET_PATH"; ` +
+    `echo "CNODE_HOME=$CNODE_HOME"; ` +
+    `echo "CNCLI=$CNCLI"; ` +
+    `echo "CNCLI_DB=$CNCLI_DB"; ` +
+    `echo "BLOCKLOG_DB=$BLOCKLOG_DB"; ` +   /*blocklog-env-v1*/
+    `echo "NETWORK_NAME=$NETWORK_NAME"; ` +
+    `echo "NETWORK_IDENTIFIER=$NETWORK_IDENTIFIER"; ` +
+    `echo "POOL_TICKER=$POOL_TICKER"; ` +
+    `echo "POOL_ID=$POOL_ID"; ` +
+    `echo "POOL_NAME=$POOL_NAME"; ` +
+    `echo "SHELLEY_GENESIS_START_SEC=$SHELLEY_GENESIS_START_SEC"; ` +
+    `echo "SHELLEY_TRANS_EPOCH=$SHELLEY_TRANS_EPOCH"; ` +
+    `echo "BYRON_EPOCH_LENGTH=$BYRON_EPOCH_LENGTH"; ` +
+    `echo "EPOCH_LENGTH=$EPOCH_LENGTH"; ` +
+    // Role, so a BP's missing POOL_ID can fail the connect (the node probe only
+    // runs after connecting). Same socket -> PID -> --shelley-kes-key test as
+    // data/node-probe.js; the socket falls back to $CNODE_HOME/sockets as the
+    // connect does. NODE_IS_BP is 1, 0, or empty when no node was found.
+    `__S="\${CARDANO_NODE_SOCKET_PATH:-\${CNODE_HOME:+$CNODE_HOME/sockets/node.socket}}"; ` +
+    `__P=$(fuser "$__S" 2>/dev/null | tr -d ' \\n'); ` +
+    `[ -z "$__P" ] && __P=$(ps -eo pid,args 2>/dev/null | awk -v s="$__S" '/[c]ardano-node/ && index($0, "--socket-path " s) { print $1; exit }'); ` +
+    `if [ -n "$__P" ]; then echo "NODE_IS_BP=$(ps -p "$__P" -o args= 2>/dev/null | grep -c -- ' --shelley-kes-key ')"; else echo "NODE_IS_BP="; fi; ` +
+    `if [ "$__ENV_RC" != 0 ]; then ( source ./${envName} offline 2>&1 ) | tail -n 8 | sed 's/^/__ENVMSG__ /'; fi; }`;
+}
+
+/**
+ * Did the env fail? A Guild env can return non-zero on a harmless warning after
+ * setting everything, so the return code alone is not enough - but neither is
+ * trusting Guild's variable ORDER. The connect fails when the env returned
+ * non-zero AND any variable PoolTerminal needs is missing:
+ * CARDANO_NODE_SOCKET_PATH, NETWORK_IDENTIFIER, and POOL_ID when the node is a
+ * block producer. (A zero return with gaps keeps the existing fallbacks.)
+ * Returns an error message quoting the env's own output, or null.
+ */
+function envFailed(probeOut, envVars) {
+  if (!envVars.ENV_RC || envVars.ENV_RC === '0') return null;
+  const missing = ['CARDANO_NODE_SOCKET_PATH', 'NETWORK_IDENTIFIER'].filter((k) => !envVars[k]);
+  if (envVars.NODE_IS_BP === '1' && !envVars.POOL_ID) missing.push('POOL_ID');
+  if (!missing.length) return null;
+  const msg = probeOut.split('\n')
+    .filter((l) => l.startsWith('__ENVMSG__ '))
+    .map((l) => l.slice('__ENVMSG__ '.length))
+    .filter((l) => l.trim())
+    .join('\n');
+  return `The Guild env returned an error (code ${envVars.ENV_RC}) and did not set ` +
+    `${missing.join(', ')}, so PoolTerminal cannot connect.\n` +
+    `The env said:\n${msg || '(no output)'}`;
+}
+
 function unwrapSsh(r) {
   if (typeof r === 'string') return r;
   return r?.stdout ?? '';
@@ -288,8 +353,8 @@ function splitEnvPath(envFile) {
  * EXISTING session (no auth, no 2FA) and go straight live. Returns true if it
  * resumed; false means the caller should fall back to the connect screen.
  *
- * NOTE: the probe command below is intentionally kept identical to the one in
- * showConnectModal's connect handler. Keep the two in sync.
+ * NOTE: the probe command is buildEnvProbeCmd, shared with showConnectModal's
+ * connect handler, so the two cannot drift.
  */
 export async function resumeLive(cfg, onDone) {
   if (!cfg || !cfg.transport || !cfg.envFile) return false;
@@ -306,27 +371,14 @@ export async function resumeLive(cfg, onDone) {
   if (!alive) return false;
 
   try {
-    const { dir: envDir, name: envName } = splitEnvPath(cfg.envFile);
-    const probeCmd =
-      `cd ${envDir} && { source ./${envName} offline >/dev/null 2>&1; ` +
-      `echo "__PROBE_OK__"; ` +
-      `echo "CCLI=$CCLI"; ` +
-      `echo "CARDANO_NODE_SOCKET_PATH=$CARDANO_NODE_SOCKET_PATH"; ` +
-      `echo "CNODE_HOME=$CNODE_HOME"; ` +
-      `echo "CNCLI=$CNCLI"; ` +
-      `echo "CNCLI_DB=$CNCLI_DB"; ` +
-      `echo "NETWORK_NAME=$NETWORK_NAME"; ` +
-      `echo "NETWORK_IDENTIFIER=$NETWORK_IDENTIFIER"; ` +
-      `echo "POOL_TICKER=$POOL_TICKER"; ` +
-      `echo "POOL_ID=$POOL_ID"; ` +
-      `echo "POOL_NAME=$POOL_NAME"; ` +
-      `echo "SHELLEY_GENESIS_START_SEC=$SHELLEY_GENESIS_START_SEC"; ` +
-      `echo "SHELLEY_TRANS_EPOCH=$SHELLEY_TRANS_EPOCH"; ` +
-      `echo "BYRON_EPOCH_LENGTH=$BYRON_EPOCH_LENGTH"; ` +
-      `echo "EPOCH_LENGTH=$EPOCH_LENGTH"; }`;
-    const probeOut = unwrapSsh(await invoke('ssh_run', { command: probeCmd }));
+    const probeOut = unwrapSsh(await invoke('ssh_run', { command: buildEnvProbeCmd(cfg.envFile) }));
     const envVars = parseEnvProbe(probeOut);
     if (!probeOut.includes('__PROBE_OK__') || !envVars.CCLI) return false;
+    // Env failed: fall back to the connect screen, whose connect shows why.
+    if (envFailed(probeOut, envVars)) {
+      console.warn('[resume] env failed; showing the connect screen');
+      return false;
+    }
 
     if (!envVars.CNCLI_DB && envVars.CNODE_HOME) {
       envVars.CNCLI_DB = `${envVars.CNODE_HOME}/guild-db/cncli/cncli.db`;
@@ -469,33 +521,13 @@ export function showConnectModal(onDone, opts = {}) {
 
       setStatus('Sourcing env file and probing paths…');
 
-      const { dir: envDir, name: envName } = splitEnvPath(conn.envFile);
-      // Source the env, then print markers + variables UNCONDITIONALLY (`;` not
-      // `&&`). Guild env files can return a non-zero exit on a harmless warning
-      // (e.g. a node-version mismatch on a relay) even though they sourced fine
-      // and all variables are set — so we must NOT gate on the source exit code.
-      // Success is judged by whether the variables actually came back (CCLI),
-      // not by `$?`. `cd` failing is the only real blocker, so keep that as `&&`.
-      const probeCmd =
-        `cd ${envDir} && { source ./${envName} offline >/dev/null 2>&1; ` +
-        `echo "__PROBE_OK__"; ` +
-        `echo "CCLI=$CCLI"; ` +
-        `echo "CARDANO_NODE_SOCKET_PATH=$CARDANO_NODE_SOCKET_PATH"; ` +
-        `echo "CNODE_HOME=$CNODE_HOME"; ` +
-        `echo "CNCLI=$CNCLI"; ` +
-        `echo "CNCLI_DB=$CNCLI_DB"; ` +
-        `echo "NETWORK_NAME=$NETWORK_NAME"; ` +
-        `echo "NETWORK_IDENTIFIER=$NETWORK_IDENTIFIER"; ` +
-        `echo "POOL_TICKER=$POOL_TICKER"; ` +
-        `echo "POOL_ID=$POOL_ID"; ` +
-        `echo "POOL_NAME=$POOL_NAME"; ` +
-        `echo "SHELLEY_GENESIS_START_SEC=$SHELLEY_GENESIS_START_SEC"; ` +
-        `echo "SHELLEY_TRANS_EPOCH=$SHELLEY_TRANS_EPOCH"; ` +
-        `echo "BYRON_EPOCH_LENGTH=$BYRON_EPOCH_LENGTH"; ` +
-        `echo "EPOCH_LENGTH=$EPOCH_LENGTH"; }`;
-      const probeOut = unwrapSsh(await invoke('ssh_run', { command: probeCmd }));
+      // Shared with resumeLive; see buildEnvProbeCmd for why `$?` alone is not
+      // the success test.
+      const probeOut = unwrapSsh(await invoke('ssh_run', { command: buildEnvProbeCmd(conn.envFile) }));
 
       const envVars = parseEnvProbe(probeOut);
+      const failed = envFailed(probeOut, envVars);
+      if (failed) throw new Error(failed);
 
       // Judge success by whether the env actually yielded the essentials, not by
       // the marker alone — a warning-printing env still gives us real values.

@@ -75,6 +75,11 @@ demo metadata-feed messages), or it goes.
 from the binary at runtime (`plugin:app|version`) — never hardcode a version
 string in `src/`.
 
+The declared minimum cardano-node / cardano-cli / cncli versions in
+`src/data/compat.js` (shown on the About page) must match README.md
+"Requirements" and HARDFORK.md. State them in the CHANGELOG entry when they
+change.
+
 ## 4. CHANGELOG.md
 
 Entry for the new version, matching what the website's What's-New section

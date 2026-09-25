@@ -54,6 +54,7 @@ let _cfg = null;
 // Run everything at low CPU + IO priority so a query can never compete with
 // block production for resources on the BP.
 const NICE = 'nice -n 19 ionice -c3';
+const MAX_SCAN_HRS = 24 * 7;   // ceiling for any preset that scans the node's full log /*logs-systemd-restarts-v1*/
 
 async function runCmd(command) {
   const r = await invoke('ssh_run', { command });
@@ -61,17 +62,20 @@ async function runCmd(command) {
   return r?.stdout ?? '';
 }
 
-// Build a bounded, read-only journalctl command for a unit. lines caps output;
-// sinceHrs optionally limits the time window. No shell metacharacters are ever
-// interpolated from user input here — unit is validated, lines is a number.
+// Build a read-only journalctl command for a unit over a time window. No shell
+// metacharacters are ever interpolated from user input here — unit is
+// validated, sinceHrs is a number.
 function journalCmd(unit, opts = {}) {
   const safeUnit = sanitizeUnit(unit);
-  // Default to a TIME window, not a line count: the node log is flooded with
-  // benign Net.Mux CleanExit notices, so the last N lines cover only seconds.
-  // A --since window plus an on-node grep is what surfaces rare, real events.
-  const hrs = Math.max(1, Math.min(24 * 30, Number(opts.sinceHrs) || 24));
-  const capN = Math.max(1, Math.min(20000, Number(opts.maxLines) || 5000));
-  return `${NICE} journalctl -u ${safeUnit} --no-pager --merge --since "${hrs} hours ago" -n ${capN}`;
+  // A TIME window, not a line count: a BP logs ~2,300 lines per 10 min (the
+  // 1 Hz Forge.Loop / Forge.StateInfo lines alone are 3/s), so any line cap
+  // applied here covers only minutes. No -n: the line cap belongs AFTER the
+  // on-node grep (see buildQueryCommand), otherwise a 14-day preset silently
+  // searched only the newest ~21 minutes. /*logs-filter-first-v1*/
+  // A full-log scan is capped at 7 days: ~2.3M lines on a BP, ~15 s of niced
+  // CPU. Longer histories use a cheaper source (see restartsCmd).
+  const hrs = Math.max(1, Math.min(MAX_SCAN_HRS, Number(opts.sinceHrs) || 24));
+  return `${NICE} journalctl -u ${safeUnit} --no-pager --merge --since "${hrs} hours ago"`;
 }
 
 // A systemd unit name is a tight character set — anything outside it is dropped,
@@ -99,6 +103,7 @@ const QUERIES = [
     hint: 'Warning / Error / Critical severity lines from the block producer (last 24h)',
     unit: () => _cfg.bpUnit,
     grep: '\\((Warning|Error|Critical)',
+    grepJson: '"sev":"(Warning|Error|Critical)"',   /*logs-json-format-v1*/
     sinceHrs: 24,
     okEmpty: 'No warnings or errors in the last 24 hours \u2713',
   },
@@ -117,6 +122,7 @@ const QUERIES = [
     hint: 'KES key period / expiry warnings - catch expiry before it costs blocks',
     unit: () => _cfg.bpUnit,
     grep: 'KES info|OperationalCertificate|ExpiryLog',
+    grepJson: '"ns":"Forge\\.StateInfo|OperationalCertificate|ExpiryLog',   // not yet seen on a JSON-format BP
     sinceHrs: 6,
     tail: 1,
     okEmpty: 'No KES status lines found. If your node logs at Notice level or above, routine KES-info lines may not be present.',
@@ -124,10 +130,10 @@ const QUERIES = [
   {
     id: 'restart',
     label: 'Restarts & startup',
-    hint: 'Node version banner and startup lines - when and why it last restarted',
+    hint: 'Starts, stops and failures of the node unit (systemd, last 14 days), plus the node\'s startup lines from its most recent start',
     unit: () => _cfg.bpUnit,
-    grep: 'Node version|cardano-node [0-9]|Started opening|Chain DB|Byron|Shelley|Conway|Started blockchain',
-    sinceHrs: 24 * 14,
+    build: (fmt) => restartsCmd(fmt),
+    okEmpty: 'No starts or stops of this unit in the last 14 days.',
   },
   {
     id: 'rollback',
@@ -198,14 +204,60 @@ function cncliUnit(role) {
   return `${stem}-cncli-${role}.service`;
 }
 
-function buildQueryCommand(q) {
-  const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24, maxLines: q.maxLines || 5000 });
+// Restarts & startup. Scanning the node's own log for startup lines meant
+// reading every line in the window (~4.6M lines over 14 days on a BP). systemd's
+// own messages about the unit (identifier "systemd": Started / Stopping /
+// Stopped / Failed / Scheduled restart / Consumed CPU) are a handful of lines and
+// come from the journal's index, so 14 days costs ~0.1 s. The node's startup
+// lines are then read only for the 5 minutes after the most recent start.
+// Everything is niced; the unit is sanitised and the grep is a constant.
+const RESTART_WINDOW_HRS = 24 * 14;
+const STARTUP_GREP = 'Node version|cardano-node [0-9]|Started opening|Chain DB|Byron|Shelley|Conway|Started blockchain';
+// JSON logs: match the namespace, not free text - "Conway" etc. appear in the
+// data of ordinary lines (fork switches), which flooded the old pattern.
+const STARTUP_GREP_JSON = '"ns":"(Startup\\.|ChainDB\\.(OpenEvent|InitChainSelEvent|LedgerEvent\\.Replay|ReplayBlock)\\.)';
+function restartsCmd(fmt) {
+  const u = sanitizeUnit(_cfg.bpUnit);
+  const sys = `${NICE} journalctl -u ${u} -t systemd --no-pager --merge --since "${RESTART_WINDOW_HRS} hours ago"`;
+  return `${sys} | ${NICE} tail -n 200; ` +
+    `T=$(${sys} -o short-unix | ${NICE} grep -E ' Started ' | ${NICE} tail -n 1 | ${NICE} cut -d. -f1); ` +
+    `case "$T" in ''|*[!0-9]*) ;; *) ` +
+    `echo; echo "-- node startup lines, first 5 minutes after the most recent start --"; ` +
+    `${NICE} journalctl -u ${u} --no-pager --merge --since "@$T" --until "@$((T+300))" ` +
+    `| ${NICE} grep -E ${shTrick(fmt === 'json' ? STARTUP_GREP_JSON : STARTUP_GREP)} | ${NICE} tail -n 40;; esac; true`;
+}
+
+// The node logs either the human format ("[ts][host:NS](Severity,n) text") or
+// JSON ({"at":..,"ns":..,"sev":..}), set by the node config. Severity and
+// startup patterns differ between them, so presets carry a grepJson variant.
+// Detected once per unit from its newest line (cheap: reads the journal tail).
+const _fmtCache = new Map();   /*logs-json-format-v1*/
+async function logFormat(unit) {
+  const u = sanitizeUnit(unit);
+  if (_fmtCache.has(u)) return _fmtCache.get(u);
+  let fmt = 'human';
+  try {
+    const line = await runCmd(`${NICE} journalctl -u ${u} --no-pager -n 1 -o cat`);
+    if (/^\s*\{"at":/.test(line || '')) fmt = 'json';
+    _fmtCache.set(u, fmt);   // cache only a real answer; a failed read retries next time
+  } catch { /* keep 'human' */ }
+  return fmt;
+}
+
+function buildQueryCommand(q, fmt = 'human') {
+  if (q.build) return q.build(fmt);
+  const base = journalCmd(q.unit(), { sinceHrs: q.sinceHrs || 24 });
   // q.grep is a constant from QUERIES, not user input -> safe to embed. The grep
-  // runs on the node so only matching lines cross the connection.
-  const g = q.grep ? ` | grep -E ${shTrick(q.grep)}` : '';
-  const gv = q.grepOut ? ` | grep -vE ${shTrick(q.grepOut)}` : '';
-  const tail = q.tail ? ` | tail -n ${Math.max(1, Math.min(2000, Number(q.tail)))}` : '';
-  return `${base}${g}${gv}${tail} || true`;
+  // runs on the node so only matching lines cross the connection. Filter FIRST,
+  // then cap: the newest N *matching* lines over the whole window. Every stage
+  // is niced so the pipeline can never compete with block production.
+  const pat = (fmt === 'json' && q.grepJson) ? q.grepJson : q.grep;
+  const g = pat ? ` | ${NICE} grep -E ${shTrick(pat)}` : '';
+  const gv = q.grepOut ? ` | ${NICE} grep -vE ${shTrick(q.grepOut)}` : '';
+  const capN = q.tail
+    ? Math.max(1, Math.min(2000, Number(q.tail)))
+    : Math.max(1, Math.min(20000, Number(q.maxLines) || 5000));
+  return `${base}${g}${gv} | ${NICE} tail -n ${capN} || true`;
 }
 
 // single-quote a constant safely for the shell
@@ -308,9 +360,13 @@ let _lastOutput = '';
 // /*logs-derived-defaults-v106*/
 function derivedDefaults() {
   try {
-    const home = String((getSession().envVars || {}).CNODE_HOME || '').replace(/\/+$/, '');
+    const ev = getSession().envVars || {};
+    const home = String(ev.CNODE_HOME || '').replace(/\/+$/, '');
     const base = home.split('/').pop();
-    if (home && base) return { unit: `${base}.service`, db: `${home}/guild-db/blocklog/blocklog.db` };
+    // The Guild env exports BLOCKLOG_DB (honouring a BLOCKLOG_DIR override);
+    // prefer it over rebuilding the stock path. /*blocklog-env-v1*/
+    const db = ev.BLOCKLOG_DB ? sanitizePath(ev.BLOCKLOG_DB) : (home ? `${home}/guild-db/blocklog/blocklog.db` : null);
+    if (home && base) return { unit: `${base}.service`, db: db || DEFAULT_BLOCKLOG_DB };
   } catch { /* fall through */ }
   return { unit: DEFAULT_BP_UNIT, db: DEFAULT_BLOCKLOG_DB };
 }
@@ -330,7 +386,7 @@ export function mountLogs(canvas) {
       <div class="lg-config">
         <label for="lg-unit">BP journal unit</label>
         <input id="lg-unit" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BP_UNIT : _cfg.bpUnit)}"${demo ? ' disabled' : ''}>
-        <label for="lg-db">Blocklog DB</label>
+        <label for="lg-db" title="Defaults to the Guild env's BLOCKLOG_DB. The dashboard's one-off heartbeat backfill reads cncli.db at $CNODE_HOME/guild-db/cncli/cncli.db: a CNCLI_DIR override set in cncli.sh is not detected.">Blocklog DB</label>
         <input id="lg-db" type="text" spellcheck="false" autocomplete="off" value="${escAttr(demo ? DEFAULT_BLOCKLOG_DB : _cfg.blocklogDb)}" style="min-width:320px"${demo ? ' disabled' : ''}>
         <button class="lg-save" id="lg-save" type="button"${demo ? ' disabled' : ''}>Save</button>
         <span class="lg-status" id="lg-cfg-status"></span>
@@ -751,7 +807,8 @@ async function runQuery(canvas, q, demo) {
   }
 
   try {
-    const cmd = buildQueryCommand(q);
+    const fmt = (q.grepJson || q.build) ? await logFormat(q.unit()) : 'human';
+    const cmd = buildQueryCommand(q, fmt);
     const text = await runCmd(cmd);
     _lastOutput = text || '';
     if (!text || !text.trim()) {

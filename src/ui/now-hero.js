@@ -68,6 +68,13 @@ export function renderHero(snap) {
     deltaEl.style.color = pp.delta >= 0 ? 'var(--pt-status-good)' : 'var(--pt-status-bad)';
     flashCard('hero-pulse', pp.score, prev.pulse);
   }
+  // A failed KES check scores 0/30; say so on the value itself. /*pulse-kes-bp-v1*/
+  const pv = byId('hero-pulse-val');
+  if (pv) {
+    if (pp.components && pp.components.kesFailed) {
+      pv.title = `KES check failed, so Pulse scores KES 0/30: ${snap.kesQueryError || 'kes-period-info did not succeed'}`;
+    } else pv.removeAttribute('title');
+  }
 
   // --- Epoch (continuous: no flash, smooth bar) ---
   const epPct = (snap.epochProgress * 100).toFixed(1);

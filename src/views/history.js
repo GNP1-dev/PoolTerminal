@@ -297,6 +297,9 @@ export async function mountHistory(canvas) {
   if (tblSrc) {
     metaText += ` · Data: ${tblSrc.name}`;
     if (tblSrc.id === 'dbsync' && tblSrc.version) metaText += ` v${tblSrc.version}`;
+    // Dropped in de9b5a5 when this line was rebuilt, which left an untested
+    // schema unflagged everywhere but the console. /*schema-warn-v1*/
+    if (tblSrc.id === 'dbsync' && meta && meta.warning) metaText += ` ⚠ ${meta.warning}`;
   }
   set('hist-tbl-meta', metaText);
 }

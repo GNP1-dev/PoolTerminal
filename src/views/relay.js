@@ -26,6 +26,7 @@ import {
 import { getCachedGeo, lookupGeoBatch, getOwnLocation } from '../data/geo-query.js';
 import { getMode } from '../data/index.js';   /*demo-world-v99*/
 import { onTick, setAttrIf } from '../ui/ticker.js';   /*cpu-1hz-v0.3.4*/
+import { fmtBlk, blkLevel } from '../ui/format.js';   /*mp-units-v1*/
 
 const LABEL = { relay1: 'Relay 1', relay2: 'Relay 2' };
 const POLL_MS = 2000;
@@ -516,7 +517,7 @@ function renderDashboard(id) {
             <div style="text-align:center;margin-bottom:6px;font-size:12px;color:var(--pt-text-secondary,#9fb0d0)"><span id="rl-mp-count-${id}">—</span></div>
             ${tanksHTML({ ntanks: 3 })}
             <div id="rl-mp-tankpct-${id}" style="text-align:center;font-family:ui-monospace,monospace;font-weight:700;font-size:20px;color:#36e0d4;margin:6px 0 0;">—</div>
-            <div style="text-align:center;font-family:ui-monospace,monospace;font-size:10px;color:var(--pt-text-muted,#97A0B0);margin:0 0 5px;">100% = 88 KB</div>
+            <div style="text-align:center;font-family:ui-monospace,monospace;font-size:10px;color:var(--pt-text-muted,#97A0B0);margin:0 0 5px;">1 tank = 1 block (88 KB)</div>
           </div>
         </div>
 
@@ -730,11 +731,13 @@ function paint(id, snap) {
   const mpBytes = h.mempoolBytes || 0;
   set(`#rl-mp-count-${id}`, healthy ? `${h.mempoolTxs == null ? '—' : h.mempoolTxs} tx · ${fmtBytes(h.mempoolBytes)}` : '—');
   paintTanks(root, mpBytes, MP_FULL, 3);
-  const mpPct = Math.min(100, (mpBytes / MP_FULL) * 100);
+  // Queue in blocks, coloured by the 2-block threshold, same as NOW. The relay's
+  // own capacity isn't in its Prometheus metrics, so no capacity-fill line here. /*mp-units-v1*/
+  const mpBlk = mpBytes / MP_FULL;
   const tp = q(`#rl-mp-tankpct-${id}`);
   if (tp) {
     if (!healthy || mpBytes <= 0) { tp.textContent = healthy ? 'EMPTY' : '—'; tp.style.color = healthy ? '#ff3344' : '#6f7d99'; }
-    else { tp.textContent = Math.round(mpPct) + '%'; tp.style.color = mpPct >= 67 ? '#ff5a3c' : mpPct >= 34 ? '#ffc24a' : '#5dff9b'; }
+    else { const lv = blkLevel(mpBlk); tp.textContent = fmtBlk(mpBlk); tp.style.color = lv === 'bad' ? '#ff5a3c' : lv === 'warn' ? '#ffc24a' : '#5dff9b'; }
   }
 
   // ---- Tip diff + SYNC ----

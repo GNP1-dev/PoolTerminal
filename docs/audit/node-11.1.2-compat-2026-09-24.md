@@ -382,10 +382,17 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
 
     The comparison was sound: any schema other than the tested one is flagged, older or newer. The fix: `schemaWarning()` in `dbsync-query.js` is the one rule, and its text now shows on the DATA chip ("Active - schema X (tested Y — verify)"), in the HISTORY header ("⚠ tested Y — verify") and in the console line. Checked in Node with fake schemas 15.44.6, 15.52.0 and 15.50.6 through `initDbsync`, `getHistoryMeta` and the rendered DATA chip: 17/17 pass.
 
-18. **Mempool panel labelling** (manual test). Investigated, not changed yet; findings are in the session report. In short:
-    - **NOW panel:** every %, including MAX % and the chart's "100% FULL", is bytes / 176 KB (2 × maxBlockBodySize, a default node's capacity). It is not the node's real `capacityInBytes`, which is 64 MB on the BP; that value is fetched but only logged.
-    - **"all" = 185%:** a stored all-time peak from local storage (184.6% on 2026-09-07), not a current reading.
-    - **Relay tabs:** they use one block (88 KB) as 100%.
+18. **Mempool panel labelling** (manual test). Investigated, then implemented as 18/UI.
+    - **Before:**
+      - On the NOW panel, every % (the bar, the chart's "100% FULL", MAX % and the "Mempool full" alert) was bytes / 176 KB, the 2-block default mempool. It was not the node's real `capacityInBytes`, which is 64 MB on the BP; that value was fetched but only logged.
+      - MAX "all" = 185% was a stored all-time peak (184.6% on 2026-09-07), not a current reading.
+      - The relay tabs used one block (88 KB) as 100%.
+    - **After:** the queue is shown in blocks everywhere: bar, chart, stat column, MAX (blocks) and relay tanks.
+      - The key level is 2 blocks, because most pools run the default mempool. The chart line reads "2 blocks: default mempools full", and blocks-queued figures are coloured normal / approaching 2 (from 1.5) / 2+.
+      - The alert reads "2+ blocks queued: most pools' mempools are full, new transactions may be rejected across the network". Its stored threshold keeps its meaning (% of 2 blocks, now labelled that way).
+      - This node's own capacity fill is a small secondary line ("0.6% of 64 MB"), or "—" when the node doesn't report its capacity. Relays have no capacity in their metrics, so they show no such line.
+      - MAX "all" shows its date inline.
+      - Stored peaks are converted once from % of 2 blocks to blocks (× 2 / 100). The `unit: 'blocks'` marker is written in the same value, so a peak can't be converted twice.
 
 ## Appendix: build and static checks (Phase 5)
 

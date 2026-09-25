@@ -21,6 +21,7 @@ import { getLastMetrics } from '../data/metrics-query.js';
 import { getMode } from '../data/index.js';
 import { getNodeProbe } from '../data/session.js';
 import { attachPanelLoader, markPanelReady } from '../ui/panel-loader.js';
+import { fmtBlk, blkLevel, DEFAULT_MEMPOOL_BLOCKS, MEMPOOL_2BLK_ALERT } from '../ui/format.js';   /*mp-units-v1*/
 
 let _mirrorTimer = null;
 let _tick = 0;
@@ -116,11 +117,14 @@ const N2_HTML = `
     .n2-mpbar-track { position:relative; height:14px; background:#0a0e15; border:1px solid #3d4d6a; border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 3px rgba(0,0,0,.55); }   /*mp-bars-v49*/
     .n2-mpbar-fill { position:absolute; left:0; top:0; height:100%; width:0; border-radius:7px; background:#5dff9b; box-shadow:0 0 12px rgba(93,255,155,.4); transition:width .5s steps(4,end), background .3s steps(2,end); }
     .n2-mpbar-fill-flow { background:#2dd4ee; box-shadow:0 0 12px rgba(45,212,238,.45); }
-    .n2-mpbar-alert { visibility:hidden; height:12px; line-height:12px; color:#ff5a3c; font:700 9px ui-monospace,monospace; letter-spacing:1.2px; text-align:center; margin:1px 0 2px; text-shadow:0 0 6px rgba(255,90,60,.5); }
+    .n2-mpbar-alert { visibility:hidden; min-height:12px; line-height:12px; color:#ff5a3c; font:700 9px ui-monospace,monospace; letter-spacing:1.2px; text-align:center; margin:1px 0 2px; text-shadow:0 0 6px rgba(255,90,60,.5); }
     .n2-mpbar-alert.on { visibility:visible; }
     .n2-mpbar-mark { position:absolute; top:0; height:100%; width:2px; background:#ffcf5a; box-shadow:0 0 5px rgba(255,207,90,.9); z-index:3; }
     .n2-mpbar-ticks { display:flex; justify-content:space-between; margin-top:4px; font:9px ui-monospace,monospace; color:#6f7d99; }
     .n2-mpbar-mid { color:#97a0b0; }
+    .n2-mpbar-cap { margin-top:3px; font:600 9px ui-monospace,monospace; color:#6f7d99; letter-spacing:.3px; }   /*mp-units-v1*/
+    .n2-mpsc.n2-mpsc-date { justify-content:flex-end; padding-top:0; }
+    .n2-mpsc.n2-mpsc-date .n2-mpsc-v { font:600 9px ui-monospace,monospace; color:#7f8fa8; }
     #mp-cell { align-items:stretch; }
     .n2-mp-host { width:100%; flex:1 1 auto; display:flex; flex-direction:column; }
     .n2-mp-split { display:flex; gap:12px; align-items:stretch; flex:1 1 auto; min-height:0; }
@@ -341,6 +345,7 @@ const N2_HTML = `
                   <div class="n2-mpbar-alert" id="mp-bar-alert">MAX BLOCK SIZE REACHED</div>
                   <div class="n2-mpbar-track"><div class="n2-mpbar-fill" id="mp-bar-fill"></div><div class="n2-mpbar-mark" style="left:50%"></div></div>
                   <div class="n2-mpbar-ticks"><span>0</span><span class="n2-mpbar-mid">1 block</span><span>2 blocks</span></div>
+                  <div class="n2-mpbar-cap" title="Fill of this node's own mempool capacity (capacityInBytes)">this node: <span id="mp-cap-fill">—</span></div>
                 </div>
                 <div class="n2-mpbar">
                   <div class="n2-mpbar-head"><span>DATA FLOW</span><span id="mp-flow-val" class="n2-mpbar-val">— KB/min</span></div>
@@ -357,11 +362,12 @@ const N2_HTML = `
               <div class="n2-mpsc"><span class="n2-mpsc-l">Avg tx 5m</span><span class="n2-mpsc-v" id="mp-stat-avg">—</span></div>
               <div class="n2-mpsc"><span class="n2-mpsc-l">Peak 5m</span><span class="n2-mpsc-v" id="mp-stat-peak">—</span></div>
               <div class="n2-mpsc-div"></div>
-              <div class="n2-mpsc-max">MAX %</div>
+              <div class="n2-mpsc-max">MAX (blocks)</div>
               <div class="n2-mpsc"><span class="n2-mpsc-l">5m</span><span class="n2-mpsc-v" id="mp-peak-5m" style="color:#36e0d4">—</span></div>
               <div class="n2-mpsc"><span class="n2-mpsc-l">1h</span><span class="n2-mpsc-v" id="mp-peak-1h" style="color:#5dff9b">—</span></div>
               <div class="n2-mpsc"><span class="n2-mpsc-l">24h</span><span class="n2-mpsc-v" id="mp-peak-24h" style="color:#ffc24a">—</span></div>
               <div class="n2-mpsc"><span class="n2-mpsc-l">all</span><span class="n2-mpsc-v" id="mp-peak-all" style="color:#ff7a4c">—</span></div>
+              <div class="n2-mpsc n2-mpsc-date"><span class="n2-mpsc-v" id="mp-peak-all-date"></span></div>
             </div>
           </div>
         </div>
@@ -748,46 +754,48 @@ function paintGauges() {
   const gmax = Math.max(ga || 0, gm || 0, gi || 0, 1);
   const setBar = (id, v) => { const e = document.getElementById(id); if (e && v != null) e.style.width = Math.min(100, (v / gmax) * 100).toFixed(1) + '%'; };
   setBar('cp-bar-avg', ga); setBar('cp-bar-max', gm); setBar('cp-bar-min', gi);
-  // Mempool tanks: drive from the gauge percent (100% = one block tank)
-  // Mempool bar: shows CONGESTION (backlog vs a 2-block busy reference), read
-  // from the gauge the mempool panel renders. 1 block = 50%, 2 blocks = 100%.
-  // The bar value line shows real bytes and blocks queued; capacity fill is
-  // carried on the gauge as a data attribute. /*mp-bars-v52*/
+  // Mempool bar: blocks queued on a 0..2 block track (1 block at the middle
+  // mark), read from the data attributes the mempool panel writes. The value
+  // line's headline is blocks queued, coloured by blkLevel() (normal /
+  // approaching 2 / 2+); this node's own capacity fill is the small secondary
+  // line. See ui/mempool.js for the units. /*mp-bars-v52*/ /*mp-units-v1*/
   const statsEl = root.querySelector('#mp-count .pt-mp-stats');
   if (statsEl && statsEl.hasAttribute('data-unavailable')) {   // query failed /*mp-unavailable-v1*/
     const fill = document.getElementById('mp-bar-fill');
     if (fill) fill.style.width = '0%';
     const val = document.getElementById('mp-bar-val');
     if (val) { val.textContent = 'unavailable · mempool query failed'; val.style.color = 'var(--pt-text-muted)'; }
+    const capEl = document.getElementById('mp-cap-fill');
+    if (capEl) capEl.textContent = '—';
     const mpAlert = document.getElementById('mp-bar-alert');
     if (mpAlert) mpAlert.classList.remove('on');
   } else if (statsEl) {
     const txs = parseInt(statsEl.getAttribute('data-txs')) || 0;
     const bytes = parseFloat(statsEl.getAttribute('data-bytes')) || 0;
     const blocks = parseFloat(statsEl.getAttribute('data-blocks')) || 0;
-    const congestion = parseFloat(statsEl.getAttribute('data-congestion')) || 0;
+    const lvl = blkLevel(blocks);
+    const lvlColor = lvl === 'bad' ? '#ff5a3c' : lvl === 'warn' ? '#ffc24a' : '#5dff9b';
     const fill = document.getElementById('mp-bar-fill');   /*mp-bars-v54*/
     if (fill) {
-      fill.style.width = Math.min(100, Math.max(0, congestion)).toFixed(1) + '%';
-      fill.style.background = congestion >= 100 ? '#ff5a3c' : congestion >= 75 ? '#f87171' : congestion >= 50 ? '#ffc24a' : '#5dff9b';
+      fill.style.width = Math.min(100, Math.max(0, (blocks / DEFAULT_MEMPOOL_BLOCKS) * 100)).toFixed(1) + '%';
+      fill.style.background = lvlColor;
     }
-    // Full inline stat line on the MEMPOOL bar header (replaces the old top row).
+    // Stat line on the MEMPOOL bar header: tx count, bytes, then the headline
+    // blocks-queued figure coloured by the 2-block threshold.
     const val = document.getElementById('mp-bar-val');
     if (val) {
       const kb = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : Math.round(bytes) + ' B';
-      const blkTxt = blocks < 0.1 ? '<0.1' : blocks.toFixed(1);
-      val.innerHTML = `${txs} tx · ${kb} · ${blkTxt} blocks · <b style="color:${congestion >= 90 ? '#ff5a3c' : congestion >= 50 ? '#ffc24a' : '#5dff9b'}">${Math.round(congestion)}%</b>`;
+      val.innerHTML = `${txs} tx · ${kb} · <b style="color:${lvlColor}">${fmtBlk(blocks)}</b>`;
       val.style.color = '#9fb0d0';
     }
-    // Alert line: at/over 100% the network mempool is full and default nodes
-    // reject new txs; otherwise flag when a full block's worth is queued.
+    const capEl = document.getElementById('mp-cap-fill');
+    if (capEl) capEl.textContent = statsEl.getAttribute('data-capfill') || '—';
+    // Alert line: from 2 blocks queued, most pools (default mempools) are full.
+    // This says nothing about THIS node rejecting - its capacity may be larger.
     const mpAlert = document.getElementById('mp-bar-alert');   /*mp-bars-v54*/
     if (mpAlert) {
-      if (congestion > 100) {
-        mpAlert.textContent = `OVERFLOW ${Math.round(congestion)}% · holding more than the network accepts`;
-        mpAlert.classList.add('on');
-      } else if (congestion >= 100) {
-        mpAlert.textContent = 'MEMPOOL FULL · network rejecting new txs';
+      if (blocks >= DEFAULT_MEMPOOL_BLOCKS) {
+        mpAlert.textContent = MEMPOOL_2BLK_ALERT;
         mpAlert.classList.add('on');
       } else if (blocks >= 1) {
         mpAlert.textContent = 'MAX BLOCK SIZE REACHED';

@@ -64,9 +64,11 @@ export const ALERT_DEFS = [
     name: 'Mempool full',
     icon: '\uD83D\uDCE6',
     severity: 'info',
-    desc: 'Alert when the network mempool reaches its 2-block limit.',
-    sample: 'Mempool is full - the network is at capacity.',
-    threshold: { type: 'number', label: 'At', default: 100, min: 50, max: 200, unit: '%' },
+    desc: "Alert when 2 blocks' worth of transactions are queued: the size of a default mempool, which most pools run. This node's own capacity may be larger.",
+    sample: "2+ blocks queued: most pools' mempools are full, new transactions may be rejected across the network",
+    // Stored threshold kept in % of 2 blocks (100 = 2 blocks) so existing
+    // settings keep their meaning; the unit label says so. /*mp-units-v1*/
+    threshold: { type: 'number', label: 'At', default: 100, min: 50, max: 200, unit: '% of 2 blocks' },
   },
   {
     id: 'peers_low',

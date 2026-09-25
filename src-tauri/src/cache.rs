@@ -7,7 +7,7 @@
 //!   - epoch_snapshots : one JSON payload per (pool_id, epoch)
 //!   - samples         : generic time-series (metric, value) for fine graphs
 //!   - delegator_stake : per-delegator, per-epoch active stake + pool (immutable
-//!                       once an epoch closes) — backs loyalty / migration views
+//!     once an epoch closes) — backs loyalty / migration views
 //!   - meta            : schema version + app state
 //!
 //! Concurrency: SQLite calls are synchronous, so we use std::sync::Mutex and

@@ -6,13 +6,16 @@
  *
  * Only enabled when node-probe found a Prometheus listener for our PID.
  *
- * gLiveView uses exactly these metrics for its IN/OUT/BiDir/Duplex display:
- *   connectionManager_incomingConns       — IN
- *   connectionManager_outgoingConns       — OUT
- *   connectionManager_unidirectionalConns — Uni-Dir
- *   connectionManager_duplexConns         — Bi-Dir
- *   connectionManager_prunableConns       — Duplex
- *   peerSelection_{cold,warm,hot}         — outbound peer state
+ * The IN/OUT/BiDir/Duplex display reads the new-tracing connection-manager
+ * metrics (names as emitted by node 11.0.1 and 11.1.2, prefix detected per
+ * scrape - see metricReader):
+ *   connectionManager_inboundConns_int        — IN
+ *   connectionManager_outboundConns_int       — OUT
+ *   connectionManager_unidirectionalConns_int — Uni-Dir
+ *   connectionManager_duplexConns_int         — Bi-Dir
+ *   connectionManager_fullDuplexConns_int     — Duplex
+ *   peerSelection_{Cold,Warm,Hot}_int         — outbound peer state
+ * (connectionManager_prunableConns, named in older docs, is never emitted.)
  *
  * The gLiveView docs note: in P2P mode the *direction of a specific peer*
  * is not discoverable from socket info — only these aggregate counts are

@@ -14,10 +14,9 @@
  *
  * One sample per refresh (every 5s); rolling 60-sample buffer = 5 min.
  *
- * Throughput pulls cardano_node_metrics_txsProcessedNum_int from the
- * latest Prometheus scrape (cumulative counter — we keep the previous
- * value and divide the delta by elapsed time). Falls back to "—" if
- * Prometheus isn't enabled on this node.
+ * Throughput pulls txsProcessedNum_counter from the latest Prometheus scrape
+ * (cumulative counter — we keep the previous value and divide the delta by
+ * elapsed time). Falls back to "—" if no metrics endpoint was found.
  *
  * Block-boundary markers are detected by watching for tip changes
  * between successive samples — a block landing typically yanks the

@@ -1268,6 +1268,7 @@ export async function getHistoryMeta() {
     schema: await cacheMetaGet('dbsync_schema'),
     tested: dbsync.DBSYNC_TESTED_SCHEMA,
     stale: dbsync.dbsyncSource.schemaStale ? dbsync.dbsyncSource.schemaStale() : false,
+    warning: dbsync.dbsyncSource.schemaWarning ? dbsync.dbsyncSource.schemaWarning() : null,   /*schema-warn-v1*/
   };
 }
 

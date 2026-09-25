@@ -24,6 +24,18 @@ import { pgQuery, pgReachable } from './pg-transport.js';
 
 export const DBSYNC_TESTED_SCHEMA = '15.50.6';
 
+/**
+ * The untested-schema note ("tested 15.50.6 — verify"), or null when `current`
+ * is unknown or is the tested schema. Any other schema is flagged, older or
+ * newer: the queries are verified against exactly one. Shown on the DATA tab's
+ * db-sync chip, the HISTORY table header and the init console line.
+ */
+export function schemaWarning(current, tested = DBSYNC_TESTED_SCHEMA) {   /*schema-warn-v1*/
+  const cur = current == null ? '' : String(current).trim();
+  if (!cur) return null;
+  return cur === tested ? null : `tested ${tested} — verify`;
+}
+
 const lovelaceToAda = (v) => (v == null ? null : Number(v) / 1e6);
 const numOrNull = (v) => (v == null ? null : Number(v));
 
@@ -1159,7 +1171,8 @@ export const dbsyncSource = {
   // Schema-drift signal for the HISTORY header.
   schemaTested: DBSYNC_TESTED_SCHEMA,
   schemaCurrent: () => _version,
-  schemaStale: () => _version != null && _version !== DBSYNC_TESTED_SCHEMA,
+  schemaStale: () => schemaWarning(_version) != null,
+  schemaWarning: () => schemaWarning(_version),
 };
 
 /**
@@ -1179,7 +1192,7 @@ export async function initDbsync(config, poolHex) {
     _ready = true;
     if (!registry.all().some((s) => s.id === 'dbsync')) registry.register(dbsyncSource);
     console.log(`[dbsync] ready — pool id ${_poolId}, schema ${_version}` +
-      (dbsyncSource.schemaStale() ? ` (tested ${DBSYNC_TESTED_SCHEMA} — verify)` : ''));
+      (dbsyncSource.schemaWarning() ? ` (${dbsyncSource.schemaWarning()})` : ''));
     return true;
   } catch (err) {
     console.warn('[dbsync] init failed:', err.message ?? err);

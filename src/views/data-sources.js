@@ -124,6 +124,7 @@ function summaryHtml(live) {
   const dbsync = registry.all().find((s) => s.id === 'dbsync');
   const dbsyncOn = dbsync && safeReach(dbsync);
   const dbsyncVer = dbsyncOn ? safeCall(() => dbsync.version()) : null;
+  const dbsyncWarn = dbsyncOn && dbsync.schemaWarning ? safeCall(() => dbsync.schemaWarning()) : null;   /*schema-warn-v1*/
   const koiosOn = has('koios') || has('koios-live');
   const koiosTok = (() => { try { return hasKoiosToken(); } catch { return false; } })();
   const koiosUse = (() => { try { return getUsage(); } catch { return null; } })();
@@ -148,7 +149,7 @@ function summaryHtml(live) {
 
   return `<div class="ds-chips">` +
     chip('ds-node', 'Node', live ? (transport || 'Connected') : 'Not connected', live) +
-    chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}` : 'Not configured', dbsyncOn) +
+    chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}${dbsyncWarn ? ` (${dbsyncWarn})` : ''}` : 'Not configured', dbsyncOn) +
     chip('ds-koios', 'Koios', koiosStatus, koiosOn) +
     chip('ds-bf', 'Blockfrost', bfOn ? 'Active' : 'Not configured', bfOn) +
   `</div>`;

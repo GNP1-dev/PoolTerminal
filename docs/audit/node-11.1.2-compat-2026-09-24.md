@@ -240,7 +240,7 @@ Severity: **BROKEN** = feature fails; **DEGRADED** = works but wrong, incomplete
 #### O7. db-sync schema gate
 
 - **Where:** `src/data/dbsync-query.js:24`
-- **Evidence:** installed `15.50.6` against `DBSYNC_TESTED_SCHEMA = '15.44.6'`. The app already shows "(tested 15.44.6 - verify)". This predates today's upgrade and is not caused by the node.
+- **Evidence:** installed `15.50.6` against `DBSYNC_TESTED_SCHEMA = '15.44.6'`. Correction after the manual test: the "(tested 15.44.6 - verify)" note appeared only in the console `[dbsync] ready` line, not in the UI (item 17). This predates today's upgrade and is not caused by the node.
 - **Proposed fix:** bump the constant once the delegator and history screens pass the manual test on 15.50.6.
 
 ## 3. Watch list: when the db-sync host, db-sync or Ogmios move to 11.1.x
@@ -330,7 +330,7 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
     - Block validation: the ADOPTED/CONFIRMED lines.
     - Blocks minted (Local): rows with confirmed / ghosted / stolen / leader statuses.
     - Blocks minted (db-sync): full history.
-11. **HISTORY.** Working looks like: per-epoch rows back to the pool's first epoch from db-sync, with no "backfill failed" in the console. The DATA tab shows db-sync schema 15.50.6 with the "verify" note (expected).
+11. **HISTORY.** Working looks like: per-epoch rows back to the pool's first epoch from db-sync, with no "backfill failed" in the console. The DATA tab shows db-sync schema 15.50.6 with the "verify" note (expected). *In the run, the note was missing (item 17); after the bump, no note is correct for 15.50.6.*
 12. **DELEGATORS and deep-dive.** Open one delegator. Working looks like: the account summary and stake history load. Note the load time, which is D2's cost: expect about 2 s now.
 13. **NOTIFICATIONS.** Working looks like: the feed loads and there are no console errors from `getDelegationEvents`.
 14. **Reload the webview** (resume without 2FA). Working looks like: console `[resume] reused existing session, env re-probed OK`.
@@ -369,6 +369,13 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
     - `runCli` errors pass cardano-cli's stderr through `redactKeyPaths`, which replaces the exact `--op-cert-file` / `--vrf-signing-key-file` values and any `*.skey|vkey|cert|counter` path with `<key file>`. These errors reach the console and the UI.
 
     Swept with no other hits: the connect env dump has no key paths, the probe's full node args are never logged, and the Rust side logs no commands. Not changed: the Logs tab shows the node's own journal as it is.
+
+17. **Untested db-sync schema flagged in the UI** (manual test, checklist item 11). Why the note was missing:
+    - `de9b5a5` rebuilt the HISTORY table header and dropped its `meta.stale` line. `getHistoryMeta()` was still called, but its result was not used.
+    - The DATA tab's db-sync chip never had the note.
+    - That left only the console line.
+
+    The comparison was sound: any schema other than the tested one is flagged, older or newer. The fix: `schemaWarning()` in `dbsync-query.js` is the one rule, and its text now shows on the DATA chip ("Active - schema X (tested Y — verify)"), in the HISTORY header ("⚠ tested Y — verify") and in the console line. Checked in Node with fake schemas 15.44.6, 15.52.0 and 15.50.6 through `initDbsync`, `getHistoryMeta` and the rendered DATA chip: 17/17 pass.
 
 ## Appendix: build and static checks (Phase 5)
 

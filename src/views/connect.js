@@ -217,26 +217,38 @@ function buildEnvProbeCmd(envFile) {   /*env-gate-visible-v1*/
     `echo "SHELLEY_TRANS_EPOCH=$SHELLEY_TRANS_EPOCH"; ` +
     `echo "BYRON_EPOCH_LENGTH=$BYRON_EPOCH_LENGTH"; ` +
     `echo "EPOCH_LENGTH=$EPOCH_LENGTH"; ` +
+    // Role, so a BP's missing POOL_ID can fail the connect (the node probe only
+    // runs after connecting). Same socket -> PID -> --shelley-kes-key test as
+    // data/node-probe.js; the socket falls back to $CNODE_HOME/sockets as the
+    // connect does. NODE_IS_BP is 1, 0, or empty when no node was found.
+    `__S="\${CARDANO_NODE_SOCKET_PATH:-\${CNODE_HOME:+$CNODE_HOME/sockets/node.socket}}"; ` +
+    `__P=$(fuser "$__S" 2>/dev/null | tr -d ' \\n'); ` +
+    `[ -z "$__P" ] && __P=$(ps -eo pid,args 2>/dev/null | awk -v s="$__S" '/[c]ardano-node/ && index($0, "--socket-path " s) { print $1; exit }'); ` +
+    `if [ -n "$__P" ]; then echo "NODE_IS_BP=$(ps -p "$__P" -o args= 2>/dev/null | grep -c -- ' --shelley-kes-key ')"; else echo "NODE_IS_BP="; fi; ` +
     `if [ "$__ENV_RC" != 0 ]; then ( source ./${envName} offline 2>&1 ) | tail -n 8 | sed 's/^/__ENVMSG__ /'; fi; }`;
 }
 
 /**
- * Did the env stop early? Guild's env sets NETWORK_IDENTIFIER near its end,
- * after every blocking check (node/cli version gate, genesis files, Prometheus
- * config); its harmless non-zero returns all come after it. So a non-zero
- * return with NETWORK_IDENTIFIER unset means the socket, network, pool and
- * genesis variables were never exported - connecting anyway used to yield a
- * session with no POOL_ID and no explanation. Returns an error message, or null.
+ * Did the env fail? A Guild env can return non-zero on a harmless warning after
+ * setting everything, so the return code alone is not enough - but neither is
+ * trusting Guild's variable ORDER. The connect fails when the env returned
+ * non-zero AND any variable PoolTerminal needs is missing:
+ * CARDANO_NODE_SOCKET_PATH, NETWORK_IDENTIFIER, and POOL_ID when the node is a
+ * block producer. (A zero return with gaps keeps the existing fallbacks.)
+ * Returns an error message quoting the env's own output, or null.
  */
-function envStoppedEarly(probeOut, envVars) {
-  if (!envVars.ENV_RC || envVars.ENV_RC === '0' || envVars.NETWORK_IDENTIFIER) return null;
+function envFailed(probeOut, envVars) {
+  if (!envVars.ENV_RC || envVars.ENV_RC === '0') return null;
+  const missing = ['CARDANO_NODE_SOCKET_PATH', 'NETWORK_IDENTIFIER'].filter((k) => !envVars[k]);
+  if (envVars.NODE_IS_BP === '1' && !envVars.POOL_ID) missing.push('POOL_ID');
+  if (!missing.length) return null;
   const msg = probeOut.split('\n')
     .filter((l) => l.startsWith('__ENVMSG__ '))
     .map((l) => l.slice('__ENVMSG__ '.length))
     .filter((l) => l.trim())
     .join('\n');
-  return `The Guild env stopped early (return code ${envVars.ENV_RC}) before exporting ` +
-    `the node socket, network and pool variables, so PoolTerminal cannot connect.\n` +
+  return `The Guild env returned an error (code ${envVars.ENV_RC}) and did not set ` +
+    `${missing.join(', ')}, so PoolTerminal cannot connect.\n` +
     `The env said:\n${msg || '(no output)'}`;
 }
 
@@ -361,9 +373,9 @@ export async function resumeLive(cfg, onDone) {
     const probeOut = unwrapSsh(await invoke('ssh_run', { command: buildEnvProbeCmd(cfg.envFile) }));
     const envVars = parseEnvProbe(probeOut);
     if (!probeOut.includes('__PROBE_OK__') || !envVars.CCLI) return false;
-    // Env stopped early: fall back to the connect screen, whose connect shows why.
-    if (envStoppedEarly(probeOut, envVars)) {
-      console.warn('[resume] env stopped early; showing the connect screen');
+    // Env failed: fall back to the connect screen, whose connect shows why.
+    if (envFailed(probeOut, envVars)) {
+      console.warn('[resume] env failed; showing the connect screen');
       return false;
     }
 
@@ -513,8 +525,8 @@ export function showConnectModal(onDone, opts = {}) {
       const probeOut = unwrapSsh(await invoke('ssh_run', { command: buildEnvProbeCmd(conn.envFile) }));
 
       const envVars = parseEnvProbe(probeOut);
-      const stopped = envStoppedEarly(probeOut, envVars);
-      if (stopped) throw new Error(stopped);
+      const failed = envFailed(probeOut, envVars);
+      if (failed) throw new Error(failed);
 
       // Judge success by whether the env actually yielded the essentials, not by
       // the marker alone — a warning-printing env still gives us real values.

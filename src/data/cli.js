@@ -7,9 +7,9 @@
  * `query tip` / `kes-period-info` (cardano-cli#1434), and the fast loop's
  * in-flight guard then freezes the dashboard with no error at all.
  *
- * The timeouts are defined HERE and nowhere else. Measured on the BP
- * (node 11.1.2 / cli 11.2.3.0, 2026-09-25, docs/audit/timing-bp.txt), slowest
- * of 3 runs: tip 14 ms, mempool 15 ms, kes-period-info 25 ms, stake-snapshot
+ * The timeouts are defined HERE and nowhere else. Measured on the BP with
+ * docs/audit/timing-bp.sh (node 11.1.2 / cli 11.2.3.0, 2026-09-25; see finding
+ * A10 in docs/audit/node-11.1.2-compat-2026-09-24.md), slowest of 3 runs: tip 14 ms, mempool 15 ms, kes-period-info 25 ms, stake-snapshot
  * 15 ms. 3x those is well under a second, so every value below is a floor
  * chosen for slow hosts and busy nodes, not a measurement. leadership-schedule
  * cannot be timed without the VRF signing key, so it gets the fix plan's

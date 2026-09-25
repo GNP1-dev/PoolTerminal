@@ -355,11 +355,15 @@ async function fetchNodeVersion() {
   const ccli = s.envVars && s.envVars.CCLI;
 
   const candidates = [];
-  // 1) The running node binary, located by process match — proven to work and
-  //    independent of PATH (binary isn't on PATH in non-interactive SSH).
-  candidates.push(`"$(readlink -f /proc/$(pgrep -f 'cardano-node run' | head -1)/exe)" --version`);
-  // 2) The exact probed PID, if available.
+  // 1) The exact probed PID - the node that owns OUR socket. Must come first: on
+  //    a host running a BP and a relay, a process match below can return the
+  //    other node (the .62 capture picked the relay), which during a staged
+  //    upgrade would badge the wrong version. /*nodever-probed-pid-v1*/
   if (probe && probe.pid) candidates.push(`"$(readlink -f /proc/${probe.pid}/exe)" --version`);
+  // 2) Any running node binary, located by process match - independent of PATH
+  //    (binary isn't on PATH in non-interactive SSH). Note it misses a node
+  //    started as `cardano-node +RTS ... -RTS run`.
+  candidates.push(`"$(readlink -f /proc/$(pgrep -f 'cardano-node run' | head -1)/exe)" --version`);
   // 3) Derive from the Guild env CCLI path; 4) bare PATH.
   if (ccli) candidates.push(`"${ccli.replace(/\/[^/]+$/, '')}/cardano-node" --version`);
   candidates.push('cardano-node --version');

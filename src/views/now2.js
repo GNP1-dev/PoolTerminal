@@ -754,7 +754,14 @@ function paintGauges() {
   // The bar value line shows real bytes and blocks queued; capacity fill is
   // carried on the gauge as a data attribute. /*mp-bars-v52*/
   const statsEl = root.querySelector('#mp-count .pt-mp-stats');
-  if (statsEl) {
+  if (statsEl && statsEl.hasAttribute('data-unavailable')) {   // query failed /*mp-unavailable-v1*/
+    const fill = document.getElementById('mp-bar-fill');
+    if (fill) fill.style.width = '0%';
+    const val = document.getElementById('mp-bar-val');
+    if (val) { val.textContent = 'unavailable · mempool query failed'; val.style.color = 'var(--pt-text-muted)'; }
+    const mpAlert = document.getElementById('mp-bar-alert');
+    if (mpAlert) mpAlert.classList.remove('on');
+  } else if (statsEl) {
     const txs = parseInt(statsEl.getAttribute('data-txs')) || 0;
     const bytes = parseFloat(statsEl.getAttribute('data-bytes')) || 0;
     const blocks = parseFloat(statsEl.getAttribute('data-blocks')) || 0;

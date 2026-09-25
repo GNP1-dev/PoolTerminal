@@ -90,7 +90,7 @@
  *   getNowSnapshot()    -> Promise<NowSnapshot>
  *   getUpcomingBlocks() -> Promise<UpcomingBlock[]>
  *   getChainPulse()     -> Promise<ChainPulse>
- *   getMempool()        -> Promise<Mempool>
+ *   getMempool()        -> Promise<Mempool|null>   (null = the query failed; never zeros)
  */
 
 export {}; // documentation-only module

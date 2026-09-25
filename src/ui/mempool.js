@@ -388,6 +388,15 @@ export function renderMempool(mp, opts = {}) {
   const countEl = byId('mp-count');
   if (!countEl) return;
 
+  // Query failed (null): say so, and touch nothing that would record a reading -
+  // no history sample, no sparkline point, no congestion state for the alerts
+  // engine. /*mp-unavailable-v1*/
+  if (!mp) {
+    _lastMpState = null;
+    countEl.innerHTML = '<span class="pt-mp-stats" data-unavailable="1">unavailable</span>';
+    return;
+  }
+
   // Congestion is measured the way the NETWORK treats it: backlog vs
   // block-clearing capacity. One block body (~88 KB, the protocol
   // maxBlockBodySize) is what a single block clears. The default network

@@ -88,10 +88,6 @@ function emptyChainPulse(tipBlock = 0) {
   };
 }
 
-function emptyMempool() {
-  return { txCount: 0, totalBytes: 0, capacityBytes: null, recent: [] };
-}
-
 function computePulse(snap) {
   let total = 0;
   const components = {};
@@ -485,7 +481,9 @@ export class LiveDataSource {
       };
     } catch (err) {
       console.warn(`[live.getMempool] FAIL in ${Math.round(performance.now() - t0)}ms:`, err.message);
-      return emptyMempool();
+      // null, never zeros: an empty mempool is a real reading, a failed query
+      // is not. renderMempool shows "unavailable". /*mp-unavailable-v1*/
+      return null;
     }
   }
 }

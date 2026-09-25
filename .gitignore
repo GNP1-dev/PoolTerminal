@@ -87,3 +87,8 @@ patch_*.py
 pt_dbsync_audit.*
 *.bak
 CLAUDE.md
+
+# Raw capture / timing output from the node 11.1.2 audit (host-specific, not committed)
+docs/audit/capture-bp-11.1.2.txt
+docs/audit/capture-206-11.0.1.txt
+docs/audit/timing-bp.txt

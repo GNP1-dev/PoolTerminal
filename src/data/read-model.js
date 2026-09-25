@@ -710,11 +710,50 @@ export async function refreshBlockProduction(epoch, ideal) {
       });
       if (info) _bpInfoWritten = true;
     }
+    await correctGoIdealRowsOnce(epoch, ideal);   /*ideal-set-fix-v1*/
   } catch (err) {
     console.warn('[read-model] block-production refresh failed:', err.message ?? err);
   } finally {
     _bpInFlight = false;
   }
+}
+
+// ---- One-time correction of Go-based Ideal in cached rows (finding D3) -----
+// Before 14/D3 the live Ideal came from the stakeGo snapshot instead of
+// stakeSet, and the block above cached it (and the Luck derived from it) in the
+// epoch's row. Rows still marked source 'live' carry that value; the recent
+// refreshes replace only the last two closed epochs. Rewrite them once:
+//   - current epoch: the corrected cli Ideal passed in (Set, the same snapshot
+//     as the row's activeStake), so NOW and History agree;
+//   - closed epochs: recompute from the row's own Set activeStakeLovelace via
+//     computeIdeal, the same rule as every other closed History row. If that
+//     fails, Ideal goes back to null and the enrich filler retries it.
+// The meta table is global and epoch rows are per pool, so the key is too.
+let _idealSetFixDone = false;
+async function correctGoIdealRowsOnce(currentEpoch, currentIdeal) {
+  if (_idealSetFixDone || _demoMode() || currentIdeal == null) return;
+  const key = `ideal_set_fix_v1:${poolHex()}`;
+  if ((await cacheMetaGet(key)) === '1') { _idealSetFixDone = true; return; }
+  const rows = await cacheGetEpochsRaw(0, 9_999_999);
+  let fixed = 0, blanked = 0;
+  for (const r of rows) {
+    if (_demoMode()) return;   // quiesce; resumes on return to live /*collector-quiesce-v105*/
+    const d = r.data;
+    if (!d || d.source !== 'live' || d.ideal == null) continue;
+    let ideal;
+    if (r.epoch === currentEpoch) ideal = currentIdeal;
+    else {
+      try { ideal = await computeIdeal({ ...d, epoch: r.epoch }); } catch { ideal = null; }
+    }
+    const luck = ideal == null ? null : ideal > 0 ? Math.round(((d.adopted || 0) / ideal) * 100) : 0;
+    await cachePutEpoch(r.epoch, { ...d, ideal, luck });
+    if (ideal == null) blanked++; else fixed++;
+  }
+  if (blanked) _idealFillDone = false;   // let the enrich filler pick the blanked rows up
+  await cacheMetaSet(key, '1');
+  _idealSetFixDone = true;
+  console.log(`[read-model] D3 Ideal correction: ${fixed} cached row(s) recomputed from Set` +
+    (blanked ? `, ${blanked} reset to null for the filler` : ''));
 }
 
 /** Last computed block-production card values, or null until first refresh. */
@@ -2063,6 +2102,7 @@ export function resetReadModel() {
   _rewardAddr = null;
   _backfillInFlight = false; _backfillDone = false;
   _idealFillAt = 0; _idealFillInFlight = false; _idealFillDone = false;
+  _idealSetFixDone = false;
   _recentAt = 0; _recentInFlight = false;
   _sampleAt = 0; _sampleInFlight = false; _lastInfo = null;
   _bp = null; _bpInFlight = false; _bpScheduleEpoch = null; _bpAssigned = null;

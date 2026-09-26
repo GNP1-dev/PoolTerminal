@@ -530,7 +530,7 @@ export function demoRelaySnapshot(id) {
   return {
     probe: {
       ok: true, reason: null, detail: null,
-      version: '10.5.1', role: 'RELAY',
+      version: '11.1.2', role: 'RELAY',
       config: second ? 'cnode_relay2' : 'cnode_relay',
       nodeCount: 1, pid: second ? 5150 : 4242,
     },

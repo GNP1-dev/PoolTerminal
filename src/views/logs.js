@@ -893,7 +893,7 @@ function demoSample(id) {
       `${jt(311)} demo-bp cnode[${PID}]: [..][demo:KESInfo](Warning,7) KES period ${kesPeriod} - 34 periods until expiry (approx ${kesExpiry})`,
     ],
     restart: [
-      `${jt(37 * 1440)} demo-bp cnode[4180]: [..] Node version: cardano-node 10.5.1 - linux`,
+      `${jt(37 * 1440)} demo-bp cnode[4180]: [..] Node version: cardano-node 11.1.2 - linux`,
       `${jt(37 * 1440)} demo-bp cnode[4180]: [..][demo:ChainDB] Started opening Chain DB`,
     ],
     rollback: [],

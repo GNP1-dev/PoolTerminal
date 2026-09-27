@@ -13,7 +13,7 @@ If you're forking PoolTerminal or auditing it ahead of a hard fork, this is the 
 Known impacts:
 - Cost model adjustments expected - Plutus serialisation unchanged
 - Supported node versions (September 2026): cardano-node 11.1.2 or later with
-  cardano-cli 11.2.3.0 or later, cncli 6.8.0 or later. The minimums live in
+  cardano-cli 11.2.3.0 or later, and (optional) cncli 6.8.0 or later. The minimums live in
   `src/data/compat.js` (shown on the About page) and README "Requirements";
   update both when a fork raises them. Basis:
   `docs/audit/node-11.1.2-compat-2026-09-24.md`.

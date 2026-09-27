@@ -14,8 +14,26 @@ dev captures. Real leaks of all three classes shipped in 0.1.0–0.3.2.
 
 Run the harness (`src/dev/leak-tour.js`):
 
-1. Start the app (dev or a packaged build — auditing the actual release
-   artifact is better). Open the webview devtools console.
+1. Start the app under `cargo tauri dev` from the commit being released
+   (its `src/` must be identical to the one the release binaries are built
+   from: `git diff <release-commit> -- src` is empty). Release builds have no
+   devtools - Tauri enables them only in debug builds unless the `devtools`
+   Cargo feature is on, and PoolTerminal does not enable it - so the tour
+   cannot be armed in the packaged app. Right-click > Inspect to open the
+   webview devtools console.
+
+   The dev build runs the same `src/` (where every leak class the tour
+   checks lives) and the same Rust commands, but not the release binary
+   itself: debug Rust, and the frontend served from disk over
+   `http://127.0.0.1:1430` instead of the assets embedded in the binary, with
+   that origin's own localStorage.
+
+   Optional extra, to exercise the shipped artefact itself: with the installed
+   app fully closed, write the two localStorage keys below into its WebKit
+   store (`~/.local/share/com.gnp1.poolterminal/localstorage/tauri_localhost_0.localstorage`,
+   SQLite `ItemTable`, values UTF-16LE), then start it. The tour runs and its
+   verdict is shown full-screen, so no devtools are needed to read it. This
+   depends on WebKit's storage format and is not the required route.
 2. Arm it, including the real values of the machine you develop on — this is
    what catches config echoes and pasted log lines:
 

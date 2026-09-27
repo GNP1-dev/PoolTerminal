@@ -4,6 +4,8 @@
 
 Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
+[Website](https://server-tools.grahamsnumberplus1.com/PoolTerminal/) · [Listed on the Cardano Developer Portal](https://developers.cardano.org/tools/poolterminal/)
+
 ---
 
 > **v0.4.0 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.

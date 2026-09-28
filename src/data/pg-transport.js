@@ -52,6 +52,13 @@ export const SSH_TUNNEL_ENABLED = true;   /*dbsync-ssh-v55*/
  * @param {string} sql   SELECT with all columns cast to ::text
  * @returns {Promise<object[]>}  rows as plain objects keyed by column name
  */
+// Reconnect hook for the dedicated db-sync SSH session, registered by
+// dbsync-connect.js (which holds the last working SSH params). A query that
+// finds the session dropped reconnects once and retries. (ssh-keepalive-v1)
+let _reconnectDbsync = null;
+export function setDbsyncReconnect(fn) { _reconnectDbsync = typeof fn === 'function' ? fn : null; }
+const SESSION_GONE = /not connected|disconnected|tunnel open failed|closed|channel open/i;
+
 export async function pgQuery(conn, sql) {
   // Route through the SSH tunnel only when explicitly flagged AND the feature is
   // enabled. `viaSsh` is a JS-only hint; strip it before sending to Rust (the
@@ -62,7 +69,14 @@ export async function pgQuery(conn, sql) {
   let res;
   try {
     if (viaId) {
-      res = await invoke('pg_query_ssh_via', { conn: pgConn, sql, id: viaId });
+      try {
+        res = await invoke('pg_query_ssh_via', { conn: pgConn, sql, id: viaId });
+      } catch (err) {
+        const msg = typeof err === 'string' ? err : (err?.message ?? '');
+        if (!_reconnectDbsync || !SESSION_GONE.test(msg)) throw err;
+        await _reconnectDbsync(msg);   // throws if the SSH session cannot be reopened
+        res = await invoke('pg_query_ssh_via', { conn: pgConn, sql, id: viaId });
+      }
     } else {
       res = await invoke(useTunnel ? 'pg_query_ssh' : 'pg_query', { conn: pgConn, sql });
     }

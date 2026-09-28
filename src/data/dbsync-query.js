@@ -1233,4 +1233,7 @@ export async function initDbsync(config, poolHex) {
   return (await initDbsyncDetailed(config, poolHex)).ok;
 }
 
+/** Stop routing queries to db-sync after its connection is lost (0.4.1). */
+export function markDbsyncDown() { _ready = false; }
+
 export function resetDbsync() { _cfg = null; _poolHex = null; _poolId = null; _version = null; _ready = false; }

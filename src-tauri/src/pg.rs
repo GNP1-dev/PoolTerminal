@@ -290,6 +290,10 @@ pub async fn pg_query_ssh_via(
         let session = guard
             .get(&id)
             .ok_or_else(|| format!("db-sync SSH '{id}' not connected"))?;
+        if session.is_closed() {
+            // The JS side reconnects once on this message. (ssh-keepalive-v1)
+            return Err(format!("db-sync SSH '{id}' disconnected"));
+        }
         session
             .open_forward(&host, port)
             .await

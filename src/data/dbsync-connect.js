@@ -26,7 +26,8 @@
 
 import { invoke } from './tauri.js';
 import { initDbsyncDetailed } from './dbsync-query.js';
-import { connectDbsyncSsh } from './pg-transport.js';
+import { connectDbsyncSsh, setDbsyncReconnect } from './pg-transport.js';
+import { markDbsyncDown } from './dbsync-query.js';
 
 export const SOURCE_CHOICE_KEY = 'poolterminal.source.v1';
 
@@ -42,6 +43,26 @@ export const STAGE_LABEL = {
 };
 
 let _status = { state: 'not-configured' };
+let _lastSshParams = null;   // for one reconnect when the session drops (ssh-keepalive-v1)
+let _reconnecting = null;
+
+// Called by pg-transport when a query finds the db-sync SSH session gone.
+// One reconnect attempt; on failure db-sync is marked down, the status says
+// why, and the normal retry-with-backoff in read-model takes over.
+setDbsyncReconnect(async (why) => {
+  if (!_lastSshParams) throw new Error(why);
+  if (!_reconnecting) {
+    _reconnecting = connectDbsyncSsh(_lastSshParams)
+      .then(() => { console.log('[dbsync] SSH session reconnected'); })
+      .catch((e) => {
+        markDbsyncDown();
+        setStatus({ state: 'failed', stage: 'ssh', error: `SSH session dropped and could not be reopened: ${e.message ?? e}` });
+        throw e;
+      })
+      .finally(() => { _reconnecting = null; });
+  }
+  return _reconnecting;
+});
 const _secrets = { password: null, passphrase: null };
 
 /** The saved data-source choice ({} if none or unreadable). */
@@ -115,6 +136,7 @@ export async function connectDbsync(choice, secrets = {}, poolHex = null) {
   if (sshParams) {
     try { await connectDbsyncSsh(sshParams); }
     catch (e) { return setStatus({ state: 'failed', stage: 'ssh', error: e.message ?? String(e) }); }
+    _lastSshParams = sshParams;
   }
   let res;
   try { res = await initDbsyncDetailed(dbsyncConfig(choice, password), poolHex); }

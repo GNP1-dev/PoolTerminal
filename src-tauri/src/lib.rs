@@ -80,6 +80,15 @@ pub fn run() {
             localrun::local_run,
             localrun::local_probe,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Close SSH sessions (node, relays, db-sync) on exit so remote hosts
+            // see a clean disconnect. (ssh-keepalive-v1)
+            if let tauri::RunEvent::Exit = event {
+                let primary = app.state::<SshState>();
+                let relays = app.state::<ssh::RelaySshState>();
+                tauri::async_runtime::block_on(ssh::disconnect_all(&primary, &relays));
+            }
+        });
 }

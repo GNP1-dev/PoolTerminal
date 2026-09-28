@@ -30,6 +30,7 @@ import {
 } from './views/now.js';
 import { mountNow2, unmountNow2 } from './views/now2.js';
 import { getMempoolState } from './ui/mempool.js';
+import { installDbsyncPrompt } from './ui/dbsync-prompt.js';   /*dbsync-status-v1*/
 import { mountRelay1, unmountRelay1, mountRelay2, unmountRelay2 } from './views/relay.js';
 import { clearLastMetrics } from './data/metrics-query.js';
 import { mountHistory } from './views/history.js';
@@ -470,6 +471,10 @@ window.addEventListener('DOMContentLoaded', () => {
     paintMode();
     mountView(activeView || 'now2');
   });
+
+  // db-sync set up but missing its password / key passphrase this session:
+  // ask instead of silently using Koios. (dbsync-status-v1)
+  installDbsyncPrompt(() => getMode() === 'live');
 
   // Demo-isolation leak tour (dev harness - see src/dev/leak-tour.js and
   // RELEASING.md). Runs ONLY when armed via localStorage from the devtools

@@ -76,6 +76,7 @@ pub fn run() {
             pg::pg_query_ssh,
             pg::pg_query_ssh_via,
             sshkeys::list_ssh_keys,
+            sshkeys::ssh_key_status,
             localrun::local_run,
             localrun::local_probe,
         ])

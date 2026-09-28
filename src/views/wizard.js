@@ -19,16 +19,18 @@
  * dialogs, the notif-settings advisor, and the tested applyWizard plumbing.
  */
 
-import { DBSYNC_TESTED_SCHEMA as schemaTested, initDbsync } from '../data/dbsync-query.js';
+import { DBSYNC_TESTED_SCHEMA as schemaTested } from '../data/dbsync-query.js';
+import { connectDbsync, describeDbsyncStatus, setSessionSecrets, STAGE_LABEL } from '../data/dbsync-connect.js';
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
+import { alertDialog } from '../ui/dialog.js';
 import { setMode, getMode } from '../data/index.js';   /*wz-cancel-v95*/
 import { isConnected, getSession, loadConfig } from '../data/session.js';
-import { applyBlockfrostKey } from '../data/read-model.js';
+import { applyBlockfrostKey, retryDbsyncNow } from '../data/read-model.js';
 import { setKoiosToken, hasKoiosToken, getKoiosToken } from '../data/koios-token.js';
 import { setPaused } from '../data/koios-meter.js';
 import { SSH_TUNNEL_ENABLED } from '../data/pg-transport.js';
-import { getAppVersion } from '../data/tauri.js';   /*app-version-v94*/
+import { getAppVersion, invoke } from '../data/tauri.js';   /*app-version-v94*/
 
 // Resolved from the Tauri runtime at module load; the wizard's final step is
 // always rendered long after this settles. Never hardcode a version here — the
@@ -323,6 +325,10 @@ const STEPS = [
       const v = el ? el.value.trim() : '';
       return v ? null : 'Generate or enter the SSH key path to continue.';
     },
+    check: async (wiz, root) => {   /*key-status-v1*/
+      const el = root && root.querySelector('#wz-key-path');
+      return checkKeyFile(el ? el.value.trim() : '');
+    },
   },
   {
     key: 'dbconn',
@@ -458,6 +464,11 @@ const STEPS = [
       }
       return null;
     },
+    check: async (wiz, root) => {   /*key-status-v1*/
+      if (!wiz.useDbsync || (wiz.dbLocation || 'local') !== 'remote') return null;
+      const v = (id) => { const el = root && root.querySelector(id); return el ? el.value.trim() : ''; };
+      return checkKeyFile(v('#wz-ssh-key'), { needPassphrase: true, passphrase: v('#wz-ssh-pass') });
+    },
   },
   {
     key: 'blockfrost',
@@ -578,6 +589,22 @@ const STEPS = [
     },
   },
 ];
+const STEP_BY_KEY = Object.fromEntries(STEPS.map((st) => [st.key, st]));
+
+// Async check run when Next is clicked (validate() stays synchronous because it
+// also drives the Next button's enabled state). Confirms the SSH key file
+// exists and is readable, naming the path. (key-status-v1)
+async function checkKeyFile(path, { needPassphrase = false, passphrase = '' } = {}) {
+  if (!path) return 'Enter the SSH private key path.';
+  let ks;
+  try { ks = await invoke('ssh_key_status', { path }); }
+  catch (e) { return `Could not check the SSH key ${path}: ${e.message ?? e}`; }
+  if (!ks.exists || !ks.readable || ks.error) return ks.error || `The SSH key ${path} cannot be used.`;
+  if (needPassphrase && ks.encrypted && !passphrase) {
+    return `The SSH key ${path} is protected by a passphrase - enter it in "Key passphrase". It is not saved; PoolTerminal asks for it again after a restart.`;
+  }
+  return null;
+}
 
 const STYLE = `
 .pt-modal-wizard { max-width: 620px; }
@@ -1080,46 +1107,32 @@ export function showSetupWizard(opts = {}) {
           res.textContent = 'Connect to your node first (needed to find your pool).';
           res.className = 'wz-test-result wz-test-bad'; return;
         }
-        const loc = wiz.dbLocation || 'local';
-        const v = (id) => { const el = modal.querySelector(id); return el ? el.value.trim() : ''; };
-        const authEl = modal.querySelector('#wz-db-auth');
-        const authMode = authEl ? authEl.value : 'password';
-        const mode = loc === 'local' ? 'local' : loc === 'bp' ? 'tunnel' : 'ssh';
-        const dbsync = {
-          database: v('#wz-db-name') || 'cexplorer',
-          user: v('#wz-db-user'),
-          host: v('#wz-db-host') || (loc === 'local' ? '' : '127.0.0.1'),
-          port: Number(v('#wz-db-port')) || 5432,
-          password: authMode === 'password' ? v('#wz-db-pass') : '',
+        // Test goes through the same connect path as Finish and app startup
+        // (dbsync-connect.js), with the choice exactly as it would be saved and
+        // the typed password / passphrase as this session's secrets. (dbsync-status-v1)
+        const tmp = { ...wiz };
+        STEP_BY_KEY.dbconn.collect(tmp, modal);
+        const choice = buildSourceChoice(tmp);
+        const secrets = {
+          password: (tmp.dbsync && tmp.dbsync.password) || '',
+          passphrase: (tmp.dbsync && tmp.dbsync.ssh && tmp.dbsync.ssh.auth && tmp.dbsync.ssh.auth.passphrase) || '',
         };
-        res.textContent = 'Testing...'; res.className = 'wz-test-result wz-test-pending';
+        res.textContent = choice.dbsyncMode === 'ssh' ? 'Checking the key and opening SSH to the db-sync machine...' : 'Testing...';
+        res.className = 'wz-test-result wz-test-pending';
         dbTest.disabled = true;
         try {
-          if (loc === 'remote') {
-            const sshParams = {
-              host: v('#wz-ssh-host'), port: Number(v('#wz-ssh-port')) || 22,
-              username: v('#wz-ssh-user'),
-              auth: { type: 'key', path: v('#wz-ssh-key'), passphrase: v('#wz-ssh-pass') || null },
-            };
-            res.textContent = 'Opening SSH connection to the db-sync machine...';
-            try {
-              const { connectDbsyncSsh } = await import('../data/pg-transport.js');
-              await connectDbsyncSsh(sshParams);
-            } catch (e) {
-              res.textContent = 'Could not open the SSH connection - check the SSH host, port, username and key path. (' + (e.message ?? e) + ')';
-              res.className = 'wz-test-result wz-test-bad'; dbTest.disabled = false; return;
-            }
-            dbsync.ssh = sshParams;
-            res.textContent = 'SSH connected - querying db-sync...';
-          }
-          const ok = await initDbsync(buildDbsyncConfig({ dbsyncMode: mode, dbsync }), wiz.poolHex);
-          if (ok) {
+          const st = await connectDbsync(choice, secrets, wiz.poolHex);
+          if (st.state === 'ok') {
             res.textContent = 'Connected to db-sync \u2713';
             res.className = 'wz-test-result wz-test-good';
+          } else if (st.state === 'needs-password') {
+            res.textContent = st.need.includes('passphrase') && st.need.includes('password')
+              ? 'Enter the SSH key passphrase and the database password, then test again.'
+              : st.need.includes('passphrase') ? 'This SSH key is protected by a passphrase - enter it, then test again.'
+              : 'Enter the database password, then test again.';
+            res.className = 'wz-test-result wz-test-bad';
           } else {
-            res.textContent = loc === 'local'
-              ? 'Could not reach db-sync on the local socket - check the database name and role.'
-              : 'Reached the machine, but the database query did not succeed - check the database name, role, and your password / loopback-trust setup.';
+            res.textContent = `Failed at the ${STAGE_LABEL[st.stage] || st.stage}: ${st.error}`;
             res.className = 'wz-test-result wz-test-bad';
           }
         } catch (e) {
@@ -1222,10 +1235,16 @@ export function showSetupWizard(opts = {}) {
   modal.addEventListener('input', refreshNext);
   modal.addEventListener('click', () => setTimeout(refreshNext, 0));
 
-  $('#wz-next').addEventListener('click', () => {
+  $('#wz-next').addEventListener('click', async () => {
     const step = STEPS[idx];
     if (step.validate) {
       const err = step.validate(wiz, modal);
+      if (err) { $('#wz-err').textContent = err; return; }
+    }
+    if (step.check) {
+      const nb = $('#wz-next'); nb.disabled = true;
+      let err = null;
+      try { err = await step.check(wiz, modal); } finally { nb.disabled = false; }
       if (err) { $('#wz-err').textContent = err; return; }
     }
     if (step.collect) step.collect(wiz, modal);
@@ -1246,7 +1265,7 @@ export function showSetupWizard(opts = {}) {
 
 /** Persist the data-source choices (no db-sync password unless opted in; the
  *  Blockfrost key is persisted by setBlockfrostKey, so only a flag is kept here). */
-function saveSourceChoice(wiz) {
+function buildSourceChoice(wiz) {
   const out = { koios: true, useDbsync: !!wiz.useDbsync, useBlockfrost: !!wiz.useBlockfrost };
   if (wiz.useDbsync && wiz.dbsync) {
     const d = wiz.dbsync;
@@ -1273,24 +1292,13 @@ function saveSourceChoice(wiz) {
       };
     }
   }
-  try { localStorage.setItem('poolterminal.source.v1', JSON.stringify(out)); }
-  catch (e) { console.warn('[wizard] source save failed:', e.message ?? e); }
+  return out;
 }
 
-/** Map the wizard db-sync inputs to an initDbsync config. Mode decides shape:
- *  local = socket (no host); tcp = direct network; tunnel = over SSH (viaSsh). */
-function buildDbsyncConfig(wiz) {
-  const d = wiz.dbsync || {};
-  const mode = wiz.dbsyncMode || 'local';
-  const cfg = { database: d.database || 'cexplorer' };
-  if (mode === 'local') return cfg;
-  cfg.host = d.host || (mode === 'tunnel' || mode === 'ssh' ? '127.0.0.1' : '');
-  cfg.port = d.port || 5432;
-  if (d.user) cfg.user = d.user;
-  if (d.password) cfg.password = d.password;
-  if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
-  if (mode === 'ssh') cfg.sshVia = 'dbsync';   // independent SSH session /*wz-wire-v63*/
-  return cfg;
+/** Save the data-source choice. Returns null, or the error text (shown to the user). */
+function saveSourceChoice(wiz) {
+  try { localStorage.setItem('poolterminal.source.v1', JSON.stringify(buildSourceChoice(wiz))); return null; }
+  catch (e) { return e.message ?? String(e); }
 }
 
 /** Apply the collected choices. Koios is always on; db-sync and Blockfrost are
@@ -1305,7 +1313,11 @@ async function applyWizard(wiz) {
     });
   } catch (e) { console.warn('[wizard] notif save failed:', e.message ?? e); }
 
-  try { saveSourceChoice(wiz); } catch (e) { console.warn('[wizard] source save failed:', e.message ?? e); }
+  const saveErr = saveSourceChoice(wiz);
+  if (saveErr) {
+    await alertDialog({ title: 'Settings not saved', danger: true,
+      message: `Your data-source settings could not be saved on this computer (${saveErr}).\n\nThey work for this session only; after a restart PoolTerminal will not know about db-sync. Free some disk space or check that your home folder is writable, then run the wizard again.` });
+  }
 
   try {
     setKoiosToken(wiz.koiosToken || '');
@@ -1313,10 +1325,19 @@ async function applyWizard(wiz) {
   } catch (e) { console.warn('[wizard] Koios token save failed:', e.message ?? e); }
 
   if (wiz.useDbsync && wiz.poolHex) {
-    try {
-      const ok = await initDbsync(buildDbsyncConfig(wiz), wiz.poolHex);
-      console.log(ok ? '[wizard] db-sync activated' : '[wizard] db-sync not reachable - Koios still serves history');
-    } catch (e) { console.warn('[wizard] db-sync init failed:', e.message ?? e); }
+    // Same path as app startup: the saved choice plus this session's secrets.
+    const d = wiz.dbsync || {};
+    setSessionSecrets({ password: d.password || '', passphrase: (d.ssh && d.ssh.auth && d.ssh.auth.passphrase) || '' });
+    let ok = false;
+    try { ok = await retryDbsyncNow(); } catch (e) { console.warn('[wizard] db-sync connect failed:', e.message ?? e); }
+    if (!ok) {
+      const { getDbsyncStatus } = await import('../data/dbsync-connect.js');
+      const st = getDbsyncStatus();
+      if (st.state === 'failed') {
+        await alertDialog({ title: 'db-sync not connected', danger: true,
+          message: `${describeDbsyncStatus(st)}\n\nYour settings are saved. PoolTerminal uses Koios meanwhile and retries db-sync in the background; the Delegators and Data tabs show why it failed.` });
+      }
+    }
   }
 
   if (wiz.useBlockfrost && wiz.blockfrostKey) {

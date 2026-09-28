@@ -88,3 +88,94 @@ pub fn list_ssh_keys() -> Result<Vec<SshKey>, String> {
 
     Ok(found)
 }
+
+/// Result of checking a private key file before it is used. (key-status-v1)
+#[derive(Serialize)]
+pub struct KeyStatus {
+    /// The path exists and is a regular file.
+    pub exists: bool,
+    /// The file could be opened for reading by this process.
+    pub readable: bool,
+    /// The key is protected by a passphrase (needs one to be used).
+    pub encrypted: bool,
+    /// Plain-language problem, when the key cannot be used as-is.
+    pub error: Option<String>,
+}
+
+/// Check a private key path: exists, readable, passphrase-protected. The key is
+/// parsed locally with the same loader the SSH login uses (nothing leaves this
+/// process, and no key material is returned) - only the verdict is reported.
+#[tauri::command]
+pub fn ssh_key_status(path: String) -> KeyStatus {
+    let p = std::path::Path::new(&path);
+    if path.trim().is_empty() {
+        return KeyStatus { exists: false, readable: false, encrypted: false, error: Some("No SSH key path given.".into()) };
+    }
+    if !p.is_file() {
+        return KeyStatus { exists: false, readable: false, encrypted: false, error: Some(format!("SSH key file not found: {path}")) };
+    }
+    if let Err(e) = std::fs::File::open(p) {
+        return KeyStatus { exists: true, readable: false, encrypted: false, error: Some(format!("SSH key file {path} cannot be read ({e}). Check its owner and permissions.")) };
+    }
+    match russh::keys::load_secret_key(p, None) {
+        Ok(_) => KeyStatus { exists: true, readable: true, encrypted: false, error: None },
+        Err(russh::keys::Error::KeyIsEncrypted) => KeyStatus { exists: true, readable: true, encrypted: true, error: None },
+        Err(e) => KeyStatus { exists: true, readable: true, encrypted: false, error: Some(format!("{path} is not a usable SSH private key ({e}).")) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ssh_key_status;
+    use std::process::Command;
+
+    fn tmpdir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pt-keystatus-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn keygen(path: &std::path::Path, pass: &str) {
+        let ok = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", pass, "-f"])
+            .arg(path)
+            .status()
+            .expect("ssh-keygen");
+        assert!(ok.success());
+    }
+
+    #[test]
+    fn key_status_cases() {
+        let d = tmpdir();
+        let missing = d.join("missing");
+        let st = ssh_key_status(missing.to_string_lossy().into());
+        assert!(!st.exists && st.error.unwrap().contains("not found"));
+
+        let plain = d.join("plain");
+        keygen(&plain, "");
+        let st = ssh_key_status(plain.to_string_lossy().into());
+        assert!(st.exists && st.readable && !st.encrypted && st.error.is_none());
+
+        let enc = d.join("enc");
+        keygen(&enc, "correct horse");
+        let st = ssh_key_status(enc.to_string_lossy().into());
+        assert!(st.exists && st.readable && st.encrypted && st.error.is_none());
+
+        let junk = d.join("junk");
+        std::fs::write(&junk, "not a key").unwrap();
+        let st = ssh_key_status(junk.to_string_lossy().into());
+        assert!(st.exists && st.readable && st.error.unwrap().contains("not a usable SSH private key"));
+
+        use std::os::unix::fs::PermissionsExt;
+        let noread = d.join("noread");
+        keygen(&noread, "");
+        std::fs::set_permissions(&noread, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let st = ssh_key_status(noread.to_string_lossy().into());
+        assert!(st.exists && !st.readable && st.error.unwrap().contains("cannot be read"));
+
+        let st = ssh_key_status("  ".into());
+        assert!(!st.exists && st.error.is_some());
+        std::fs::set_permissions(&noread, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+}

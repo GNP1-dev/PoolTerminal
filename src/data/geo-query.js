@@ -5,7 +5,10 @@
  * the existing SSH session (the node has internet egress; the WebView may
  * have CORS restrictions). Free tier: 45 req/min, 100 IPs per batch.
  *
- * Results are cached forever in localStorage (IPs don't change location).
+ * Results are cached in localStorage (IPs rarely change location), capped at
+ * GEO_CACHE_MAX entries, least recently used dropped first. Saves are delayed
+ * up to a minute so a burst of new peers is one write, and flushed when the
+ * window is hidden or closed. (geo-cache-cap-v1)
  * On every peers refresh we filter to IPs we haven't seen yet, and only
  * hit the API for those — steady-state burns no requests.
  *
@@ -29,12 +32,40 @@ let cache = new Map();
   }
 })();
 
-function saveCache() {
+// Uncapped, the cache grew without end (226 KB) and was rewritten whole on
+// every new peer IP - a large contributor to localStorage WAL growth.
+const GEO_CACHE_MAX = 2000;
+const GEO_SAVE_DELAY_MS = 60 * 1000;
+let _saveTimer = null;
+
+function trimCache() {
+  // Map iteration order is insertion order; getCachedGeo re-inserts on use, so
+  // the front holds the least recently used. Own-location entries are kept.
+  for (const k of cache.keys()) {
+    if (cache.size <= GEO_CACHE_MAX) break;
+    if (!k.startsWith('__self')) cache.delete(k);
+  }
+}
+
+function writeCache() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  trimCache();
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(Object.fromEntries(cache)));
   } catch (e) {
     console.warn('[geo] cache save failed:', e.message);
   }
+}
+
+function saveCache() {
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(writeCache, GEO_SAVE_DELAY_MS);
+}
+
+if (typeof document !== 'undefined' && document.addEventListener) {
+  const flush = () => { if (_saveTimer) writeCache(); };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+  window.addEventListener('pagehide', flush);
 }
 
 function isPrivateIp(ip) {
@@ -66,7 +97,10 @@ const _demo = () => { try { return getMode() === 'demo'; } catch { return false;
 
 export function getCachedGeo(ip) {
   if (_demo()) return demoGeo(ip);
-  return cache.get(ip) || null;
+  const hit = cache.get(ip);
+  if (!hit) return null;
+  cache.delete(ip); cache.set(ip, hit);   // mark as recently used (LRU order)
+  return hit;
 }
 
 /**

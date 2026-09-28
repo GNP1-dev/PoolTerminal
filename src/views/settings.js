@@ -12,6 +12,7 @@
 
 import { registry, DataKind } from '../data/capabilities.js';
 import { showSetupWizard } from './wizard.js';
+import { getDbsyncStatus, savedSourceChoice, STAGE_LABEL } from '../data/dbsync-connect.js';   /*dbsync-status-v1*/
 import { invoke } from '../data/tauri.js';
 import { applyBlockfrostKey, blockfrostStatus, reverifyBlockfrost } from '../data/read-model.js';
 import {
@@ -133,6 +134,13 @@ function dbsyncStateText() {
       return v ? `Active - schema ${v}` : 'Active';
     }
   } catch { /* ignore */ }
+  const c = savedSourceChoice();
+  if (c && c.useDbsync === true) {
+    const st = getDbsyncStatus();
+    if (st.state === 'needs-password') return 'Set up - needs password for this session';
+    if (st.state === 'failed') return `Set up - failed at ${STAGE_LABEL[st.stage] || st.stage}: ${st.error}`;
+    return 'Set up - connecting';
+  }
   return 'Not configured';
 }
 

@@ -16,6 +16,7 @@
 
 import * as readModel from '../data/read-model.js';
 import { registry, DataKind } from '../data/capabilities.js';
+import { getDbsyncStatus, savedSourceChoice, STAGE_LABEL } from '../data/dbsync-connect.js';   /*dbsync-status-v1*/
 
 const HISTORY_HTML = `
   <style>
@@ -300,6 +301,12 @@ export async function mountHistory(canvas) {
     // Dropped in de9b5a5 when this line was rebuilt, which left an untested
     // schema unflagged everywhere but the console. /*schema-warn-v1*/
     if (tblSrc.id === 'dbsync' && meta && meta.warning) metaText += ` ⚠ ${meta.warning}`;
+  }
+  // db-sync chosen but not connected: say so next to the source actually used. (dbsync-status-v1)
+  const _c = savedSourceChoice();
+  const _st = getDbsyncStatus();
+  if ((!tblSrc || tblSrc.id !== 'dbsync') && _c && _c.useDbsync === true && (_st.state === 'failed' || _st.state === 'needs-password')) {
+    metaText += _st.state === 'needs-password' ? ' ⚠ db-sync needs its password' : ` ⚠ db-sync failed at ${STAGE_LABEL[_st.stage] || _st.stage}`;
   }
   set('hist-tbl-meta', metaText);
 }

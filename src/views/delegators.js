@@ -19,6 +19,8 @@ import * as readModel from '../data/read-model.js';
 import { registry, DataKind } from '../data/capabilities.js';
 import * as blockfrost from '../data/blockfrost-query.js';
 import { getMode } from '../data/index.js';   /*demo-world-v99*/
+import { getDbsyncStatus, describeDbsyncStatus, savedSourceChoice } from '../data/dbsync-connect.js';   /*dbsync-status-v1*/
+import { showDbsyncPrompt } from '../ui/dbsync-prompt.js';
 
 // Our own pool is resolved at runtime from the connected node (not hardcoded),
 // so anyone running PoolTerminal sees their own pool highlighted. /*pool-id-runtime-B*/
@@ -215,6 +217,8 @@ const DELEGATORS_HTML = `
     /* Loyalty leaderboard */
     .loy-legend { display: flex; gap: 16px; align-items: center; font: 400 10px ui-monospace, monospace; color: var(--pt-text-muted); padding: 2px 10px 8px; }
     .loy-legend-na { display: block; padding: 6px 10px 10px; }
+    .dbs-warn { margin: 4px 10px 8px; font: 700 11.5px ui-monospace, monospace; color: #ffb86b; background: rgba(255,160,60,0.08); border: 1px solid rgba(255,160,60,0.40); border-radius: 6px; padding: 8px 11px; line-height: 1.5; }
+    .dbs-warn button { margin-left: 8px; font: 600 11px ui-monospace, monospace; padding: 3px 10px; border-radius: 6px; cursor: pointer; background: #1b2430; color: #cdd6e4; border: 1px solid #2c3a4d; }
     .loy-legend-na .loy-na { /*loy-na-red*/ display: block; font: 700 11.5px ui-monospace, monospace; color: #ff6b6b; background: rgba(255,80,80,0.08); border: 1px solid rgba(255,90,90,0.40); border-radius: 6px; padding: 8px 11px; line-height: 1.5; }
     .loy-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
     .loy-sw-ten { background: #4a9eff; }
@@ -331,6 +335,7 @@ const DELEGATORS_HTML = `
           </label>
         </div>
       </div>
+      <div id="d-dbsync-notice"></div>
       <div class="loy-legend" id="d-legend">
         <span title="How long they've delegated unbroken, relative to the longest-serving - blue bar segment."><span class="sw loy-sw-ten"></span>tenure</span>
         <span title="Current stake, weighted so dust ≈ 0 and whales saturate - gold bar segment."><span class="sw loy-sw-stk"></span>stake-weight</span>
@@ -1259,6 +1264,9 @@ function stopAdaPrice() {
 
 export async function mountDelegators(canvas) {
   canvas.innerHTML = DELEGATORS_HTML;
+  renderDbsyncNotice();   /*dbsync-status-v1*/
+  window.removeEventListener('pt:dbsync-status', renderDbsyncNotice);
+  window.addEventListener('pt:dbsync-status', renderDbsyncNotice);
   startAdaPrice();   /*ada-price-hero*/
   const root = canvas.querySelector('#pt-delegators');
   // Instant re-nav: reuse a recently fetched delegator list from memory rather
@@ -1413,7 +1421,8 @@ export async function mountDelegators(canvas) {
     if (lg) {
       lg.classList.add('loy-legend-na');
       lg.innerHTML = '<span class="loy-na">\u24d8 Loyalty ranking (tenure \u00d7 stake-weight) needs db-sync or Blockfrost. '
-        + 'Connected to Koios only, so the table shows current live stake. '
+        + (dbsyncConfiguredNotOk() ? 'db-sync is set up but not connected (see above), so for now ' : 'Connected to Koios only, so ')
+        + 'the table shows current live stake. '
         + 'Add db-sync or a Blockfrost key from Settings to rank by loyalty.</span>';
     }
     const lb = document.getElementById('sort-loyalty'); if (lb) lb.style.display = 'none';
@@ -1426,4 +1435,34 @@ export async function mountDelegators(canvas) {
   stopLoadCreep();
 }
 
-export function unmountDelegators() { stopLoadCreep(); stopAdaPrice(); closeDeepDive(); }
+export function unmountDelegators() {
+  stopLoadCreep(); stopAdaPrice(); closeDeepDive();
+  window.removeEventListener('pt:dbsync-status', renderDbsyncNotice);
+}
+
+// db-sync set up but not connected: say so, and why, instead of implying the
+// operator chose Koios. Shown whatever other source serves loyalty (a
+// Blockfrost key would otherwise hide a failing db-sync). (dbsync-status-v1)
+function dbsyncConfiguredNotOk() {
+  if (getMode() === 'demo') return false;
+  const c = savedSourceChoice();
+  if (!c || c.useDbsync !== true) return false;
+  const st = getDbsyncStatus();
+  return st.state === 'failed' || st.state === 'needs-password';
+}
+function renderDbsyncNotice() {
+  const el = document.getElementById('d-dbsync-notice');
+  if (!el) return;
+  if (!dbsyncConfiguredNotOk()) { el.innerHTML = ''; return; }
+  const st = getDbsyncStatus();
+  const btn = st.state === 'needs-password'
+    ? '<button type="button" data-dbs="prompt">Enter password</button>'
+    : '<button type="button" data-dbs="retry">Retry now</button>';
+  el.innerHTML = `<div class="dbs-warn">\u26a0 ${esc(describeDbsyncStatus(st))} Koios data is shown meanwhile.${btn}</div>`;
+  const b = el.querySelector('button');
+  if (b) b.addEventListener('click', async () => {
+    if (b.dataset.dbs === 'prompt') { showDbsyncPrompt(); return; }
+    b.disabled = true; b.textContent = 'Retrying...';
+    try { await readModel.retryDbsyncNow(); } finally { renderDbsyncNotice(); }
+  });
+}

@@ -24,6 +24,7 @@ import { connectDbsync, describeDbsyncStatus, setSessionSecrets, STAGE_LABEL } f
 import { suggestPollMs, pollUsage, fmtInterval, POLL_LADDER_MS, getNotifSettings, saveNotifSettings } from '../data/notif-settings.js';
 import { showConnectModal } from './connect.js';
 import { alertDialog } from '../ui/dialog.js';
+import { REMEMBER_TEXT } from '../ui/dbsync-prompt.js';
 import { setMode, getMode } from '../data/index.js';   /*wz-cancel-v95*/
 import { isConnected, getSession, loadConfig } from '../data/session.js';
 import { applyBlockfrostKey, retryDbsyncNow } from '../data/read-model.js';
@@ -363,7 +364,7 @@ const STEPS = [
           <div class="wz-note-h">On the db-sync machine you will need:</div>
           <ul class="wz-checklist">
             <li>Postgres reachable on <strong>localhost</strong> - <code>ss -tlnp | grep 5432</code> should show <code>127.0.0.1:5432</code>. <button type="button" class="wz-info-i" data-info="pglocal">i</button></li>
-            <li>A way in for the database: a <strong>password</strong> for the role, or a <strong>loopback-trust</strong> line in <code>pg_hba.conf</code> (<code>host &lt;db&gt; &lt;role&gt; 127.0.0.1/32 trust</code>) - safe only while Postgres stays localhost-only. <button type="button" class="wz-info-i" data-info="pgauth">i</button></li>
+            <li>A <strong>read-only database role with a password</strong> (recommended), e.g. <code>cexplorer_ro</code> - PoolTerminal only ever reads. <button type="button" class="wz-info-i" data-info="pgauth">i</button></li>
             <li>Your <strong>database and role names</strong> - run <code>sudo -u postgres psql -l</code> to see them. <button type="button" class="wz-info-i" data-info="dbnames">i</button></li>
           </ul>
         </div>`;
@@ -380,14 +381,15 @@ const STEPS = [
         <div class="wz-field"><label>Database access</label>
           <input type="hidden" id="wz-db-auth" value="${authMode}">
           <div class="wz-seg" id="wz-db-auth-seg">
-            <button type="button" class="wz-seg-btn ${authMode === 'password' ? 'wz-seg-on' : ''}" data-auth="password">Password (simplest)</button>
-            <button type="button" class="wz-seg-btn ${authMode === 'trust' ? 'wz-seg-on' : ''}" data-auth="trust">No password - loopback trust</button>
+            <button type="button" class="wz-seg-btn ${authMode === 'password' ? 'wz-seg-on' : ''}" data-auth="password">Password (recommended)</button>
+            <button type="button" class="wz-seg-btn ${authMode === 'trust' ? 'wz-seg-on' : ''}" data-auth="trust">No password - loopback trust (not recommended)</button>
           </div>
         </div>
         <div class="wz-field ${authMode === 'password' ? '' : 'wz-creds-hidden'}" id="wz-db-passrow"><label>Database password</label>
           <input id="wz-db-pass" type="password" value="${esc(db.password || '')}" autocomplete="off">
-          <label class="wz-check"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}> Remember this password on this machine</label></div>
-        <div class="wz-info ${authMode === 'trust' ? '' : 'wz-creds-hidden'}" id="wz-db-trustnote">Loopback trust means no password is stored: access is controlled purely by who can open the SSH tunnel. Keep Postgres listening on localhost only.</div>`;
+          <label class="wz-check wz-remember"><input type="checkbox" id="wz-db-savepass"${db.savePassword ? ' checked' : ''}> ${esc(REMEMBER_TEXT)}</label>
+          <div class="wz-hint-inline">Not ticked: PoolTerminal asks for the password each time it starts.</div></div>
+        <div class="wz-info ${authMode === 'trust' ? '' : 'wz-creds-hidden'}" id="wz-db-trustnote">Not recommended. Loopback trust lets anything on that machine that can reach 127.0.0.1:5432 log in as this role with no password - every local user and process, not just PoolTerminal's tunnel. Prefer a read-only role with a password.</div>`;
 
       if (loc === 'bp') {
         return `
@@ -414,7 +416,7 @@ const STEPS = [
       <div class="wz-subhead">SSH to the db-sync machine</div>
       <div class="wz-row">
         <div class="wz-field"><label>SSH host</label><input id="wz-ssh-host" type="text" value="${esc(ssh.host || '')}" placeholder="192.168.1.x or hostname" autocomplete="off"></div>
-        <div class="wz-field" style="flex:0.4"><label>Port</label><input id="wz-ssh-port" type="number" value="${ssh.port || 22}" autocomplete="off"></div>
+        <div class="wz-field" style="flex:0.4"><label>SSH port <span class="wz-opt">(often 22 - check yours)</span></label><input id="wz-ssh-port" type="number" value="${ssh.port || ''}" placeholder="e.g. 22" min="1" max="65535" autocomplete="off"></div>
       </div>
       <div class="wz-field"><label>SSH username</label><input id="wz-ssh-user" type="text" value="${esc(ssh.username || '')}" autocomplete="off"></div>
       <div class="wz-field"><label>SSH private key path <span class="wz-opt">(on this machine)</span></label><input id="wz-ssh-key" type="text" value="${esc(wiz.sshKeyPath || (ssh.auth && ssh.auth.path) || '')}" placeholder="/home/you/.ssh/id_ed25519" autocomplete="off"></div>
@@ -445,7 +447,7 @@ const STEPS = [
       if (loc === 'remote') {
         cfg.ssh = {
           host: v('#wz-ssh-host'),
-          port: Number(v('#wz-ssh-port')) || 22,
+          port: Number(v('#wz-ssh-port')) || null,
           username: v('#wz-ssh-user'),
           auth: { type: 'key', path: v('#wz-ssh-key'), passphrase: v('#wz-ssh-pass') || null },
         };
@@ -459,6 +461,7 @@ const STEPS = [
       if (!v('#wz-db-name')) return 'Enter the database name.';
       if (loc === 'remote') {
         if (!v('#wz-ssh-host')) return 'Enter the SSH host of the db-sync machine.';
+        { const pn = Number(v('#wz-ssh-port')); if (!Number.isInteger(pn) || pn < 1 || pn > 65535) return 'Enter the SSH port of the db-sync machine (often 22, but yours may differ).'; }
         if (!v('#wz-ssh-user')) return 'Enter the SSH username.';
         if (!v('#wz-ssh-key')) return 'Enter the SSH private key path.';
       }
@@ -681,6 +684,9 @@ const STYLE = `
 .wz-row { display: flex; gap: 10px; }
 .wz-row .wz-field { flex: 1; }
 .wz-opt { text-transform: none; letter-spacing: 0; opacity: .7; font-size: 11px; }
+.wz-check.wz-remember { font-size: 13.5px; color: var(--pt-text-primary, #e6edf3); align-items: flex-start; margin: 6px 0 2px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.wz-check.wz-remember input { margin-top: 3px; }
+.wz-hint-inline { font-size: 12px; color: var(--pt-text-secondary, #b9c4d0); margin: 0 0 8px 24px; }
 .wz-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--pt-text-secondary, #b9c4d0); margin: 4px 0 8px; cursor: pointer; text-transform: none; letter-spacing: 0; }
 .wz-hint { font-size: 11.5px; color: var(--pt-text-muted, #9aa7b4); line-height: 1.5; margin-top: 2px; }
 .wz-hint.wz-warn { color: #fb7185; }
@@ -785,9 +791,12 @@ const WZ_INFO = {   /*wz-infoicons-v63b*/
   },
   pgauth: {
     title: 'Database access',
-    body: "Two ways to let the app in: a password for the role, or a loopback-trust line (no password stored) - safe ONLY while Postgres stays localhost-only. For trust, add this ABOVE the scram-sha-256 line in pg_hba.conf (replace <db> and <role>), then reload:",
-    cmds: ["host    <db>    <role>    127.0.0.1/32    trust", "sudo systemctl reload postgresql"],
-    foot: "Find your pg_hba.conf path with:  sudo -u postgres psql -tA -c \"SHOW hba_file\"",
+    body: "Recommended: a read-only role with a password. PoolTerminal only reads, so give it a role that can only read. On the db-sync machine (change the password; cexplorer is the usual database name):",
+    cmds: [
+      "sudo -u postgres psql -d cexplorer -c \"CREATE ROLE cexplorer_ro LOGIN PASSWORD 'choose-a-password'\"",
+      "sudo -u postgres psql -d cexplorer -c \"GRANT CONNECT ON DATABASE cexplorer TO cexplorer_ro; GRANT USAGE ON SCHEMA public TO cexplorer_ro; GRANT SELECT ON ALL TABLES IN SCHEMA public TO cexplorer_ro; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cexplorer_ro\"",
+    ],
+    foot: "The stock pg_hba.conf already accepts a password (scram-sha-256) from 127.0.0.1, so no pg_hba change is needed. Loopback 'trust' is not recommended: it lets any local user or process in without a password.",
   },
   dbnames: {
     title: 'Database & role names',
@@ -1282,7 +1291,7 @@ function buildSourceChoice(wiz) {
     if (wiz.dbsyncMode === 'ssh' && d.ssh) {   /*wz-wire-v63*/
       out.dbsync.ssh = {
         host: d.ssh.host || '',
-        port: d.ssh.port || 22,
+        port: d.ssh.port || null,
         username: d.ssh.username || '',
         auth: {
           type: 'key',

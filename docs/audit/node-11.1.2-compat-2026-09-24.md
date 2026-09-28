@@ -394,6 +394,18 @@ A single `src/data/compat.js` constant, read by About and the DATA tab, would st
       - MAX "all" shows its date inline.
       - Stored peaks are converted once from % of 2 blocks to blocks (× 2 / 100). The `unit: 'blocks'` marker is written in the same value, so a peak can't be converted twice.
 
+## 7. 0.5.0 planned
+
+Found while fixing SSH-tunnel db-sync and the 1 GB localStorage WAL for 0.4.1 (branch `fix/dbsync-tunnel-0.4.1`), and deliberately left out of that bug-fix release:
+
+1. **Secrets in the OS keyring.** Store the db-sync database password and an optional SSH key passphrase in the Secret Service keyring (Rust `keyring` crate) instead of plain-text localStorage.
+   - One-time move of any remembered password into the keyring.
+   - A missing, locked or refusing keyring produces a clear message saying what to do, never a silent fallback.
+   - 0.4.1 keeps plain-text storage behind an explicit, labelled "Remember" checkbox and asks for missing secrets at startup.
+2. **Explicit host-key confirmation.** An unknown SSH host key is shown (SHA256 fingerprint, host:port) and must be accepted by the user before it is saved. This covers the node, relays and db-sync. Today the first key is trusted and saved silently (trust-on-first-use); a changed key is already blocked. A failure to save a trusted key is reported.
+3. **Move high-churn state out of localStorage** (mempool peaks, block-delay history, geo cache) into the app's own SQLite cache, which the app controls and checkpoints. WebKitGTK never checkpoints the localStorage WAL mid-session; 0.4.1 cuts the write volume by ~98%, but this removes the dependency.
+4. **Recent alerts:** cap or trim the recent-alerts list, which makes up almost all of the 9.5 KB alerts config rewritten when an alert fires. Splitting it into its own key (considered for 0.4.1) would not shrink the write, because the list itself is the bulk; alerts are rare, so this is low priority.
+
 ## Appendix: build and static checks (Phase 5)
 
 - `cargo check`: clean.

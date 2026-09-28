@@ -271,26 +271,39 @@ function renderSparkline(currentBytes) {
 }
 
 // --- persistent mempool high-water marks (5m / 1h / 24h / all-time) ---
-// Stored in BLOCKS queued: { unit: 'blocks', allTime: { blk, t }, mins: { <minute>: blk } }.
-// Before item 18 this key held % of 2 blocks ({ allTime: { pct, t }, mins }),
-// despite an old comment calling it fill-% of real capacity. peaksToBlocks()
-// converts that once (value × 2 / 100); `unit: 'blocks'` is the done-marker,
-// written in the same localStorage value as the converted peaks so a failed
-// write can never convert twice. /*mp-peaks-blocks-v1*/
-const PEAKS_KEY = 'pt.mempool.peaks.v2';
+// Stored in BLOCKS queued under pt.mempool.peaks.v3 (0.4.1, WAL fix):
+//   { v: 3, allTime: { blk, t }, m: { <minute>: blk }, b: { <10-min bucket>: blk } }
+//   m = per-minute maxima for the last hour, b = 10-minute maxima for 1-24 h,
+//   both rounded to 0.01 blk; allTime is kept exactly as recorded.
+// v2 (0.4.0) kept 1,441 full-precision per-minute values (~87 KB) and rewrote
+// them every 5 s; under WebKit's never-checkpointed localStorage WAL that grew
+// the WAL to 1 GB in a day. v3 is ~5 KB and is written at most once a minute,
+// plus a flush when the window is hidden or closed. /*mp-peaks-v3*/
+//
+// Migration: the presence of the v3 key is the done-marker. v2 is only read
+// (never modified), converted deterministically, written to v3, and removed
+// only after the v3 write succeeded - so a failed write simply retries from
+// the same input next time and nothing is ever converted twice.
+const PEAKS_KEY = 'pt.mempool.peaks.v3';
+const PEAKS_V2_KEY = 'pt.mempool.peaks.v2';
 const MAX_PEAK_BLK = 20;   // clamp: a transient spike can't store an absurd value
+const PEAK_SAVE_MS = 60 * 1000;
 let peaks = null;
 let peaksLoaded = false;
+let peaksDirty = false;
 let lastPeakSave = 0;
 
+const r2 = (v) => Math.round(v * 100) / 100;
+const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+
 /**
- * Normalise a stored peaks object to blocks. Returns { peaks, converted }.
- * Already-converted input (unit 'blocks') passes through unchanged.
+ * Normalise a stored v2 peaks object to blocks. Returns { peaks, converted }.
+ * Already-converted input (unit 'blocks') passes through unchanged; the older
+ * % of 2 blocks form is converted (value × 2 / 100).
  */
 export function peaksToBlocks(p) {
   const out = { unit: 'blocks', allTime: { blk: 0, t: 0 }, mins: {} };
   if (!p || typeof p !== 'object') return { peaks: out, converted: false };
-  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
   if (p.unit === 'blocks') {
     if (p.allTime && num(p.allTime.blk) != null) out.allTime = { blk: p.allTime.blk, t: p.allTime.t || 0 };
     if (p.mins && typeof p.mins === 'object') {
@@ -306,36 +319,92 @@ export function peaksToBlocks(p) {
   return { peaks: out, converted: true };
 }
 
+function emptyPeaks() { return { v: 3, allTime: { blk: 0, t: 0 }, m: {}, b: {} }; }
+
+/**
+ * Fold per-minute values older than an hour into 10-minute maxima and drop
+ * anything older than 24 h. Mutates and returns `p`. `nowMs` for tests.
+ */
+export function compactPeaks(p, nowMs = Date.now()) {
+  const nowMin = Math.floor(nowMs / 60000);
+  const hourCut = nowMin - 60, dayCut = nowMin - 24 * 60;
+  for (const [k, v] of Object.entries(p.m)) {
+    const min = Number(k);
+    if (min >= hourCut) continue;
+    delete p.m[k];
+    if (min < dayCut || !(v > 0)) continue;
+    const bk = Math.floor(min / 10);
+    if (v > (p.b[bk] || 0)) p.b[bk] = r2(v);
+  }
+  for (const k of Object.keys(p.b)) if (Number(k) * 10 + 9 < dayCut) delete p.b[k];
+  return p;
+}
+
+/**
+ * Convert a stored v2 object (either unit) to v3. The all-time peak and its
+ * date are carried over exactly; window values are rounded to 0.01 blk.
+ */
+export function migratePeaksV2(v2, nowMs = Date.now()) {
+  const blocks = peaksToBlocks(v2).peaks;
+  const out = emptyPeaks();
+  out.allTime = { blk: blocks.allTime.blk, t: blocks.allTime.t };
+  for (const [k, v] of Object.entries(blocks.mins)) {
+    const rv = r2(Math.min(MAX_PEAK_BLK, v));
+    if (rv > 0) out.m[k] = rv;
+  }
+  return compactPeaks(out, nowMs);
+}
+
+function readV3(raw) {
+  const p = JSON.parse(raw);
+  const out = emptyPeaks();
+  if (p && p.allTime && num(p.allTime.blk) != null) out.allTime = { blk: p.allTime.blk, t: p.allTime.t || 0 };
+  for (const f of ['m', 'b']) {
+    if (p && p[f] && typeof p[f] === 'object') {
+      for (const [k, v] of Object.entries(p[f])) if (num(v) != null) out[f][k] = v;
+    }
+  }
+  return out;
+}
+
 function loadPeaks() {
   if (peaksLoaded) return;
   peaksLoaded = true;
-  peaks = peaksToBlocks(null).peaks;
+  peaks = emptyPeaks();
   try {
     const raw = localStorage.getItem(PEAKS_KEY);
     if (raw) {
-      const r = peaksToBlocks(JSON.parse(raw));
-      peaks = r.peaks;
-      if (r.converted) {
-        localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks));
-        console.log(`[mempool] stored peaks converted from % of 2 blocks to blocks (all-time ${fmtBlk(peaks.allTime.blk)})`);
+      peaks = compactPeaks(readV3(raw));
+    } else {
+      const old = localStorage.getItem(PEAKS_V2_KEY);
+      if (old) {
+        peaks = migratePeaksV2(JSON.parse(old));
+        localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks));   // done-marker written with the data
+        try { localStorage.removeItem(PEAKS_V2_KEY); } catch { /* v3 exists; v2 is ignored from now on */ }
+        console.log(`[mempool] stored peaks migrated to v3 (all-time ${fmtBlk(peaks.allTime.blk)})`);
       }
     }
-  } catch (e) { /* ignore corrupt/absent */ }
-  prunePeaks();
+  } catch (e) { console.warn('[mempool] stored peaks could not be loaded:', e.message ?? e); }
+  installPeakFlush();
 }
 
-function prunePeaks() {
-  const cutoff = Math.floor((Date.now() - 24 * 3600 * 1000) / 60000);
-  for (const k of Object.keys(peaks.mins)) {
-    if (Number(k) < cutoff) delete peaks.mins[k];
-  }
+function writePeaks() {
+  if (!peaks || !peaksDirty) return;
+  lastPeakSave = Date.now();
+  peaksDirty = false;
+  try { localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks)); } catch (e) { peaksDirty = true; }
 }
 
-function savePeaks() {
-  const now = Date.now();
-  if (now - lastPeakSave < 5000) return;
-  lastPeakSave = now;
-  try { localStorage.setItem(PEAKS_KEY, JSON.stringify(peaks)); } catch (e) { /* ignore */ }
+function savePeaksIfDue() {
+  if (Date.now() - lastPeakSave >= PEAK_SAVE_MS) writePeaks();
+}
+
+let _flushInstalled = false;
+function installPeakFlush() {
+  if (_flushInstalled || typeof document === 'undefined' || !document.addEventListener) return;
+  _flushInstalled = true;
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') writePeaks(); });
+  if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('pagehide', writePeaks);
 }
 
 function recordPeak(blk) {
@@ -348,22 +417,26 @@ function recordPeak(blk) {
   // hold). Keep it, but clamp so a transient spike can't store an absurd value.
   if (blk > MAX_PEAK_BLK) blk = MAX_PEAK_BLK;   /*mp-peak-clamp*/
   const now = Date.now();
-  let changed = false;
-  if (blk > (peaks.allTime.blk || 0)) { peaks.allTime = { blk, t: now }; changed = true; }
+  if (blk > (peaks.allTime.blk || 0)) { peaks.allTime = { blk, t: now }; peaksDirty = true; }
   const m = Math.floor(now / 60000);
-  if (blk > (peaks.mins[m] || 0)) { peaks.mins[m] = blk; changed = true; }
-  prunePeaks();
-  if (changed) savePeaks();
+  const rv = r2(blk);
+  if (rv > (peaks.m[m] || 0)) { peaks.m[m] = rv; peaksDirty = true; }
+  compactPeaks(peaks, now);
+  if (peaksDirty) savePeaksIfDue();
+}
+
+/** Highest queue (blocks) seen in the last `windowMs`, from minute and 10-minute maxima. */
+export function maxOverPeaks(p, windowMs, nowMs = Date.now()) {
+  const cutoff = Math.floor((nowMs - windowMs) / 60000);
+  let max = 0;
+  for (const [k, v] of Object.entries(p.m)) if (Number(k) >= cutoff && v > max) max = v;
+  for (const [k, v] of Object.entries(p.b)) if (Number(k) * 10 + 9 >= cutoff && v > max) max = v;
+  return max;
 }
 
 function maxOverMins(windowMs) {
   loadPeaks();
-  const cutoff = Math.floor((Date.now() - windowMs) / 60000);
-  let max = 0;
-  for (const [k, v] of Object.entries(peaks.mins)) {
-    if (Number(k) >= cutoff && v > max) max = v;
-  }
-  return max;
+  return maxOverPeaks(peaks, windowMs);
 }
 
 function renderStats() {

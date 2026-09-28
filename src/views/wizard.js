@@ -48,7 +48,7 @@ function freshState() {
     _connected: false,
     poolHex: null,
     useDbsync: false,       // optional db-sync
-    dbsyncMode: 'local',    // 'local' | 'tcp' | 'tunnel'
+    dbsyncMode: 'local',    // 'local' | 'tunnel' (via the node's SSH) | 'ssh' (own SSH session)
     dbsync: {},             // db-sync DB creds
     useBlockfrost: false,   // optional Blockfrost
     blockfrostKey: '',      // Blockfrost project key
@@ -56,6 +56,41 @@ function freshState() {
     koiosToken: getKoiosToken() || '',   // preloaded so a wizard re-run never wipes an existing token /*wz-koios-preserve-v33*/
     notif: {},              // poll cadence + threshold
   };
+}
+
+// The saved db-sync choice (poolterminal.source.v1), mapped back into wizard
+// state so a re-run shows what is set up and Finish does not overwrite it with
+// blanks. Before 0.4.1 the wizard always started empty here. The key
+// passphrase is never saved, so it is never restored. /*wz-dbsync-reload-v1*/
+export function savedDbsyncState() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem('poolterminal.source.v1') || 'null'); } catch { c = null; }
+  if (!c || typeof c.useDbsync !== 'boolean') return {};
+  const out = { useDbsync: c.useDbsync, _dbAnswered: true };
+  if (!c.useDbsync) return out;
+  const mode = c.dbsyncMode || 'local';
+  out.dbsyncMode = mode;
+  out.dbLocation = mode === 'local' ? 'local' : mode === 'tunnel' ? 'bp' : 'remote';
+  const d = c.dbsync || {};
+  out.dbsync = {
+    database: d.database || 'cexplorer',
+    host: d.host || '',
+    port: d.port || 5432,
+    user: d.user || '',
+    authMode: d.authMode || 'password',
+    savePassword: !!d.savePassword,
+    password: d.savePassword ? (d.password || '') : '',
+  };
+  if (d.ssh) {
+    out.dbsync.ssh = {
+      host: d.ssh.host || '',
+      port: d.ssh.port || '',
+      username: d.ssh.username || '',
+      auth: { type: 'key', path: (d.ssh.auth && d.ssh.auth.path) || '', passphrase: null },
+    };
+    if (out.dbsync.ssh.auth.path) out.sshKeyPath = out.dbsync.ssh.auth.path;
+  }
+  return out;
 }
 
 // Yes/No card pair used by the db-sync and Blockfrost screens.
@@ -789,7 +824,7 @@ function wizardGuided() {   /*wz-guided-key-v69*/
 export function showSetupWizard(opts = {}) {
   if (document.getElementById('wz-modal')) return;
   const onComplete = typeof opts.onComplete === 'function' ? opts.onComplete : null;
-  const wiz = Object.assign(freshState(), opts._resume || {});
+  const wiz = Object.assign(freshState(), savedDbsyncState(), opts._resume || {});
   // If a live session already exists (e.g. re-running the wizard from the
   // running app), pre-fill the connect step from it so we don't force a
   // needless reconnect/2FA. POOL_ID is already captured in the session.

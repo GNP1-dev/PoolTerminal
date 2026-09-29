@@ -1177,17 +1177,29 @@ export const dbsyncSource = {
 
 /**
  * Classify a Postgres / tunnel error message into a connect stage, so the UI
- * can say where it failed. (dbsync-status-v1)
+ * can say where it failed. The Rust side appends "[SQLSTATE xxxxx]" to every
+ * Postgres server error (pg-error-v1), which is used first; wording is the
+ * fallback. "connect" means Postgres could not be reached at all - never a
+ * login or query the server answered. (dbsync-status-v1)
  */
 export function pgErrorStage(msg) {
-  const m = String(msg || '').toLowerCase();
-  if (m.includes('ssh') && m.includes('not connected')) return 'ssh';
-  if (m.includes('tunnel open failed') || m.includes('channel')) return 'tunnel';
+  const raw = String(msg || '');
+  const m = raw.toLowerCase();
+  const code = (raw.match(/\[SQLSTATE ([0-9A-Z]{5})\]/) || [])[1];
+  if (code) {
+    if (code === '28P01' || code === '28000' || code === '3D000') return 'auth';   // bad password / no pg_hba entry or role / no such database
+    if (code.startsWith('08') || code.startsWith('57P0') || code === '53300') return 'connect';   // connection exception, shutting down, too many connections
+    return 'query';
+  }
+  if (m.includes('ssh') && (m.includes('not connected') || m.includes('disconnected'))) return 'ssh';
+  if (m.includes('tunnel open failed') || m.includes('channel open')) return 'tunnel';
   if (m.includes('password authentication failed') || m.includes('no password supplied')
       || m.includes('authentication') || (m.includes('role') && m.includes('does not exist'))
       || m.includes('pg_hba')) return 'auth';
   if (m.includes('database') && m.includes('does not exist')) return 'auth';
-  if (m.includes('connect') || m.includes('refused') || m.includes('timed out') || m.includes('timeout')) return 'connect';
+  if (m.includes('error connecting to server') || m.includes('refused') || m.includes('timed out')
+      || m.includes('timeout') || m.includes('no route to host') || m.includes('unreachable')
+      || m.includes('connection reset') || m.includes('connection closed')) return 'connect';
   return 'query';
 }
 

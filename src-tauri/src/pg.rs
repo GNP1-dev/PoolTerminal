@@ -91,6 +91,36 @@ fn first_existing_socket_dir() -> String {
     "/var/run/postgresql".to_string()
 }
 
+/// Format a tokio-postgres error for the UI. Its Display is only "db error" for
+/// every server-side error (wrong password, missing role, missing table...), so
+/// the real server message and SQLSTATE are pulled from `as_db_error()`, and
+/// client-side errors (refused, timed out, closed) get their full source chain.
+/// The trailing "[SQLSTATE xxxxx]" lets the JS side name the failing stage
+/// (28P01/28000 = database login) without guessing from wording. (pg-error-v1)
+pub fn pg_error(context: &str, e: &tokio_postgres::Error) -> String {
+    if let Some(db) = e.as_db_error() {
+        let mut s = format!("{context}: {}", db.message());
+        if let Some(detail) = db.detail() {
+            s.push_str(&format!(" ({detail})"));
+        }
+        if let Some(hint) = db.hint() {
+            s.push_str(&format!(" Hint: {hint}"));
+        }
+        s.push_str(&format!(" [SQLSTATE {}]", db.code().code()));
+        return s;
+    }
+    let mut s = format!("{context}: {e}");
+    let mut src = std::error::Error::source(e);
+    while let Some(inner) = src {
+        let t = inner.to_string();
+        if !s.contains(&t) {
+            s.push_str(&format!(": {t}"));
+        }
+        src = inner.source();
+    }
+    s
+}
+
 /// Stringify a single column value by its Postgres type. db-sync uses big
 /// numeric domains (lovelace, word63/64/128type) that exceed i64/f64 range, so
 /// numerics are read as their text representation to preserve full precision —
@@ -134,12 +164,12 @@ pub async fn pg_query(conn: PgConn, sql: String) -> Result<PgResult, String> {
     let cs = conn_string(&conn);
     let (client, connection) = tokio_postgres::connect(&cs, NoTls)
         .await
-        .map_err(|e| format!("connect failed: {e}"))?;
+        .map_err(|e| pg_error("connect failed", &e))?;
 
     // Drive the connection in the background; it ends when `client` drops.
     let handle = tokio::spawn(async move {
         if let Err(e) = connection.await {
-            eprintln!("[pg] connection error: {e}");
+            eprintln!("[pg] {}", pg_error("connection error", &e));
         }
     });
 
@@ -147,7 +177,7 @@ pub async fn pg_query(conn: PgConn, sql: String) -> Result<PgResult, String> {
         let rows = client
             .query(sql.as_str(), &[])
             .await
-            .map_err(|e| format!("query failed: {e}"))?;
+            .map_err(|e| pg_error("query failed", &e))?;
 
         let columns: Vec<String> = if let Some(first) = rows.first() {
             first.columns().iter().map(|c| c.name().to_string()).collect()
@@ -226,12 +256,12 @@ pub async fn pg_query_ssh(
     let (client, connection) = cfg
         .connect_raw(stream, NoTls)
         .await
-        .map_err(|e| format!("tunneled connect failed: {e}"))?;
+        .map_err(|e| pg_error("tunneled connect failed", &e))?;
 
     // Drive the connection in the background; it ends when `client` drops.
     let handle = tokio::spawn(async move {
         if let Err(e) = connection.await {
-            eprintln!("[pg-ssh] connection error: {e}");
+            eprintln!("[pg-ssh] {}", pg_error("connection error", &e));
         }
     });
 
@@ -239,7 +269,7 @@ pub async fn pg_query_ssh(
         let rows = client
             .query(sql.as_str(), &[])
             .await
-            .map_err(|e| format!("query failed: {e}"))?;
+            .map_err(|e| pg_error("query failed", &e))?;
 
         let columns: Vec<String> = if let Some(first) = rows.first() {
             first.columns().iter().map(|c| c.name().to_string()).collect()
@@ -323,11 +353,11 @@ pub async fn pg_query_ssh_via(
     let (client, connection) = cfg
         .connect_raw(stream, NoTls)
         .await
-        .map_err(|e| format!("tunneled connect failed: {e}"))?;
+        .map_err(|e| pg_error("tunneled connect failed", &e))?;
 
     let handle = tokio::spawn(async move {
         if let Err(e) = connection.await {
-            eprintln!("[pg-ssh-via] connection error: {e}");
+            eprintln!("[pg-ssh-via] {}", pg_error("connection error", &e));
         }
     });
 
@@ -335,7 +365,7 @@ pub async fn pg_query_ssh_via(
         let rows = client
             .query(sql.as_str(), &[])
             .await
-            .map_err(|e| format!("query failed: {e}"))?;
+            .map_err(|e| pg_error("query failed", &e))?;
 
         let columns: Vec<String> = if let Some(first) = rows.first() {
             first.columns().iter().map(|c| c.name().to_string()).collect()
@@ -355,4 +385,33 @@ pub async fn pg_query_ssh_via(
     drop(client);
     let _ = handle.await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pg_error;
+    use tokio_postgres::NoTls;
+
+    // Needs a local Postgres with a password-auth role; run by hand with
+    //   cargo test --lib pg_error_live -- --ignored
+    // It makes one failed login (wrong password) and one refused connection.
+    #[tokio::test]
+    #[ignore]
+    async fn pg_error_live() {
+        let role = std::env::var("PT_PG_TEST_ROLE").unwrap_or_else(|_| "cexplorer_ro".into());
+        let cs = format!("host=127.0.0.1 port=5432 dbname=cexplorer user={role} password=definitely-wrong connect_timeout=5");
+        let e = tokio_postgres::connect(&cs, NoTls).await.err().expect("wrong password must fail");
+        let msg = pg_error("tunneled connect failed", &e);
+        println!("wrong password -> {msg}");
+        assert!(msg.contains("password authentication failed"), "{msg}");
+        assert!(msg.contains("[SQLSTATE 28P01]"), "{msg}");
+        assert!(!msg.contains("db error"), "{msg}");
+
+        let e = tokio_postgres::connect("host=127.0.0.1 port=1 dbname=x user=x connect_timeout=5", NoTls)
+            .await.err().expect("closed port must fail");
+        let msg = pg_error("connect failed", &e);
+        println!("closed port    -> {msg}");
+        assert!(msg.to_lowercase().contains("refused"), "{msg}");
+        assert!(!msg.contains("SQLSTATE"), "{msg}");
+    }
 }

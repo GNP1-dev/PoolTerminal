@@ -181,7 +181,7 @@ impl SshSession {
         passphrase: Option<&str>,
     ) -> anyhow::Result<Self> {
         let mut handle = Self::open(host, port).await?;
-        let key = load_secret_key(key_path, passphrase)?;
+        let key = load_secret_key(crate::sshkeys::expand_tilde(key_path), passphrase)?;   // "~/..." as a shell would (key-tilde-v1)
         let hash = handle.best_supported_rsa_hash().await?.flatten();
         let res = handle
             .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))

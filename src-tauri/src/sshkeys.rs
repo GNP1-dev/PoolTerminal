@@ -89,6 +89,23 @@ pub fn list_ssh_keys() -> Result<Vec<SshKey>, String> {
     Ok(found)
 }
 
+/// Expand a leading "~" or "~/" to the home directory, as a shell would. Key
+/// paths are used as typed (no shell), so "~/.ssh/id_ed25519" failed to load.
+/// Other forms ("~user/...") are left unchanged. (key-tilde-v1)
+pub fn expand_tilde(path: &str) -> std::path::PathBuf {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok();
+    expand_tilde_with(path, home.as_deref())
+}
+
+fn expand_tilde_with(path: &str, home: Option<&str>) -> std::path::PathBuf {
+    let p = path.trim();
+    match (home, p) {
+        (Some(h), "~") => std::path::PathBuf::from(h),
+        (Some(h), _) if p.starts_with("~/") => std::path::Path::new(h).join(&p[2..]),
+        _ => std::path::PathBuf::from(p),
+    }
+}
+
 /// Result of checking a private key file before it is used. (key-status-v1)
 #[derive(Serialize)]
 pub struct KeyStatus {
@@ -107,7 +124,9 @@ pub struct KeyStatus {
 /// process, and no key material is returned) - only the verdict is reported.
 #[tauri::command]
 pub fn ssh_key_status(path: String) -> KeyStatus {
-    let p = std::path::Path::new(&path);
+    let expanded = expand_tilde(&path);
+    let p = expanded.as_path();
+    let path = if expanded.to_string_lossy() == path.trim() { path } else { format!("{} ({})", path.trim(), expanded.display()) };
     if path.trim().is_empty() {
         return KeyStatus { exists: false, readable: false, encrypted: false, error: Some("No SSH key path given.".into()) };
     }
@@ -126,7 +145,18 @@ pub fn ssh_key_status(path: String) -> KeyStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::ssh_key_status;
+    use super::{expand_tilde_with, ssh_key_status};
+
+    #[test]
+    fn tilde_expansion() {
+        let h = Some("/home/op");
+        assert_eq!(expand_tilde_with("~/.ssh/pt_dbsync", h), std::path::PathBuf::from("/home/op/.ssh/pt_dbsync"));
+        assert_eq!(expand_tilde_with("  ~/.ssh/k ", h), std::path::PathBuf::from("/home/op/.ssh/k"));
+        assert_eq!(expand_tilde_with("~", h), std::path::PathBuf::from("/home/op"));
+        assert_eq!(expand_tilde_with("/abs/key", h), std::path::PathBuf::from("/abs/key"));
+        assert_eq!(expand_tilde_with("~other/key", h), std::path::PathBuf::from("~other/key"));
+        assert_eq!(expand_tilde_with("~/.ssh/k", None), std::path::PathBuf::from("~/.ssh/k"));
+    }
     use std::process::Command;
 
     fn tmpdir() -> std::path::PathBuf {

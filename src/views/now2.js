@@ -519,7 +519,24 @@ function bpHistRecord(blockNo, delay) {
   h.last = blockNo;
   h.items.push({ b: blockNo, d: delay, t: Date.now() });
   if (h.items.length > BP_HIST_MAX) h.items = h.items.slice(-BP_HIST_MAX);
-  try { localStorage.setItem(BP_HIST_KEY, JSON.stringify(h)); } catch { /* ignore */ }
+  _bpHistDirty = true;
+  if (Date.now() - _bpHistSavedAt >= BP_HIST_SAVE_MS) bpHistSave();
+}
+// Persist at most every 5 minutes, plus when the window is hidden or closed.
+// Writing the ~12 KB value on every block (~4,300 times a day) was the second
+// largest source of the 1 GB localStorage WAL. /*bp-hist-throttle-v1*/
+const BP_HIST_SAVE_MS = 5 * 60 * 1000;
+let _bpHistDirty = false;
+let _bpHistSavedAt = 0;
+function bpHistSave() {
+  if (!_bpHistDirty || !_bpHist) return;
+  _bpHistSavedAt = Date.now();
+  _bpHistDirty = false;
+  try { localStorage.setItem(BP_HIST_KEY, JSON.stringify(_bpHist)); } catch { _bpHistDirty = true; }
+}
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') bpHistSave(); });
+  window.addEventListener('pagehide', bpHistSave);
 }
 function bpHistFrac(thresh) {
   const items = bpHistLoad().items;

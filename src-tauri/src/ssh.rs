@@ -143,10 +143,15 @@ pub struct SshSession {
 
 impl SshSession {
     async fn open(host: &str, port: u16) -> anyhow::Result<Handle<ClientHandler>> {
-        // Config::default() leaves inactivity_timeout unset (connection stays
-        // open), which suits a persistent polling connection. Keepalive tuning
-        // comes when we build the Phase 1 poll loop.
-        let config = Arc::new(client::Config::default());
+        // No inactivity timeout (a persistent polling connection), but SSH
+        // keepalives every 30 s: a silently dropped link (NAT timeout, host
+        // reboot) is detected after 3 missed replies and the session closes,
+        // instead of looking connected while every query hangs. (ssh-keepalive-v1)
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(std::time::Duration::from_secs(30)),
+            keepalive_max: 3,
+            ..Default::default()
+        });
         let host_id = format!("{host}:{port}");
         let report = Arc::new(std::sync::Mutex::new(None));
         let handler = ClientHandler { host_id: host_id.clone(), report: report.clone() };
@@ -176,7 +181,7 @@ impl SshSession {
         passphrase: Option<&str>,
     ) -> anyhow::Result<Self> {
         let mut handle = Self::open(host, port).await?;
-        let key = load_secret_key(key_path, passphrase)?;
+        let key = load_secret_key(crate::sshkeys::expand_tilde(key_path), passphrase)?;   // "~/..." as a shell would (key-tilde-v1)
         let hash = handle.best_supported_rsa_hash().await?.flatten();
         let res = handle
             .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
@@ -330,6 +335,11 @@ impl SshSession {
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             exit_code,
         })
+    }
+
+    /// True once the SSH connection has dropped (keepalive failure, remote close).
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
     }
 
     pub async fn disconnect(&mut self) -> anyhow::Result<()> {
@@ -619,5 +629,19 @@ pub async fn relay_ssh_is_connected(
     state: tauri::State<'_, RelaySshState>,
     id: String,
 ) -> Result<bool, String> {
-    Ok(state.0.lock().await.contains_key(&id))
+    // Present in the map is not enough: the link may have dropped. (ssh-keepalive-v1)
+    Ok(state.0.lock().await.get(&id).map(|s| !s.is_closed()).unwrap_or(false))
+}
+
+/// Close every SSH session (primary node and independent relay/db-sync
+/// sessions). Called when the app exits so remote hosts see a clean
+/// disconnect. (ssh-keepalive-v1)
+pub async fn disconnect_all(primary: &SshState, relays: &RelaySshState) {
+    let mut sessions: Vec<SshSession> = relays.0.lock().await.drain().map(|(_, s)| s).collect();
+    if let Some(s) = primary.0.lock().await.take() {
+        sessions.push(s);
+    }
+    for mut s in sessions {
+        let _ = s.disconnect().await;
+    }
 }

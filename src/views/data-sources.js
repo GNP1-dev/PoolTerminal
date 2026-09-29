@@ -22,6 +22,7 @@ import { confirmDialog, alertDialog } from '../ui/dialog.js';
 import { forceRefreshHistory, dbsyncMachine } from '../data/read-model.js';   /*machine-col*/
 import { getUsage } from '../data/koios-meter.js';
 import { hasKoiosToken } from '../data/koios-token.js';
+import { getDbsyncStatus, savedSourceChoice, STAGE_LABEL } from '../data/dbsync-connect.js';   /*dbsync-status-v1*/
 
 // Friendly colour class from a source id (handles '-live' suffix).
 function badgeClass(id) {
@@ -149,10 +150,20 @@ function summaryHtml(live) {
 
   return `<div class="ds-chips">` +
     chip('ds-node', 'Node', live ? (transport || 'Connected') : 'Not connected', live) +
-    chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}${dbsyncWarn ? ` (${dbsyncWarn})` : ''}` : 'Not configured', dbsyncOn) +
+    chip('ds-dbsync', 'db-sync', dbsyncOn ? `Active${dbsyncVer ? ` - schema ${dbsyncVer}` : ''}${dbsyncWarn ? ` (${dbsyncWarn})` : ''}` : dbsyncDownText(live), dbsyncOn) +
     chip('ds-koios', 'Koios', koiosStatus, koiosOn) +
     chip('ds-bf', 'Blockfrost', bfOn ? 'Active' : 'Not configured', bfOn) +
   `</div>`;
+}
+
+// db-sync chosen in setup but not connected: say why, not "Not configured". (dbsync-status-v1)
+function dbsyncDownText(live) {
+  const c = savedSourceChoice();
+  if (!live || !c || c.useDbsync !== true) return 'Not configured';
+  const st = getDbsyncStatus();
+  if (st.state === 'needs-password') return 'Set up - needs password for this session';
+  if (st.state === 'failed') return `Set up - failed at ${STAGE_LABEL[st.stage] || st.stage}: ${st.error}`;
+  return 'Set up - connecting';
 }
 
 function safeReach(s) { try { return s.reachable(); } catch { return false; } }
@@ -236,7 +247,7 @@ function sourceSignature() {
   const kinds = [DataKind.POOL_LIVE, DataKind.DELEGATOR_LIST_LIVE, DataKind.DELEGATOR_LIST,
     DataKind.DELEGATOR_DETAIL, DataKind.DELEGATOR_LOYALTY, DataKind.EPOCH_BLOCKS,
     DataKind.POOL_PARAMS];
-  const parts = [getMode()];
+  const parts = [getMode(), (() => { const st = getDbsyncStatus(); return `${st.state}:${st.stage || ''}`; })()];
   for (const k of kinds) {
     let id = '-';
     try { const d = registry.describe(k); id = d ? d.id : '-'; } catch { id = '-'; }

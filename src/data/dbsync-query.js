@@ -1176,29 +1176,76 @@ export const dbsyncSource = {
 };
 
 /**
- * Configure + probe db-sync, resolve the pool id, read schema version, and
- * register into the capability spine. Returns true if reachable & resolved.
- * Called by the read-model/main when the user has db-sync enabled.
+ * Classify a Postgres / tunnel error message into a connect stage, so the UI
+ * can say where it failed. The Rust side appends "[SQLSTATE xxxxx]" to every
+ * Postgres server error (pg-error-v1), which is used first; wording is the
+ * fallback. "connect" means Postgres could not be reached at all - never a
+ * login or query the server answered. (dbsync-status-v1)
  */
-export async function initDbsync(config, poolHex) {
+export function pgErrorStage(msg) {
+  const raw = String(msg || '');
+  const m = raw.toLowerCase();
+  const code = (raw.match(/\[SQLSTATE ([0-9A-Z]{5})\]/) || [])[1];
+  if (code) {
+    if (code === '28P01' || code === '28000' || code === '3D000') return 'auth';   // bad password / no pg_hba entry or role / no such database
+    if (code.startsWith('08') || code.startsWith('57P0') || code === '53300') return 'connect';   // connection exception, shutting down, too many connections
+    return 'query';
+  }
+  if (m.includes('ssh') && (m.includes('not connected') || m.includes('disconnected'))) return 'ssh';
+  if (m.includes('tunnel open failed') || m.includes('channel open')) return 'tunnel';
+  if (m.includes('password authentication failed') || m.includes('no password supplied')
+      || m.includes('authentication') || (m.includes('role') && m.includes('does not exist'))
+      || m.includes('pg_hba')) return 'auth';
+  if (m.includes('database') && m.includes('does not exist')) return 'auth';
+  if (m.includes('error connecting to server') || m.includes('refused') || m.includes('timed out')
+      || m.includes('timeout') || m.includes('no route to host') || m.includes('unreachable')
+      || m.includes('connection reset') || m.includes('connection closed')) return 'connect';
+  return 'query';
+}
+
+/**
+ * Configure + probe db-sync, resolve the pool id, read schema version, and
+ * register into the capability spine. Returns { ok, stage?, error? } with the
+ * real error kept (0.4.1: it used to be swallowed into a bare false).
+ */
+export async function initDbsyncDetailed(config, poolHex) {
   _cfg = config;
   _poolHex = poolHex;
   _ready = false; _poolId = null; _version = null;
   try {
-    if (!(await pgReachable(_cfg))) { console.warn('[dbsync] not reachable'); return false; }
+    try {
+      const rows = await pgQuery(_cfg, 'SELECT 1::text AS ok');
+      if (!(rows.length === 1 && rows[0].ok === '1')) return { ok: false, stage: 'query', error: 'db-sync answered, but not as expected' };
+    } catch (e) {
+      const error = e.message ?? String(e);
+      console.warn('[dbsync] not reachable:', error);
+      return { ok: false, stage: pgErrorStage(error), error };
+    }
     _poolId = await resolvePoolId();
-    if (!_poolId) { console.warn('[dbsync] pool not found in db-sync'); return false; }
+    if (!_poolId) {
+      console.warn('[dbsync] pool not found in db-sync');
+      return { ok: false, stage: 'pool', error: 'Your pool was not found in this db-sync database (is it fully synced, and the right database?)' };
+    }
     _version = await readVersion();
     _ready = true;
     if (!registry.all().some((s) => s.id === 'dbsync')) registry.register(dbsyncSource);
     console.log(`[dbsync] ready — pool id ${_poolId}, schema ${_version}` +
       (dbsyncSource.schemaWarning() ? ` (${dbsyncSource.schemaWarning()})` : ''));
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.warn('[dbsync] init failed:', err.message ?? err);
+    const error = err.message ?? String(err);
+    console.warn('[dbsync] init failed:', error);
     _ready = false;
-    return false;
+    return { ok: false, stage: pgErrorStage(error), error };
   }
 }
+
+/** Boolean form kept for existing callers. */
+export async function initDbsync(config, poolHex) {
+  return (await initDbsyncDetailed(config, poolHex)).ok;
+}
+
+/** Stop routing queries to db-sync after its connection is lost (0.4.1). */
+export function markDbsyncDown() { _ready = false; }
 
 export function resetDbsync() { _cfg = null; _poolHex = null; _poolId = null; _version = null; _ready = false; }

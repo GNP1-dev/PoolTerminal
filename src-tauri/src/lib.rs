@@ -76,9 +76,19 @@ pub fn run() {
             pg::pg_query_ssh,
             pg::pg_query_ssh_via,
             sshkeys::list_ssh_keys,
+            sshkeys::ssh_key_status,
             localrun::local_run,
             localrun::local_probe,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Close SSH sessions (node, relays, db-sync) on exit so remote hosts
+            // see a clean disconnect. (ssh-keepalive-v1)
+            if let tauri::RunEvent::Exit = event {
+                let primary = app.state::<SshState>();
+                let relays = app.state::<ssh::RelaySshState>();
+                tauri::async_runtime::block_on(ssh::disconnect_all(&primary, &relays));
+            }
+        });
 }

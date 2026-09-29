@@ -28,6 +28,7 @@ import { getSession, getNodeProbe } from './session.js';
 import { probeNode } from './node-probe.js';
 import * as koios from './koios-query.js';
 import * as dbsync from './dbsync-query.js';
+import * as dbsyncConnect from './dbsync-connect.js';
 import * as koiosHist from './koios-history.js';
 import * as blockfrost from './blockfrost-query.js';
 // Give Blockfrost the persistent meta-cache so per-epoch network data (for luck)
@@ -930,28 +931,7 @@ let _dbsyncInit = false;
 let _dbsyncBackfillDone = false;
 let _dbsyncBackfillInFlight = false;
 
-function savedSourceChoice() {
-  try { return JSON.parse(localStorage.getItem('poolterminal.source.v1') || '{}'); } catch { return {}; }
-}
-
-// Build a db-sync config from the saved wizard/Settings choice. Returns null if
-// the operator did not opt into db-sync - which is how we respect "Koios-only".
-function dbsyncConfigFromChoice() {
-  const c = savedSourceChoice();
-  if (!c || c.useDbsync !== true) return null;
-  const d = c.dbsync || {};
-  const mode = c.dbsyncMode || 'local';
-  const cfg = { database: d.database || 'cexplorer' };
-  if (mode !== 'local') {
-    cfg.host = d.host || (mode === 'tunnel' || mode === 'ssh' ? '127.0.0.1' : '');
-    cfg.port = d.port || 5432;
-    if (d.user) cfg.user = d.user;
-    if (d.password) cfg.password = d.password;
-    if (mode === 'tunnel') cfg.viaSsh = true;   // honoured only when SSH_TUNNEL_ENABLED
-    if (mode === 'ssh') cfg.sshVia = 'dbsync';   // dedicated SSH session /*dbsync-ssh-v56*/
-  }
-  return cfg;
-}
+function savedSourceChoice() { return dbsyncConnect.savedSourceChoice(); }
 
 /* Which machine db-sync is sourced from, for the Data tab. Returns 'local' for
    local/loopback db-sync, or the configured remote host. null if not enabled.
@@ -967,24 +947,53 @@ export function dbsyncMachine() {
   return host;
 }
 
+// db-sync is opened through the one connect path (dbsync-connect.js), shared
+// with the wizard's Test and Finish. A failure is no longer final for the
+// session: it is retried with backoff (1, 2, 4 ... min, max 10), and its status
+// is published for the Delegators / DATA / HISTORY notices. 'needs-password'
+// waits for the startup prompt (or a wizard Finish) instead of retrying.
+// (dbsync-status-v1)
+let _dbsyncConnectInFlight = false;
+let _dbsyncFailCount = 0;
+let _dbsyncRetryAt = 0;
+
 async function ensureDbsync() {
-  if (_dbsyncInit) return dbsync.dbsyncSource.reachable();
-  const _dbCfg = dbsyncConfigFromChoice();
-  if (!_dbCfg) return false;   // user did not opt into db-sync - respect that choice
-  if (_dbCfg.sshVia) {   // independent SSH: open the dedicated db-sync session first /*dbsync-ssh-v56*/
-    const _c = savedSourceChoice();
-    const _sshP = _c && _c.dbsync && _c.dbsync.ssh;
-    if (!_sshP) { console.warn('[dbsync] ssh mode but no SSH params saved'); return false; }
-    try {
-      const { connectDbsyncSsh } = await import('./pg-transport.js');
-      await connectDbsyncSsh(_sshP);
-    } catch (e) { console.warn('[dbsync] db-sync SSH session connect failed', e); return false; }
+  const st = dbsyncConnect.getDbsyncStatus();
+  if (_dbsyncInit && st.state === 'ok') return dbsync.dbsyncSource.reachable();
+  if (st.state === 'needs-password' && _dbsyncInit) return false;
+  if (_dbsyncConnectInFlight) return false;
+  if (st.state === 'failed' && Date.now() < _dbsyncRetryAt) return false;
+  const choice = savedSourceChoice();
+  if (!choice || choice.useDbsync !== true) return false;   // Koios-only by choice
+  _dbsyncConnectInFlight = true;
+  let res;
+  try {
+    res = await dbsyncConnect.connectDbsync(choice, dbsyncConnect.sessionSecrets(), poolHex());
+  } finally {
+    _dbsyncConnectInFlight = false;
   }
   _dbsyncInit = true;
-  const ok = await dbsync.initDbsync(_dbCfg, poolHex());
-  if (ok) {
+  if (res.state === 'ok') {
+    _dbsyncFailCount = 0; _dbsyncRetryAt = 0;
     await cacheMetaSet('history_source', 'dbsync');
     await cacheMetaSet('dbsync_schema', dbsync.dbsyncSource.version() || '');
+    return true;
+  }
+  if (res.state === 'failed') {
+    _dbsyncFailCount++;
+    _dbsyncRetryAt = Date.now() + Math.min(60_000 * 2 ** (_dbsyncFailCount - 1), 10 * 60_000);
+    console.warn(`[dbsync] ${dbsyncConnect.describeDbsyncStatus(res)} (retry in ${Math.round((_dbsyncRetryAt - Date.now()) / 1000)} s)`);
+  }
+  return false;
+}
+
+/** Retry db-sync now (after the password prompt, or a Retry button). */
+export async function retryDbsyncNow() {
+  _dbsyncRetryAt = 0;
+  _dbsyncInit = false;
+  const ok = await ensureDbsync();
+  if (ok) {
+    _dbsyncBackfillDone = false; _dbsyncIdealDone = false;   // let history fill from db-sync now
   }
   return ok;
 }
@@ -2111,6 +2120,7 @@ export function resetReadModel() {
   _ubCurEpoch = null; _ubCurSlots = null; _ubCurCheckedAt = 0; _ubCurFirstTryAt = 0; _ubNextEpoch = null; _ubNextSlots = null; _ubNextCheckedAt = 0;
   _healthAt = 0; _lastSlowBlock = null; _lastPropEpoch = null;
   _dbsyncInit = false; _dbsyncBackfillDone = false; _dbsyncBackfillInFlight = false;
+  _dbsyncConnectInFlight = false; _dbsyncFailCount = 0; _dbsyncRetryAt = 0;
   _koiosInit = false; _koiosBackfillDone = false; _koiosBackfillInFlight = false;
   _koiosInitInFlight = false; _koiosProbeAt = 0; _koiosUnreachable = false;
   _blockfrostInit = false; blockfrost.resetBlockfrost();

@@ -52,14 +52,17 @@ cannot work across restarts otherwise:
 | Koios API key | you use the keyed tier | reads public chain data |
 | Blockfrost project key | you add one | reads public chain data |
 | Telegram bot token | you set up Alerts | controls only the bot you created |
-| db-sync password | *only* if you tick "save password" | reads your own local database |
+| db-sync password | *only* if you tick "Remember" (setup wizard or startup prompt); otherwise asked for at each start | reads your own local database; use a read-only role |
 
 None of these can reach your node, your keys, or your funds. They carry the same
 exposure as any other file in your home directory: an attacker who can read them
 can already read everything else you own. If you would rather store none of them,
-use the free Koios tier, leave Blockfrost and Alerts unconfigured, and use the
-`pg_hba.conf` loopback-trust option for db-sync - the application is fully
-functional in that configuration.
+use the free Koios tier, leave Blockfrost and Alerts unconfigured, and leave the
+db-sync "Remember" box unticked - PoolTerminal then asks for the database password
+each time it starts, and is fully functional in that configuration. (The
+`pg_hba.conf` loopback-trust option also stores nothing, but is not recommended:
+it lets any local user or process on the db-sync machine log in without a
+password.)
 
 The Telegram bot token is sent to Telegram as an HTTPS header from the Rust
 backend, so it never appears in a command line on your node or in a process list.

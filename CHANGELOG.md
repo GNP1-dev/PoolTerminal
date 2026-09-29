@@ -6,6 +6,47 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version stays below 1.0 the application is beta: interfaces and
 behaviour may change between minor versions.
 
+## [0.4.1] - 2026-09-29
+
+A bug-fix release for db-sync on another machine and for disk use. Same
+requirements as 0.4.0: cardano-node 11.1.2 or later with cardano-cli 11.2.3.0
+or later, and (optional) cncli 6.8.0 or later.
+
+### Fixed
+
+- **db-sync on another machine (over SSH) now works after a restart.** The
+  connection test passed, but after restarting PoolTerminal quietly used
+  Koios instead. The setup wizard now keeps your saved db-sync settings when
+  you open it again, asks for the database password at startup if it is not
+  remembered (and for the SSH key passphrase, which is never stored), and the
+  "Remember" option sits right under the password field.
+- **db-sync failures are shown, with the real reason.** If db-sync is set up
+  but cannot connect - for example a wrong password, a missing key file or an
+  SSH problem - Delegators, the Data tab and History now say so and why, with
+  a Retry button, instead of silently falling back to Koios.
+- **"~" in SSH key paths now works** (for example `~/.ssh/id_ed25519`), and
+  key files are checked when you enter them: a missing or unreadable file,
+  or a key that needs a passphrase, is reported with its path.
+
+### Improved
+
+- **SSH connections use keepalives**, so a dropped link is noticed instead of
+  hanging, and a dropped db-sync tunnel reconnects once by itself.
+- **Much less disk writing.** A few values were rewritten many times a
+  minute, which grew a local storage file to around 1 GB on some installs.
+  They are now smaller and saved at most every minute or so. The large file
+  is cleared the next time PoolTerminal starts.
+- **Setup help recommends a read-only database role with a password**, with
+  the commands to create one; "no password (loopback trust)" is marked as not
+  recommended. The SSH port for the db-sync machine is no longer assumed to be
+  22.
+
+### Note
+
+- "Remember" stores the db-sync password **unencrypted** on this computer, so
+  use a read-only database role. Storing it in the system keyring is planned
+  for 0.5.0.
+
 ## [0.4.0] - 2026-09-25
 
 **BREAKING: requires cardano-node 11.1.2 or later, cardano-cli 11.2.3.0 or
@@ -320,6 +361,7 @@ shows their message at connect instead of connecting with no pool ID.
 
 - Initial release.
 
+[0.4.1]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.4.1
 [0.4.0]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.4.0
 [0.3.4]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.4
 [0.3.3]: https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.3.3

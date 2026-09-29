@@ -8,7 +8,9 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 
 ---
 
-> **v0.4.0 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+> **v0.4.1 is available.** [Download the latest release](https://github.com/GNP1-dev/PoolTerminal/releases/latest) · Linux (AppImage / .deb). Active development - star to follow progress.
+>
+> New in v0.4.1: **db-sync on another machine now keeps working after a restart.** The setup wizard keeps your saved db-sync settings, asks for the database password at startup if it isn't remembered, and db-sync failures are shown with the real reason (such as a wrong password) and a Retry button instead of silently falling back to Koios. Also: `~` in SSH key paths works, SSH keepalives, and much less disk writing (a large local storage file some installs saw is cleared on the next start). "Remember" stores the db-sync password unencrypted on this computer, so use a read-only database role; a keyring is planned for 0.5.0. See the [release notes](https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.4.1).
 >
 > New in v0.4.0: **support for cardano-node 11.1.2.** This release requires cardano-node 11.1.2 or later with cardano-cli 11.2.3.0 or later (a matched pair from the same node release), and cncli 6.8.0 or later if you use cncli; older versions are not supported. **Ideal and Luck are now correct**: they were calculated from the wrong stake snapshot and now match cncli's leaderlog and gLiveView. The **mempool is shown in blocks**, with the 2-block line where default-size mempools across the network are full. Also: Logs presets that really cover their time windows, a faster delegator deep-dive on db-sync, Guild env errors shown at connect, time limits on every cardano-cli query, and no key or certificate file paths in logs. Tested with db-sync 13.7.2.1 (schema 15.50.6). See the [release notes](https://github.com/GNP1-dev/PoolTerminal/releases/tag/v0.4.0).
 >
@@ -24,7 +26,7 @@ Dense. Real-time. Read-only. Packed with data nothing else surfaces.
 >
 > New in v0.2.0: a **LOGS** workspace (journal queries, minted-block history, propagation history, epoch-transition view), **ALERTS** - Telegram alerting with no agent on your block producer, the **KES hourglass**, and delegator balances reconciled against live account state.
 
-> _Last updated: 26 September 2026_ <!-- readme-beta-v4 -->
+> _Last updated: 29 September 2026_ <!-- readme-beta-v4 -->
 
 > ### ⚠️ This is a beta. I need your help testing it.
 >
@@ -113,7 +115,7 @@ Almost every capability has a Koios path, so a node-plus-internet setup is compl
 - **Remote node (SSH)** - connect to your BP or relay over SSH. Supports password, password + 2FA (keyboard-interactive), SSH key files (auto-detected or custom path, encrypted keys via passphrase), and ssh-agent.
 - **This machine (local)** - run PoolTerminal *on* the node itself; it executes commands directly, no SSH needed.
 
-**To db-sync (if used):** three modes, chosen in the setup wizard. **On this machine** - a local Unix socket. **On your block producer** - Postgres tunnelled over the node's existing SSH connection. **On another machine** - PoolTerminal opens its own dedicated SSH session to the db-sync host and reads Postgres over that tunnel; key-based auth bypasses any 2FA on the box, and database access is either a password or a loopback-trust line in `pg_hba.conf` (no password stored). Because the tunnel presents the connection to Postgres as loopback, the same setup works whether PoolTerminal runs on the node, a local machine, or a remote host - in any combination with where the block producer lives.
+**To db-sync (if used):** three modes, chosen in the setup wizard. **On this machine** - a local Unix socket. **On your block producer** - Postgres tunnelled over the node's existing SSH connection. **On another machine** - PoolTerminal opens its own dedicated SSH session to the db-sync host and reads Postgres over that tunnel; key-based auth bypasses any 2FA on the box, and database access is a read-only role with a password (recommended; a loopback-trust line in `pg_hba.conf` also works but is not recommended). See [Securing the db-sync SSH key](#securing-the-db-sync-ssh-key). Because the tunnel presents the connection to Postgres as loopback, the same setup works whether PoolTerminal runs on the node, a local machine, or a remote host - in any combination with where the block producer lives.
 
 Relays have their own dedicated **Relay 1 / Relay 2** tabs (see Features) - purpose-built, node-only dashboards that read solely from each relay's own cardano-node and stay fully isolated from the block-producer view and from each other. They connect with the same options as above (local or SSH, every auth method), plus an optional node selector for hosts that run a co-located block producer and relay. You can also still point the main block-producer views at a relay, where block-producer-only panels (KES, ideal, leader, upcoming blocks) are clearly marked and skipped.
 
@@ -144,21 +146,21 @@ Download the latest build from **[Releases](https://github.com/GNP1-dev/PoolTerm
 **AppImage** (recommended - any Linux distro, no install):
 
 ```bash
-chmod +x PoolTerminal_0.4.0_amd64.AppImage
-./PoolTerminal_0.4.0_amd64.AppImage
+chmod +x PoolTerminal_0.4.1_amd64.AppImage
+./PoolTerminal_0.4.1_amd64.AppImage
 ```
 
 If it won't start, your system may be missing FUSE. Either install it
 (`sudo apt install libfuse2` on Debian/Ubuntu) or run without it:
 
 ```bash
-./PoolTerminal_0.4.0_amd64.AppImage --appimage-extract-and-run
+./PoolTerminal_0.4.1_amd64.AppImage --appimage-extract-and-run
 ```
 
 **.deb** (Debian / Ubuntu):
 
 ```bash
-sudo dpkg -i PoolTerminal_0.4.0_amd64.deb
+sudo dpkg -i PoolTerminal_0.4.1_amd64.deb
 ```
 
 On first run, the setup wizard walks you through connecting to your node.
@@ -194,11 +196,25 @@ PoolTerminal is open source, Apache 2.0 licensed. Audit before you trust it. Key
   - a **Koios API key**, if you use the keyed tier instead of the free one;
   - a **Blockfrost project key**, if you add one;
   - your **Telegram bot token**, if you set up Alerts;
-  - your **db-sync password** - *only* if you ticked "save password" in the wizard; the loopback-trust option stores nothing.
+  - your **db-sync password** - *only* if you ticked "Remember" (in the wizard or the startup password prompt). Otherwise PoolTerminal asks for it each time it starts. Use a read-only database role; storing it in the system keyring is planned for 0.5.0.
 
   None of these can touch your pool. Koios and Blockfrost keys read public chain data. A Telegram bot token controls only the bot *you* created - it cannot reach your node, your keys or your funds. A db-sync password reads your own local database. Anyone able to read those files can already read everything else in your home directory. If you would rather store none of them, use the free Koios tier, leave Blockfrost and Alerts unconfigured, and use loopback trust for db-sync - the app is fully functional that way.
 - **No telemetry.** PoolTerminal does not phone home. Network connections are: your node (SSH), your db-sync (if used), Telegram (only if you configure Alerts), and read-only public APIs (Koios for pool stats, Blockfrost if you add a key, ip-api for peer geo-location). Nothing else.
 - **Local cache only.** Historical data is stored in a SQLite database on your own machine.
+
+### Securing the db-sync SSH key
+
+When db-sync is on another machine, PoolTerminal only needs its SSH key to open one tunnel to Postgres - never a shell or a command. On the db-sync machine, restrict that key to exactly that by putting these options in front of its line in `~/.ssh/authorized_keys`:
+
+```
+restrict,port-forwarding,permitopen="127.0.0.1:5432",command="/bin/false" ssh-ed25519 AAAA... poolterminal-dbsync
+```
+
+- `restrict` turns off everything optional for this key: port, agent and X11 forwarding, terminal (PTY) allocation and `~/.ssh/rc`.
+- `port-forwarding` then allows forwarding again, and `permitopen` limits it to the database on that machine's localhost.
+- `command="/bin/false"` stops the key running commands. `restrict` alone does not: without it the key can still run a command without a terminal. The forced command does not affect the tunnel, which is all PoolTerminal uses.
+
+With this in place, a copy of the key can reach the database (and still needs the database password) but cannot run anything on the machine. Keep the db-sync host in PoolTerminal's setup as `127.0.0.1`, as the wizard suggests, so it matches `permitopen`; change `5432` if your Postgres listens on another port. Use a dedicated key for this (the wizard can generate one) rather than your everyday key.
 
 ## Tech stack
 
